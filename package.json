@@ -50,7 +50,6 @@
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.10.1",
     "autoprefixer": "^10.4.21",
-    "clsx": "^2.1.1",
     "eslint": "^9.15.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-svelte": "^3.0.3",
@@ -62,7 +61,6 @@
     "prettier-plugin-svelte": "^3.0.0",
     "svelte": "^5.28.2",
     "svelte-check": "^4.1.6",
-    "svelte-routing": "^2.13.0",
     "tailwind-merge": "^3.2.0",
     "tailwind-variants": "^0.2.1",
     "tailwindcss": "^3.4.17",
@@ -73,6 +71,7 @@
   },
   "dependencies": {
     "bits-ui": "^1.5.3",
+    "clsx": "^2.1.1",
     "@codemirror/lang-cpp": "^6.0.2",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-go": "^6.0.1",
@@ -105,6 +104,7 @@
     "parse-git-diff": "^0.0.19",
     "parse-patch": "^0.1.4",
     "svelte-codemirror-editor": "^2.0.0",
+    "svelte-routing": "^2.13.0",
     "zod": "^3.25.50"
   }
 }
