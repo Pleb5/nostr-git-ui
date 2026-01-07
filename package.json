@@ -100,7 +100,7 @@
     "date-fns": "^4.1.0",
     "debug": "^4.3.7",
     "markdown-it": "^14.1.0",
-    "@nostr-git/core": "git+https://github.com/chebizarro/nostr-git.git#ddededc382c22b2d0e395bc281beeaade10f7e0e",
+    "@nostr-git/core": "git+https://github.com/chebizarro/nostr-git.git#064272582dad710b527864e1f8e499e01d3aecdf",
     "parse-diff": "^0.11.1",
     "parse-git-diff": "^0.0.19",
     "parse-patch": "^0.1.4",

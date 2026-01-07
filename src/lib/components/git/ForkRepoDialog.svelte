@@ -32,9 +32,11 @@
     onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<void>;
     graspServerUrls?: string[]; // Optional list of known GRASP servers to display
     useForkRepoImpl?: typeof useForkRepo;
+    // Optional callback to navigate to the forked repository after fork completion
+    navigateToForkedRepo?: (result: ForkResult) => void;
   }
 
-  const { repo, pubkey, onPublishEvent, graspServerUrls = [], useForkRepoImpl }: Props = $props();
+  const { repo, pubkey, onPublishEvent, graspServerUrls = [], useForkRepoImpl, navigateToForkedRepo }: Props = $props();
 
   // Initialize the useForkRepo hook (allow DI override)
   const forkImpl = $derived(useForkRepoImpl ?? useForkRepo);
@@ -52,6 +54,11 @@
         message: "Repository forked successfully!",
         variant: "default",
       });
+      // Navigate to the forked repo after a short delay if callback is provided
+      // This gives users time to see the success message
+      if (navigateToForkedRepo && result.announcementEvent) {
+        navigateToForkedRepo(result);
+      }
     },
     onPublishEvent: onPublishEvent,
   }));

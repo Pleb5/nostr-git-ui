@@ -31,6 +31,7 @@
     onComment?: (commitId: string, comment: string) => void;
     onNavigate?: (commitId: string) => void;
     href?: string; // Optional direct href for navigation
+    getParentHref?: (commitId: string) => string; // Function to generate parent commit href
     // Optional avatar and display name supplied by app layer
     avatarUrl?: string;
     displayName?: string;
@@ -45,6 +46,7 @@
     onComment,
     onNavigate,
     href,
+    getParentHref,
     avatarUrl,
     displayName,
     pubkey,
@@ -171,9 +173,18 @@
       </div>
 
       {#if commit.commit.parent.length > 0}
-        <div class="text-xs text-muted-foreground whitespace-nowrap">
-          Parent: {truncateHash(commit.commit.parent[0])}
-        </div>
+        {#if getParentHref}
+          <a
+            href={getParentHref(commit.commit.parent[0])}
+            class="text-xs text-muted-foreground whitespace-nowrap hover:text-foreground hover:underline transition-colors"
+          >
+            Parent: {truncateHash(commit.commit.parent[0])}
+          </a>
+        {:else}
+          <div class="text-xs text-muted-foreground whitespace-nowrap">
+            Parent: {truncateHash(commit.commit.parent[0])}
+          </div>
+        {/if}
       {/if}
     </div>
   {/snippet}

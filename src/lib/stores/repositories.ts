@@ -1,30 +1,26 @@
-export type BookmarkedRepo = {
-  address: string;
-  event: any;
-  relayHint: string;
-};
+import { BookmarkAddress } from "@nostr-git/core/events";
 
 // Singleton store for bookmarked repositories
 function createBookmarksStore() {
-  const subscribers = new Set<(v: BookmarkedRepo[]) => void>();
-  let value: BookmarkedRepo[] = [];
+  const subscribers = new Set<(v: BookmarkAddress[]) => void>();
+  let value: BookmarkAddress[] = [];
 
   function notify() {
     for (const run of subscribers) run(value);
   }
 
-  function subscribe(run: (v: BookmarkedRepo[]) => void) {
+  function subscribe(run: (v: BookmarkAddress[]) => void) {
     run(value);
     subscribers.add(run);
     return () => subscribers.delete(run);
   }
 
-  function set(next: BookmarkedRepo[]) {
+  function set(next: BookmarkAddress[]) {
     value = Array.isArray(next) ? next : [];
     notify();
   }
 
-  function update(fn: (v: BookmarkedRepo[]) => BookmarkedRepo[]) {
+  function update(fn: (v: BookmarkAddress[]) => BookmarkAddress[]) {
     value = fn(value);
     notify();
   }
@@ -33,7 +29,7 @@ function createBookmarksStore() {
     subscribe,
     set,
     update,
-    add: (repo: BookmarkedRepo) =>
+    add: (repo: BookmarkAddress) =>
       update((repos) => (repos.some((r) => r.address === repo.address) ? repos : [...repos, repo])),
     remove: (address: string) => update((repos) => repos.filter((r) => r.address !== address)),
     clear: () => set([]),
