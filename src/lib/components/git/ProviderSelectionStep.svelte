@@ -3,7 +3,7 @@
   import { tokens as tokensStore, type Token } from "../../stores/tokens.js";
   import { onMount } from "svelte";
 
-  const { Button, Card, CardContent, CardHeader, CardTitle } = useRegistry();
+  const { Button, Card, CardContent } = useRegistry();
 
   interface Props {
     selectedProvider?: string;
@@ -11,7 +11,7 @@
     disabledProviders?: string[];
     relayUrl?: string;
     onRelayUrlChange?: (url: string) => void;
-    graspServerOptions?: string[];
+    graspServerOptions: string[];
   }
   const {
     selectedProvider,

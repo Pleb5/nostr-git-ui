@@ -3,7 +3,7 @@
   const { Avatar, AvatarFallback, AvatarImage } = useRegistry();
   import { GitCommit } from "@lucide/svelte";
   import TimeAgo from "../../TimeAgo.svelte";
-  import type { Profile } from "@nostr-git/core/types";
+  import type { Profile } from "@nostr-git/core/events";
   const {
     content,
     author,

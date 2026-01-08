@@ -1,7 +1,7 @@
 // Test setup file for patches detail page tests
 import { vi, expect } from 'vitest';
-import type { Patch, Commit } from '@nostr-git/core';
-import type { StatusEvent } from '@nostr-git/shared-types';
+import type { Commit, Patch } from '@nostr-git/core/types';
+import type { StatusEvent } from '@nostr-git/core/events';
 
 // Mock console methods to reduce noise in tests
 global.console = {

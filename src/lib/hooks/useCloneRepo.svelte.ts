@@ -1,5 +1,6 @@
 import type { NostrEvent } from "nostr-tools";
-import { GIT_REPO_STATE, type RepoStateTag } from "@nostr-git/core/events";
+import type { RepoStateTag } from "@nostr-git/core/events";
+import { GIT_REPO_STATE } from "@nostr-git/core/events";
 import { tokens as tokensStore } from "../stores/tokens.js";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
 

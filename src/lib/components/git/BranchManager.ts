@@ -2,11 +2,8 @@ import { WorkerManager } from "./WorkerManager";
 import { CacheManager } from "./CacheManager";
 import { context } from "$lib/stores/context";
 import { toast } from "$lib/stores/toast";
-import type {
-  RepoAnnouncementEvent,
-  RepoStateEvent
-} from "@nostr-git/core/events";
-import { parseRepoAnnouncementEvent } from "@nostr-git/core/events";
+import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
+import { GIT_REPO_STATE, parseRepoAnnouncementEvent } from "@nostr-git/core/events";
 
 // Branch interface definition (since it's not exported from shared-types)
 export interface Branch {

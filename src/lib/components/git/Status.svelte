@@ -5,15 +5,15 @@
     GIT_STATUS_OPEN,
     GIT_STATUS_DRAFT,
     GIT_STATUS_CLOSED,
-    GIT_STATUS_COMPLETE,
-    Address,
-  } from "@welshman/util"
+    GIT_STATUS_APPLIED,
+  } from "@nostr-git/core/events"
   import {
     CircleCheck,
     CircleDot,
     Clock,
     GitMerge,
     AlertCircle,
+    X,
   } from "@lucide/svelte"
   import { Button } from "../ui/button"
   import { Textarea } from "../ui/textarea"
@@ -94,7 +94,7 @@
         return "draft"
       case GIT_STATUS_CLOSED:
         return "closed"
-      case GIT_STATUS_COMPLETE:
+      case GIT_STATUS_APPLIED:
         return rootKind === 1617 ? "merged" : "resolved"
       default:
         return "open"
@@ -166,7 +166,7 @@
         return GIT_STATUS_CLOSED
       case "merged":
       case "resolved":
-        return GIT_STATUS_COMPLETE
+        return GIT_STATUS_APPLIED
     }
   }
 
@@ -178,7 +178,7 @@
         return "draft"
       case GIT_STATUS_CLOSED:
         return "closed"
-      case GIT_STATUS_COMPLETE:
+      case GIT_STATUS_APPLIED:
         return rootKind === 1617 ? "merged" : "resolved"
       default:
         return "open"
@@ -211,7 +211,7 @@
     try {
       const kind = stateToKind(selectedState)
       const repoEvent = (repo as any).repoEvent
-      const repoAddr = repoEvent ? Address.fromEvent(repoEvent).toString() : ""
+      const repoAddr = repoEvent ? `${repoEvent.kind}:${repoEvent.pubkey}:${repoEvent.tags.find((t: string[]) => t[0] === 'd')?.[1] || ''}` : ""
       const relays = repo.relays || []
       const repoEuc = repoEvent?.tags?.find((t: string[]) => t[0] === "r" && t[2] === "euc")?.[1]
 
@@ -230,7 +230,7 @@
       }
 
       // Add merge metadata for 1631 (merged/resolved)
-      if (kind === GIT_STATUS_COMPLETE) {
+      if (kind === GIT_STATUS_APPLIED) {
         let commitSha = mergeCommit.trim()
         if (!commitSha) {
           commitSha = await getDefaultCommit()

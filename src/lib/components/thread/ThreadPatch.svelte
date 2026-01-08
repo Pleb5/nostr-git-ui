@@ -3,7 +3,7 @@
   const { Avatar, AvatarFallback, AvatarImage } = useRegistry();
   import TimeAgo from "../../TimeAgo.svelte";
   import PatchCard from "../git/PatchCard.svelte";
-  import Status from "../git/Status.svelte";
+  import type { Profile, StatusEvent } from "@nostr-git/core/events";
 
   const {
     repoId,
@@ -12,7 +12,7 @@
     metadata,
   }: {
     repoId: string;
-    author: import("@nostr-git/shared-types").Profile;
+    author: Profile;
     createdAt: string;
     metadata: {
       patchId: string;
@@ -21,7 +21,7 @@
       baseBranch: string;
       commitCount: number;
       commentCount: number;
-      status: Status;
+      status: StatusEvent;
     };
   } = $props();
 </script>

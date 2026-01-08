@@ -38,7 +38,7 @@
     loadingCommits: new Set(),
     expandedCommits: new Set(),
     expandedFiles: new Map(),
-    highlightedFiles: [],
+    highlightedFiles: [] as string[],
     errors: new Map(),
   });
 

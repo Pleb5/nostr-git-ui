@@ -1,4 +1,5 @@
 import { get } from 'svelte/store';
+import { signer, pubkey } from '../stores/signer';
 
 export interface TokenEntry {
   host: string;

@@ -5,7 +5,8 @@
   import { formatDistanceToNow } from "date-fns";
   import parseDiff from "parse-diff";
   import { ChevronDown, ChevronUp } from "@lucide/svelte";
-  import { createCommentEvent, type CommentEvent, type CommentTag } from "@nostr-git/core/events";
+  import { createCommentEvent } from "@nostr-git/core/events";
+  import type { CommentEvent, CommentTag } from "@nostr-git/core/events";
   import type { NostrEvent } from "nostr-tools";
 
   interface Comment {

@@ -1,4 +1,4 @@
-import { BookmarkAddress } from "@nostr-git/core/events";
+import type { BookmarkAddress } from "@nostr-git/core/events";
 
 // Singleton store for bookmarked repositories
 function createBookmarksStore() {

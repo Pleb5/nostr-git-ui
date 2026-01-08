@@ -7,7 +7,8 @@
   const { Button, Spinner } = useRegistry();
   import { fly } from "svelte/transition";
   import { preventDefault } from "svelte/legacy";
-  import { GIT_REPO_BOOKMARK_DTAG, normalizeRepoKeySync, GIT_REPO_ANNOUNCEMENT } from "@nostr-git/core/events";
+  import { GIT_REPO_BOOKMARK_DTAG, GIT_REPO_ANNOUNCEMENT } from "@nostr-git/core/events";
+  import { normalizeRepoKeySync } from "@nostr-git/core/utils";
   import NostrAvatar from "./NostrAvatar.svelte";
 
 
@@ -167,7 +168,7 @@
   let debouncedTerm = $state("");
 
   // Set up the debounced update
-  const updateDebouncedTerm = debounce(500, (term) => {
+  const updateDebouncedTerm = debounce(500, (term: string) => {
     debouncedTerm = term;
   });
 

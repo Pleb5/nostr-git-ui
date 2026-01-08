@@ -15,7 +15,7 @@
     User,
   } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
-  const { Button, Card, ProfileComponent, EventActions, ReactionSummary, ProfileLink } = useRegistry();
+  const { Button, Card, EventActions, ReactionSummary, ProfileLink } = useRegistry();
   import { toast } from "../../stores/toast";
   import {
     GIT_STATUS_APPLIED,

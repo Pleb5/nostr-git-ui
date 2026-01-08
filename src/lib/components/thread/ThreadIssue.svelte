@@ -3,8 +3,7 @@
   const { Avatar, AvatarFallback, AvatarImage } = useRegistry();
   import TimeAgo from "../../TimeAgo.svelte";
   import IssueCard from "../git/IssueCard.svelte";
-  import Status from "../git/Status.svelte";
-  import { type Profile } from "@nostr-git/core/types";
+  import type { Profile, StatusEvent } from "@nostr-git/core/events";
 
   const {
     repoId,
@@ -21,7 +20,7 @@
       description: string;
       labels: string[];
       commentCount: number;
-      status: Status;
+      status: StatusEvent;
     };
   } = $props();
 

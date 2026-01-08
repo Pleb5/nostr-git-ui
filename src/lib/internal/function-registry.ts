@@ -1,4 +1,4 @@
-import { CommentEvent, IssueEvent } from "@nostr-git/shared-types";
+import type { CommentEvent, IssueEvent } from "@nostr-git/core/events";
 
 export const FUNCTION_REGISTRY = Symbol("ui-function-registry");
 

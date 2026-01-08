@@ -1,10 +1,10 @@
+import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
+import type { Token } from "$lib/stores/tokens";
 import {
   createRepoAnnouncementEvent,
   createRepoStateEvent,
-  RepoAnnouncementEvent,
-  RepoStateEvent,
 } from "@nostr-git/core/events";
-import { tokens as tokensStore, type Token } from "$lib/stores/tokens";
+import { tokens as tokensStore } from "$lib/stores/tokens";
 import { getGitServiceApi } from "@nostr-git/core/git";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
 

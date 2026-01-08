@@ -1,12 +1,11 @@
-import { type Event as NostrEvent } from "nostr-tools";
-import { getGitServiceApi, canonicalRepoKey } from "@nostr-git/core/git";
-import { toast } from "../stores/toast.js";
+import type { Event as NostrEvent } from "nostr-tools";
+import { getGitServiceApi } from "@nostr-git/core/git";
 import { tokens as tokensStore, type Token } from "../stores/tokens.js";
 import {
   createRepoAnnouncementEvent as createAnnouncementEventShared,
   createRepoStateEvent as createStateEventShared,
-  sanitizeRelays,
 } from "@nostr-git/core/events";
+import { sanitizeRelays, canonicalRepoKey } from "@nostr-git/core/utils";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
 
 /**

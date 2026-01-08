@@ -1,5 +1,5 @@
 import Mustache from "mustache";
-import { NostrEvent } from "nostr-tools";
+import type { NostrEvent } from "nostr-tools";
 import { nip19 } from "nostr-tools";
 
 export type RawTag = string[];

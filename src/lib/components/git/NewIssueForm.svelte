@@ -5,7 +5,8 @@
 
   const { Button, Input, Textarea, Label, Checkbox } = useRegistry();
   import { X, Plus } from "@lucide/svelte";
-  import { createIssueEvent, type IssueEvent } from "@nostr-git/core/events";
+  import { createIssueEvent } from "@nostr-git/core/events";
+  import type { IssueEvent } from "@nostr-git/core/events";
 
   interface Props {
     repoId: string;

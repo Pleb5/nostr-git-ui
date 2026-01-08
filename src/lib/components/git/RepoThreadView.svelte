@@ -6,7 +6,7 @@
   import ThreadPatch from "../thread/ThreadPatch.svelte";
   import ThreadIssue from "../thread/ThreadIssue.svelte";
   import ThreadComposer from "../thread/ThreadComposer.svelte";
-  import { Status } from "@nostr-git/core/events";
+  import type { StatusEvent } from "@nostr-git/core/events";
 
   // Expect all props to be destructured at once (Svelte 5: only one $props() call allowed)
   const {
@@ -40,7 +40,7 @@
       baseBranch: string;
       commitCount: number;
       commentCount: number;
-      status: Status;
+      status: StatusEvent;
     };
   };
 
@@ -56,7 +56,7 @@
       description: string;
       labels: string[];
       commentCount: number;
-      status: Status;
+      status: StatusEvent;
     };
   };
 

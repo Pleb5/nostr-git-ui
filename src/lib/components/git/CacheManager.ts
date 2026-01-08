@@ -1,5 +1,5 @@
 import { type MergeAnalysisResult } from "@nostr-git/core/git";
-import { type PatchEvent } from "@nostr-git/core/events";
+import type { PatchEvent } from "@nostr-git/core/events";
 
 export interface CacheEntry<T> {
   data: T;

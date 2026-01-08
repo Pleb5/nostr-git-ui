@@ -1,24 +1,28 @@
-import {
+import type {
   IssueEvent,
-  parseRepoAnnouncementEvent,
-  parseRepoStateEvent,
   PatchEvent,
   RepoAnnouncement,
   RepoState,
-  type RepoAnnouncementEvent,
-  type RepoStateEvent,
-  createRepoAnnouncementEvent,
-  createRepoStateEvent,
+  RepoAnnouncementEvent,
+  RepoStateEvent,
   StatusEvent,
   CommentEvent,
   LabelEvent,
 } from "@nostr-git/core/events";
-import { type MergeAnalysisResult } from "@nostr-git/core/git";
+import type { MergeAnalysisResult } from "@nostr-git/core/git";
+import type { Readable } from "svelte/store";
+
+import {
+  parseRepoAnnouncementEvent,
+  parseRepoStateEvent,
+  createRepoAnnouncementEvent,
+  createRepoStateEvent,
+} from "@nostr-git/core/events";
 import { canonicalRepoKey } from "@nostr-git/core/utils";
-import { type Readable } from "svelte/store";
 import { context } from "$lib/stores/context";
 import { toast } from "$lib/stores/toast";
-import { Token, tokens } from "$lib/stores/tokens";
+import type { Token } from "$lib/stores/tokens";
+import { tokens } from "$lib/stores/tokens";
 import { WorkerManager, type WorkerProgressEvent, type CloneProgress } from "./WorkerManager";
 import { CacheManager, MergeAnalysisCacheManager, CacheType } from "./CacheManager";
 import { PatchManager } from "./PatchManager";
