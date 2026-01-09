@@ -25,7 +25,7 @@ vi.mock('@nostr-git/core', () => ({
       })
     }
   })),
-  canonicalRepoKey: vi.fn((id: string) => id.replace(':', '/')),
+  parseRepoId: vi.fn((id: string) => id.replace(':', '/')),
   listBranchesFromEvent: vi.fn().mockResolvedValue(['main', 'develop']),
   listRepoFilesFromEvent: vi.fn().mockResolvedValue([]),
   getRepoFileContentFromEvent: vi.fn().mockResolvedValue(''),

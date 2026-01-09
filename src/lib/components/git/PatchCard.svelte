@@ -57,7 +57,7 @@
     event,
     status,
     patches,
-    comments,
+    comments = [],
     currentCommenter,
     onCommentCreated,
     extraLabels = [],
@@ -371,7 +371,7 @@
 
         {#if parsed.diff && parsed.diff.length > 0}
           {@const lineStats = parsed.diff.reduce(
-            (acc, file) => {
+            (acc: any, file: any) => {
               const content = file.content || "";
               const added = (content.match(/^\+/gm) || []).length;
               const removed = (content.match(/^-/gm) || []).length;

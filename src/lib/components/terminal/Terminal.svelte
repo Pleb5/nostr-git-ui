@@ -5,7 +5,7 @@
   // Import xterm's CSS so the internal helper textarea is hidden and styling is applied
   import "@xterm/xterm/css/xterm.css";
   import { WorkerManager } from "../git/WorkerManager";
-  import { canonicalRepoKey } from "@nostr-git/core/utils";
+  import { parseRepoId } from "@nostr-git/core/utils";
   import { parseRepoAnnouncementEvent } from "@nostr-git/core/events";
   import { tokens as tokensStore } from "../../stores/tokens.js";
   import { tryTokensForHost, getTokensForHost } from "../../utils/tokenHelpers.js";
@@ -445,7 +445,7 @@
       const owner = repoEvent?.pubkey;
       const name = repoEvent ? parseRepoAnnouncementEvent(repoEvent).name : undefined;
       if (owner && name) {
-        return canonicalRepoKey(`${owner}:${name}`);
+        return parseRepoId(`${owner}:${name}`);
       }
     } catch {}
     return repoRef?.repoId;

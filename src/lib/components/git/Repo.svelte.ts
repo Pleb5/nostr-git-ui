@@ -18,7 +18,7 @@ import {
   createRepoAnnouncementEvent,
   createRepoStateEvent,
 } from "@nostr-git/core/events";
-import { canonicalRepoKey } from "@nostr-git/core/utils";
+import { parseRepoId } from "@nostr-git/core/utils";
 import { context } from "$lib/stores/context";
 import { toast } from "$lib/stores/toast";
 import type { Token } from "$lib/stores/tokens";
@@ -229,7 +229,7 @@ export class Repo {
         this.description = this.#repo!.description!;
         // Compute canonical key from "pubkey:name" string (matches current @nostr-git/core signature)
         const _owner = this.getOwnerPubkey();
-        this.key = canonicalRepoKey(`${_owner}:${this.#repo!.name}`);
+        this.key = parseRepoId(`${_owner}:${this.#repo!.name}`);
         this.commitManager.setRepoKeys({
           canonicalKey: this.key,
           workerRepoId: this.repoEvent!.id,
@@ -1346,7 +1346,7 @@ export class Repo {
 
     // Pass the canonical repo key for addressable a-tags; name is used for NIP-34 d-tag (short id)
     return createRepoAnnouncementEvent({
-      repoId: canonicalRepoKey(`${this.getOwnerPubkey()}:${repoData.name}`),
+      repoId: parseRepoId(`${this.getOwnerPubkey()}:${repoData.name}`),
       name: repoData.name,
       description: repoData.description,
       // Support both legacy single URLs and new array format

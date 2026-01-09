@@ -21,7 +21,7 @@
   const {
     issueId,
     issueKind = "1621",
-    comments,
+    comments = [],
     currentCommenter,
     onCommentCreated,
   }: Props = $props();

@@ -28,7 +28,6 @@ export default defineConfig({
       external,
     },
     sourcemap: true,
-    target: "esnext",
   },
   resolve: {
     dedupe: ["svelte"],

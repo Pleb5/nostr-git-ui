@@ -5,7 +5,7 @@ import {
   createRepoAnnouncementEvent as createAnnouncementEventShared,
   createRepoStateEvent as createStateEventShared,
 } from "@nostr-git/core/events";
-import { sanitizeRelays, canonicalRepoKey } from "@nostr-git/core/utils";
+import { sanitizeRelays, parseRepoId } from "@nostr-git/core/utils";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
 
 /**
@@ -474,8 +474,8 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
   // Resolve the canonical repo key for this creation flow
   async function computeCanonicalKey(config: NewRepoConfig): Promise<string> {
     if (config.authorPubkey) {
-      // Use "owner:name" form which canonicalRepoKey will normalize
-      return canonicalRepoKey(`${config.authorPubkey}:${config.name}`);
+      // Use "owner:name" form which parseRepoId will normalize
+      return parseRepoId(`${config.authorPubkey}:${config.name}`);
     }
     throw new Error("Could not get pubkey for GRASP canonical key");
   }

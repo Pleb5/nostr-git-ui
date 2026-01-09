@@ -46,9 +46,7 @@ export { default as BinaryViewer } from "./git/viewers/BinaryViewer.svelte";
 // Thread components
 export { default as ThreadCommit } from "./thread/ThreadCommit.svelte";
 export { default as ThreadComposer } from "./thread/ThreadComposer.svelte";
-export { default as ThreadIssue } from "./thread/ThreadIssue.svelte";
 export { default as ThreadMessage } from "./thread/ThreadMessage.svelte";
-export { default as ThreadPatch } from "./thread/ThreadPatch.svelte";
 export { default as ContextMessages } from "./ContextMessages.svelte";
 export { default as RichText } from "./RichText.svelte";
 export { PermalinkExtension, type PermalinkExtensionOptions } from "./editor/PermalinkExtension";

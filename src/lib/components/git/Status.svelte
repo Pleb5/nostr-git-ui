@@ -44,7 +44,7 @@
   }: {
     repo: Repo
     rootId: string
-    rootKind: 1621 | 1617
+    rootKind: 1621 | 1617 | 1618
     rootAuthor: string
     statusEvents?: StatusEvent[]
     actorPubkey?: string

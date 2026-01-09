@@ -108,7 +108,7 @@
             parent: result.meta.parents,
             date: result.meta.date,
           },
-          changes: result.changes.map((change) => ({
+          changes: result.changes.map((change: any) => ({
             path: change.path,
             status: change.status,
             diffHunks: change.diffHunks,

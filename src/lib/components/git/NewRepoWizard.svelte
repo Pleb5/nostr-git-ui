@@ -12,7 +12,7 @@
   } from "../../hooks/useNewRepo.svelte";
   import { tokens as tokensStore, type Token } from "../../stores/tokens.js";
   import { graspServersStore } from "../../stores/graspServers.js";
-  import { canonicalRepoKey } from "@nostr-git/core/utils";
+  import { buildRepoKey } from "@nostr-git/core/events";
   const { Button } = useRegistry();
 
   function deriveOrigins(input: string): { wsOrigin: string; httpOrigin: string } {
@@ -178,7 +178,7 @@
     // If the user hasn't manually edited clone URLs, fully regenerate the list based on current inputs
     if (!userEditedCloneUrl) {
       const host = availabilityHost || providerHost(selectedProvider);
-      const nostrUrl = `nostr://${canonicalRepoKey(userPubkey, name)}`;
+      const nostrUrl = `nostr://${buildRepoKey(userPubkey, name)}`;
 
       if (selectedProvider === "grasp") {
         advancedSettings.cloneUrls = [nostrUrl];
