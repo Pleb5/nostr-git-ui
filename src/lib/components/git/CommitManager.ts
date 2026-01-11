@@ -1,6 +1,7 @@
 import { WorkerManager } from "./WorkerManager";
 import { CacheManager, CacheType } from "./CacheManager";
 import { context } from "$lib/stores/context";
+import { createNetworkError, createUnknownError } from "@nostr-git/core/errors";
 
 /**
  * Configuration options for CommitManager
@@ -288,7 +289,14 @@ export class CommitManager {
         });
 
         if (!upgradeResult.success) {
-          throw new Error(`Failed to upgrade to full clone: ${upgradeResult.error}`);
+          const err = createNetworkError();
+          err.message =
+            `Failed to ensure full clone for commit history ` +
+            `(repoId=${String(effectiveRepoId)}, branch=${String(branchName)}, dataLevel=${String(dataLevel)}, depth=${String(
+              Math.max(requiredDepth, this.config.defaultDepth)
+            )}): ` +
+            `${String(upgradeResult.error || "unknown error")}`;
+          throw err;
         }
       }
 
@@ -351,7 +359,12 @@ export class CommitManager {
           totalCount: this.totalCommits,
         };
       } else {
-        throw new Error(commitsResult.error);
+        const err = createUnknownError();
+        err.message =
+          `Failed to load commit history ` +
+          `(repoId=${String(effectiveRepoId)}, branch=${String(branchName)}, depth=${String(requiredDepth)}): ` +
+          `${String(commitsResult.error || "unknown error")}`;
+        throw err;
       }
     } catch (error) {
       console.error("Failed to load commits:", error);

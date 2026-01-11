@@ -11,7 +11,7 @@ import type {
 } from "@nostr-git/core/events";
 import type { MergeAnalysisResult } from "@nostr-git/core/git";
 import type { Readable } from "svelte/store";
-import { createPermissionDeniedError } from "@nostr-git/core/errors";
+import { createPermissionDeniedError, RetriableError, UserActionableError, FatalError } from "@nostr-git/core/errors";
 
 import {
   parseRepoAnnouncementEvent,
@@ -24,6 +24,7 @@ import { context } from "$lib/stores/context";
 import { toast } from "$lib/stores/toast";
 import type { Token } from "$lib/stores/tokens";
 import { tokens } from "$lib/stores/tokens";
+import { tryTokensForHost } from "$lib/utils/tokenHelpers";
 import { WorkerManager, type WorkerProgressEvent, type CloneProgress } from "./WorkerManager";
 import { CacheManager, MergeAnalysisCacheManager, CacheType } from "./CacheManager";
 import { PatchManager } from "./PatchManager";
@@ -34,9 +35,26 @@ import {
   RepoCore,
   type RepoContext,
   type EffectiveLabelsV2,
+  detectVendorFromUrl,
+  extractHostname,
 } from "@nostr-git/core/git";
 
 
+
+export type PushFanoutMode = "best-effort" | "all-or-nothing";
+
+export interface PushFanoutResult {
+  branch: string;
+  results: Array<{
+    remoteUrl: string;
+    provider?: string;
+    host?: string;
+    success: boolean;
+    error?: unknown;
+  }>;
+  anySucceeded: boolean;
+  allSucceeded: boolean;
+}
 
 export class Repo {
   name: string = $state("");
@@ -133,10 +151,10 @@ export class Repo {
     this.editable = !!(viewer && this.isAuthorized(viewer));
   }
 
-  assertEditable() {
+  assertEditable(action: string = "edit") {
     if (!this.editable) {
       const error = createPermissionDeniedError();
-      error.message = `Editing requires maintainer permissions for repo ${this.key || this.name || "repository"}`;
+      error.message = `You do not have permission to ${action} for repo ${this.key || this.name || "repository"}`;
       throw error;
     }
   }
@@ -1465,6 +1483,173 @@ export class Repo {
       return { commitId: res?.commitId || res?.id || "" };
     }
     throw new Error("commit not implemented in WorkerManager");
+  }
+
+  async pushToAllRemotes(params?: {
+    branch?: string;
+    mode?: PushFanoutMode;
+    allowForce?: boolean;
+    confirmDestructive?: boolean;
+  }): Promise<PushFanoutResult> {
+    this.assertEditable("push changes");
+
+    const repoId = this.key;
+    if (!repoId) {
+      throw new FatalError("Cannot push: repository id is missing");
+    }
+
+    const mode: PushFanoutMode = params?.mode ?? "best-effort";
+    const allowForce = params?.allowForce ?? false;
+    const confirmDestructive = params?.confirmDestructive ?? false;
+
+    // Resolve branch (short name)
+    const fallbackMain = this.branchManager.getMainBranch();
+    const branch =
+      (params?.branch ?? this.selectedBranch ?? this.mainBranch ?? fallbackMain).split("/").pop() ||
+      fallbackMain;
+
+    const cloneUrlsRaw = [...(this.#repo?.clone || [])]
+      .map((u) => String(u || "").trim())
+      .filter(Boolean);
+
+    // Only attempt URLs that look like push-capable remotes. We intentionally skip nostr:// URLs
+    // that are meant for addressing/browsing rather than git push remotes.
+    const isPushRemote = (u: string): boolean =>
+      /^https?:\/\//i.test(u) || /^wss?:\/\//i.test(u) || /^ssh:\/\//i.test(u) || /^git@/i.test(u);
+
+    const cloneUrls = cloneUrlsRaw.filter(isPushRemote);
+
+    if (cloneUrls.length === 0) {
+      throw new UserActionableError(
+        "Cannot push: no push-capable remotes found in repository clone URLs"
+      );
+    }
+
+    // Ensure worker is ready for push operations
+    await this.workerManager.initialize();
+
+    // Load tokens once for fan-out; individual remote pushes select the right token by host
+    let tokenList: Token[] = [];
+    try {
+      tokenList = await tokens.waitForInitialization();
+    } catch {
+      tokenList = [];
+    }
+
+    const getHost = (remoteUrl: string): string | undefined => {
+      // Prefer core helper, but be resilient if it throws or returns empty
+      try {
+        const h = extractHostname(remoteUrl);
+        if (h) return h;
+      } catch {}
+      try {
+        const u = new URL(remoteUrl);
+        return u.hostname || undefined;
+      } catch {}
+      const m = remoteUrl.match(/^git@([^:]+):/i);
+      return m ? m[1] : undefined;
+    };
+
+    const results: PushFanoutResult["results"] = [];
+
+    for (const remoteUrl of cloneUrls) {
+      const host = getHost(remoteUrl);
+      let provider: string | undefined = undefined;
+
+      try {
+        provider = String(detectVendorFromUrl(remoteUrl) || "");
+      } catch {
+        provider = undefined;
+      }
+
+      // Acquire token per host when possible (best-effort). GRASP/wss remotes may not require tokens.
+      let token: string | undefined = undefined;
+
+      const looksLikeGrasp = provider === "grasp" || /^wss?:\/\//i.test(remoteUrl);
+      if (!looksLikeGrasp) {
+        if (!host) {
+          results.push({
+            remoteUrl,
+            provider,
+            host,
+            success: false,
+            error: new UserActionableError(`Cannot push to remote: unable to determine host for ${remoteUrl}`),
+          });
+          continue;
+        }
+
+        try {
+          token = await tryTokensForHost(tokenList, host, async (t: string) => t);
+        } catch (e) {
+          results.push({
+            remoteUrl,
+            provider,
+            host,
+            success: false,
+            error: e,
+          });
+          continue;
+        }
+      }
+
+      try {
+        const res = await this.workerManager.safePushToRemote({
+          repoId,
+          remoteUrl,
+          branch,
+          token,
+          provider,
+          allowForce,
+          confirmDestructive,
+        });
+
+        results.push({
+          remoteUrl,
+          provider,
+          host,
+          success: !!res?.success,
+          error: res?.success ? undefined : res,
+        });
+      } catch (e) {
+        results.push({
+          remoteUrl,
+          provider,
+          host,
+          success: false,
+          error: e,
+        });
+      }
+    }
+
+    const anySucceeded = results.some((r) => r.success);
+    const allSucceeded = results.every((r) => r.success);
+
+    const failed = results.filter((r) => !r.success);
+
+    if (mode === "all-or-nothing" && failed.length > 0) {
+      const msg =
+        `Push failed for ${failed.length}/${results.length} remotes: ` +
+        failed.map((r) => r.host || r.remoteUrl).join(", ");
+      const err = new UserActionableError(msg);
+      (err as any).details = { branch, results };
+      throw err;
+    }
+
+    if (mode === "best-effort" && !anySucceeded) {
+      const msg =
+        `Push failed for all ${results.length} remotes: ` +
+        failed.map((r) => r.host || r.remoteUrl).join(", ");
+      const err = new RetriableError(msg);
+      (err as any).details = { branch, results };
+      throw err;
+    }
+
+    return {
+      branch,
+      results,
+      anySucceeded,
+      allSucceeded,
+    };
   }
 
   async getHeadCommitId(branchName?: string): Promise<string> {
