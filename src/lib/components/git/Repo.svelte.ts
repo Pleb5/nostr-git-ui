@@ -81,6 +81,10 @@ export class Repo {
   #selectedBranchState: string | undefined = $state(undefined);
   #branchSwitching: boolean = $state(false);
   #refsLoading: boolean = $state(false);
+  // Reactive commits state so UI can respond to branch changes
+  #commitsState: any[] = $state([]);
+  #totalCommitsState: number | undefined = $state(undefined);
+  #hasMoreCommitsState: boolean = $state(false);
   // Optional multi-state/status/comments/labels streams
   #repoStateEventsArr = $state<RepoStateEvent[] | undefined>(undefined);
   #statusEventsArr = $state<StatusEvent[] | undefined>(undefined);
@@ -312,9 +316,39 @@ export class Repo {
     });
 
     repoStateEvent.subscribe((event) => {
+      console.log(`[Repo] repoStateEvent subscription fired:`, event ? `has event with ${event.tags?.length || 0} tags` : 'undefined');
       if (event) {
         this.#repoStateEvent = event; // Set the reactive state
         this.#state = parseRepoStateEvent(event);
+
+        // IMMEDIATELY extract refs from RepoStateEvent for instant UI display
+        // This is synchronous and doesn't require any network/worker calls
+        const parsedState = this.#state;
+        console.log(`[Repo] Parsed state refs:`, parsedState?.refs?.length || 0);
+        if (parsedState?.refs && parsedState.refs.length > 0) {
+          // parsedState.refs has structure: { ref: "refs/heads/master", commit: "abc123", lineage?: string[] }
+          const immediateRefs = parsedState.refs
+            .filter((r: any) => r.ref && r.commit) // Filter out invalid refs
+            .map((r: any) => {
+              // Parse "refs/heads/master" or "refs/tags/v1.0" into name and type
+              const parts = r.ref.split("/");
+              const type = parts[1] === "heads" ? "heads" : parts[1] === "tags" ? "tags" : "heads";
+              const name = parts.slice(2).join("/"); // Handle names with slashes like "feature/foo"
+              return {
+                name,
+                type: type as "heads" | "tags",
+                fullRef: r.ref,
+                commitId: r.commit,
+              };
+            })
+            .filter((r: any) => r.name); // Filter out refs without names
+          // Sort refs: heads first, then tags (with null-safe comparison)
+          this.refs = immediateRefs.sort((a, b) => {
+            if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
+            return (a.name || "").localeCompare(b.name || "");
+          });
+          console.log(`⚡ Instantly loaded ${this.refs.length} refs from RepoStateEvent`);
+        }
 
         // Process the Repository State event in BranchManager (verified against worker when possible)
         if (initialRepoEvent) {
@@ -335,6 +369,26 @@ export class Repo {
     repoStateEvents?.subscribe((events) => {
       this.#repoStateEventsArr = events;
       this.#mergedRefsCache = undefined; // invalidate
+      
+      // IMMEDIATELY extract refs from merged RepoStateEvents for instant UI display
+      if (events && events.length > 0) {
+        const merged = this.mergeRepoStateByMaintainers(events);
+        if (merged.size > 0) {
+          const immediateRefs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> = [];
+          for (const [key, ref] of merged.entries()) {
+            const name = key.split(":")[1];
+            if (name && ref.type) { // Filter out invalid refs
+              immediateRefs.push({ name, type: ref.type, fullRef: ref.fullRef, commitId: ref.commitId });
+            }
+          }
+          // Sort refs: heads first, then tags (with null-safe comparison)
+          this.refs = immediateRefs.sort((a, b) => {
+            if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
+            return (a.name || "").localeCompare(b.name || "");
+          });
+          console.log(`⚡ Instantly loaded ${this.refs.length} refs from merged RepoStateEvents`);
+        }
+      }
     });
     statusEvents?.subscribe((events) => {
       this.#statusEventsArr = events;
@@ -370,21 +424,12 @@ export class Repo {
       }
     });
 
-    // Smart initialization - load refs immediately, then initialize worker in background
+    // Smart initialization - refs are loaded from subscription handlers
+    // Worker initialization happens in background, refs fallback runs after worker is ready
     (async () => {
       try {
-        // Load branches/refs FIRST from state event (fast, no network needed)
-        try {
-          this.#refsLoading = true;
-          await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
-          this.refs = this.branchManager.getAllRefs();
-          console.log(`✅ Loaded ${this.refs.length} refs immediately from state`);
-        } catch (error) {
-          console.error("Failed to load branches from state:", error);
-          this.refs = [];
-        } finally {
-          this.#refsLoading = false;
-        }
+        // Don't block on refs here - let subscriptions populate them
+        // The fallback will run after worker initialization if still needed
 
         // Initialize the WorkerManager (can be slow)
         await this.workerManager.initialize();
@@ -409,16 +454,20 @@ export class Repo {
           }
         } catch {}
 
-        // Load branches/refs using the new unified method
-        try {
-          this.#refsLoading = true;
-          await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
-          this.refs = this.branchManager.getAllRefs();
-        } catch (error) {
-          console.error("Failed to load branches:", error);
-          this.refs = [];
-        } finally {
-          this.#refsLoading = false;
+        // Only reload refs from worker if we still don't have any
+        // (refs should already be loaded from RepoStateEvent subscriptions)
+        if (this.refs.length === 0) {
+          try {
+            this.#refsLoading = true;
+            await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
+            this.refs = this.branchManager.getAllRefs();
+            console.log(`✅ Loaded ${this.refs.length} refs from worker fallback`);
+          } catch (error) {
+            console.error("Failed to load branches:", error);
+            this.refs = [];
+          } finally {
+            this.#refsLoading = false;
+          }
         }
 
         // Ensure background merge analysis runs once worker is ready, if enabled
@@ -839,6 +888,12 @@ export class Repo {
   }
 
   get branches() {
+    // Derive branches from reactive refs for instant UI updates
+    // Filter refs to only include heads (branches), not tags
+    if (this.refs.length > 0) {
+      return this.refs.filter(r => r.type === "heads");
+    }
+    // Fallback to branchManager if refs not yet loaded
     return this.branchManager.getBranches();
   }
 
@@ -861,9 +916,16 @@ export class Repo {
     return Array.from(new Set(combined.filter(Boolean)));
   }
 
-  // Expose currently loaded commits for UI components
+  // Expose currently loaded commits for UI components (reactive)
   get commits(): any[] {
-    return this.commitManager.getCommits();
+    return this.#commitsState;
+  }
+
+  // Sync commits from CommitManager to reactive state
+  private syncCommitsState() {
+    this.#commitsState = this.commitManager.getCommits();
+    this.#totalCommitsState = this.commitManager.getTotalCommits();
+    this.#hasMoreCommitsState = this.commitManager.getHasMoreCommits();
   }
 
   /**
@@ -1062,22 +1124,20 @@ export class Repo {
         }
 
         // 4) Load commits for new branch
-        // DON'T reset() - keep old commits visible for instant perceived performance
-        // CommitManager's cache will make this fast for recently visited branches
-        const originalLoadCommits = this.commitManager.loadCommits.bind(this.commitManager);
-        this.commitManager.loadCommits = async () => {
-          return await originalLoadCommits(
-            this.repoId,
-            shortBranch,
-            this.branchManager.getMainBranch()
-          );
-        };
+        // Reset commits first to ensure fresh load for the new branch
+        this.commitManager.reset();
         
-        try {
-          await this.commitManager.loadPage(1); // Reset to page 1 for the new branch
-        } finally {
-          this.commitManager.loadCommits = originalLoadCommits;
-        }
+        // Directly call loadCommits with the correct branch - no monkey-patching needed
+        const mainBranchName = this.branchManager.getMainBranch();
+        console.log(`[setSelectedBranch] Loading commits for branch: ${shortBranch}, mainBranch: ${mainBranchName}`);
+        
+        const result = await this.commitManager.loadCommits(
+          this.repoId,
+          shortBranch,  // The selected branch
+          mainBranchName
+        );
+        console.log(`[setSelectedBranch] Commits loaded:`, result.success, `count:`, this.commitManager.getCommits().length);
+        this.syncCommitsState(); // Sync reactive state after branch switch
         
         // Note: We rely on CommitManager's built-in caching (IndexedDB)
         // which is per-branch, so switching back to a recent branch is instant
@@ -1119,7 +1179,7 @@ export class Repo {
   }
 
   get totalCommits() {
-    return this.commitManager.getTotalCommits();
+    return this.#totalCommitsState;
   }
 
   get currentPage() {
@@ -1136,11 +1196,13 @@ export class Repo {
   }
 
   get hasMoreCommits() {
-    return this.commitManager.getHasMoreCommits();
+    return this.#hasMoreCommitsState;
   }
 
   async loadMoreCommits() {
-    return await this.commitManager.loadMoreCommits();
+    const result = await this.commitManager.loadMoreCommits();
+    this.syncCommitsState();
+    return result;
   }
 
   async loadPage(page: number) {
@@ -1183,6 +1245,7 @@ export class Repo {
 
       try {
         const result = await this.commitManager.loadPage(page);
+        this.syncCommitsState();
         return result;
       } finally {
         // Restore the original method

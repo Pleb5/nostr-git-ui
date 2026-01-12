@@ -2,7 +2,7 @@ import type { CommentEvent, IssueEvent } from "@nostr-git/core/events";
 
 export const FUNCTION_REGISTRY = Symbol("ui-function-registry");
 
-export type ThunkFunction<T> = (event: T) => { controller: AbortController };
+export type ThunkFunction<T> = (event: T) => { controller: AbortController; complete?: Promise<any> };
 
 export type FunctionRegistry = {
   // Functions for profiles

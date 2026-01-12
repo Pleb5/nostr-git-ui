@@ -8,6 +8,10 @@ import {
   createUnknownError,
   wrapError,
   FatalError,
+  RetriableError,
+  UserActionableError,
+  GitErrorCode,
+  GitErrorCategory,
 } from "@nostr-git/core/errors";
 
 // Worker URL/factory must be injected by the consuming app (not imported here)
@@ -47,6 +51,57 @@ export interface AuthToken {
 
 export interface AuthConfig {
   tokens: AuthToken[];
+}
+
+/**
+ * Structured error response from the worker.
+ * When success is false, the worker now returns code, category, and hint.
+ */
+interface WorkerErrorResponse {
+  success: false;
+  error: string;
+  code?: GitErrorCode;
+  category?: GitErrorCategory;
+  hint?: string;
+  context?: Record<string, any>;
+}
+
+/**
+ * Create a typed error from a structured worker error response.
+ */
+function createErrorFromWorkerResponse(response: WorkerErrorResponse): Error {
+  const { error, code, category, hint, context } = response;
+  
+  // If we have structured error info, create the appropriate error type
+  if (code && category) {
+    const options = { hint, context };
+    
+    switch (category) {
+      case GitErrorCategory.USER_ACTIONABLE:
+        return new UserActionableError(error, code, options);
+      case GitErrorCategory.RETRIABLE:
+        return new RetriableError(error, code, options);
+      case GitErrorCategory.FATAL:
+        return new FatalError(error, code, options);
+      default:
+        // Fall through to wrapError
+    }
+  }
+  
+  // Fall back to wrapError for classification
+  return wrapError(new Error(error), context);
+}
+
+/**
+ * Check if a worker result is an error response with structured error info.
+ */
+function isWorkerErrorResponse(result: any): result is WorkerErrorResponse {
+  return (
+    result &&
+    typeof result === "object" &&
+    result.success === false &&
+    typeof result.error === "string"
+  );
 }
 
 /**
@@ -129,7 +184,8 @@ export class WorkerManager {
         console.error("Failed to initialize git worker:", error);
         this.isInitialized = false;
         throw new FatalError(
-          `Worker initialization failed: ${error instanceof Error ? error.message : String(error)}`
+          `Worker initialization failed: ${error instanceof Error ? error.message : String(error)}`,
+          GitErrorCode.UNKNOWN_ERROR
         );
       }
 
@@ -191,7 +247,7 @@ export class WorkerManager {
       const method = (this.api as any)[operation];
 
       if (typeof method !== "function") {
-        throw new FatalError(`Operation '${operation}' is not supported by current worker.${ctx}`);
+        throw new FatalError(`Operation '${operation}' is not supported by current worker.${ctx}`, GitErrorCode.UNKNOWN_ERROR);
       }
 
       // Check if params are actually serializable
@@ -219,6 +275,12 @@ export class WorkerManager {
 
         const resultPromise = method(safeParams);
         const result = await Promise.race([resultPromise, timeoutPromise]);
+        
+        // Check if worker returned a structured error response
+        if (isWorkerErrorResponse(result)) {
+          throw createErrorFromWorkerResponse(result);
+        }
+        
         try {
           return JSON.parse(JSON.stringify(result)) as T;
         } catch {
@@ -227,6 +289,12 @@ export class WorkerManager {
       } else {
         // No timeout - for long-running background operations
         const result = await method(safeParams);
+        
+        // Check if worker returned a structured error response
+        if (isWorkerErrorResponse(result)) {
+          throw createErrorFromWorkerResponse(result);
+        }
+        
         try {
           return JSON.parse(JSON.stringify(result)) as T;
         } catch {
@@ -249,7 +317,7 @@ export class WorkerManager {
 
       // Comlink clone errors / worker capability mismatches should be fatal
       if (msg && msg.includes("Proxy object could not be cloned")) {
-        const ferr = new FatalError(`Worker returned a non-transferable value for '${operation}'.${ctx}`);
+        const ferr = new FatalError(`Worker returned a non-transferable value for '${operation}'.${ctx}`, GitErrorCode.UNKNOWN_ERROR);
         throw withCause(error, ferr);
       }
 
@@ -633,12 +701,13 @@ export class WorkerManager {
   async resetRepoToRemote(repoId: string, branch?: string): Promise<any> {
     await this.initialize();
 
-    const result = await this.execute("resetRepoToRemote", { repoId, branch }, { timeoutMs: 60000 });
+    const result = await this.execute<{ success: boolean; remoteCommit?: string; error?: string; code?: GitErrorCode; category?: GitErrorCategory; hint?: string }>("resetRepoToRemote", { repoId, branch }, { timeoutMs: 60000 });
 
     if (!result?.success) {
-      const err = createUnknownError();
-      err.message = `Reset to remote failed (repoId=${repoId}${branch ? `, branch=${branch}` : ""})`;
-      throw err;
+      if (isWorkerErrorResponse(result)) {
+        throw createErrorFromWorkerResponse(result);
+      }
+      throw createUnknownError(`Reset to remote failed (repoId=${repoId}${branch ? `, branch=${branch}` : ""})`);
     }
 
     console.log(`Repository ${repoId} reset to remote commit ${result.remoteCommit}`);

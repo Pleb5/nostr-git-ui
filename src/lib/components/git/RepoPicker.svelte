@@ -273,10 +273,12 @@
     }
 
     const tags = [["d", GIT_REPO_BOOKMARK_DTAG], ...atagList];
-    await publishBookmarks({ tags, relays }).controller;
+    
+    // Fire and forget - don't await completion as it waits for ALL relays
+    // The bookmark is saved to local store immediately, publish happens in background
+    publishBookmarks({ tags, relays });
 
     submitting = false;
-
     onClose?.();
   };
 

@@ -248,9 +248,11 @@ export class CommitManager {
       const cacheEnabled = !!(this.config.enableCaching && this.cacheManager && this.canonicalKey);
       // Ensure branchName is a concrete string (short git name)
       const branchName = (branch ?? mainBranch).split("/").pop()!;
+      console.log("[CommitManager] branchName resolved to:", branchName, "from branch:", branch, "mainBranch:", mainBranch);
       const pageKey = cacheEnabled
         ? `${this.canonicalKey}:${branchName}:p${this.currentPage}:s${this.commitsPerPage}`
         : undefined;
+      console.log("[CommitManager] pageKey:", pageKey, "cacheEnabled:", cacheEnabled);
       type CommitPageCacheEntry = {
         commits: any[];
         total?: number;
@@ -377,11 +379,11 @@ export class CommitManager {
           totalCount: this.totalCommits,
         };
       } else {
-        const err = createUnknownError();
-        err.message =
+        const message =
           `Failed to load commit history ` +
           `(repoId=${String(effectiveRepoId)}, branch=${String(branchName)}, depth=${String(requiredDepth)}): ` +
           `${String(commitsResult.error || "unknown error")}`;
+        const err = createUnknownError(message);
         throw err;
       }
     } catch (error) {
