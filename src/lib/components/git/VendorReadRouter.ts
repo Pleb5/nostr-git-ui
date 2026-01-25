@@ -8,6 +8,11 @@ import {
   wrapError,
 } from "@nostr-git/core/errors";
 import { detectVendorFromUrl } from "@nostr-git/core/git";
+import {
+  withUrlFallback,
+  filterValidCloneUrls,
+  type ReadFallbackResult,
+} from "@nostr-git/core/utils";
 
 import type { Token } from "$lib/stores/tokens";
 import { tryTokensForHost, getTokensForHost } from "$lib/utils/tokenHelpers";
@@ -101,84 +106,73 @@ export class VendorReadRouter {
   }): Promise<VendorDirectoryResult> {
     const path = params.path || "";
     const branch = params.branch || "";
-    const remote = this.pickRemote(params.cloneUrls);
+    const remotes = this.getValidRemotes(params.cloneUrls);
 
-    // 1) Vendor-first if possible
-    if (this.preferVendorReads && remote) {
-      const vendor = this.getSupportedVendor(remote);
-      if (vendor) {
-        try {
-          const vendorResult = await this.vendorListDirectory({
-            vendor,
-            remoteUrl: remote,
-            branch,
-            path,
-          });
-          return { ...vendorResult, fromVendor: true };
-        } catch (vendorErr) {
-          // vendor failed -> fall back to git worker
-          try {
-            const filesRaw = await params.workerManager.listRepoFilesFromEvent({
-              repoEvent: params.repoEvent,
-              repoKey: params.repoKey,
+    // 1) Vendor-first with URL fallback - try each supported vendor URL in order
+    if (this.preferVendorReads && remotes.length > 0) {
+      // Filter to only URLs with supported vendors
+      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+
+      if (vendorUrls.length > 0) {
+        // Try each vendor URL with fallback
+        const vendorResult = await withUrlFallback(
+          vendorUrls,
+          async (remoteUrl: string) => {
+            const vendor = this.getSupportedVendor(remoteUrl)!;
+            return await this.vendorListDirectory({
+              vendor,
+              remoteUrl,
               branch,
               path,
             });
+          },
+          { repoId: params.repoKey }
+        );
 
-            const files: VendorFileInfo[] = (filesRaw || []).map((f: any) => ({
-              path: f.path || f.name || "",
-              type:
-                f.type === "dir" || f.type === "tree" || f.type === "directory"
-                  ? "directory"
-                  : "file",
-              size: f.size,
-              mode: f.mode,
-              oid: f.oid || f.sha,
-            }));
+        if (vendorResult.success && vendorResult.result) {
+          return { ...vendorResult.result, fromVendor: true };
+        }
 
-            return {
-              files,
-              path,
-              ref: (branch || "").split("/").pop() || "",
-              fromVendor: false,
-            };
-          } catch (workerErr) {
-            // preserve vendor failure context as cause when worker also fails
-            try {
-              throw (wrapError as any)(vendorErr, workerErr);
-            } catch {
-              const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
-              (err as any).cause = vendorErr;
-              throw err;
-            }
+        // All vendor URLs failed, fall back to git worker
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listDirectory, falling back to git worker`
+        );
+        for (const attempt of vendorResult.attempts) {
+          if (!attempt.success) {
+            console.warn(`  - ${attempt.url}: ${attempt.error}`);
           }
         }
       }
     }
 
     // 2) Git worker fallback
-    const filesRaw = await params.workerManager.listRepoFilesFromEvent({
-      repoEvent: params.repoEvent,
-      repoKey: params.repoKey,
-      branch,
-      path,
-    });
+    try {
+      const filesRaw = await params.workerManager.listRepoFilesFromEvent({
+        repoEvent: params.repoEvent,
+        repoKey: params.repoKey,
+        branch,
+        path,
+      });
 
-    const files: VendorFileInfo[] = (filesRaw || []).map((f: any) => ({
-      path: f.path || f.name || "",
-      type:
-        f.type === "dir" || f.type === "tree" || f.type === "directory" ? "directory" : "file",
-      size: f.size,
-      mode: f.mode,
-      oid: f.oid || f.sha,
-    }));
+      const files: VendorFileInfo[] = (filesRaw || []).map((f: any) => ({
+        path: f.path || f.name || "",
+        type:
+          f.type === "dir" || f.type === "tree" || f.type === "directory" ? "directory" : "file",
+        size: f.size,
+        mode: f.mode,
+        oid: f.oid || f.sha,
+      }));
 
-    return {
-      files,
-      path,
-      ref: (branch || "").split("/").pop() || "",
-      fromVendor: false,
-    };
+      return {
+        files,
+        path,
+        ref: (branch || "").split("/").pop() || "",
+        fromVendor: false,
+      };
+    } catch (workerErr) {
+      const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
+      throw err;
+    }
   }
 
   async getFileContent(params: {
@@ -190,73 +184,64 @@ export class VendorReadRouter {
     path: string;
   }): Promise<VendorFileContentResult> {
     const branch = params.branch || "";
-    const remote = this.pickRemote(params.cloneUrls);
-    const ctx = this.ctx({ op: "getFileContent", remote, branch, path: params.path });
+    const remotes = this.getValidRemotes(params.cloneUrls);
+    const ctx = this.ctx({ op: "getFileContent", remote: remotes[0], branch, path: params.path });
 
-    // 1) Vendor-first if possible
-    if (this.preferVendorReads && remote) {
-      const vendor = this.getSupportedVendor(remote);
-      if (vendor) {
-        try {
-          const vendorResult = await this.vendorGetFileContent({
-            vendor,
-            remoteUrl: remote,
-            branch,
-            path: params.path,
-          });
-          return { ...vendorResult, fromVendor: true };
-        } catch (vendorErr) {
-          // vendor failed -> fall back to git worker
-          try {
-            const contentRaw = await params.workerManager.getRepoFileContentFromEvent({
-              repoEvent: params.repoEvent,
-              repoKey: params.repoKey,
+    // 1) Vendor-first with URL fallback - try each supported vendor URL in order
+    if (this.preferVendorReads && remotes.length > 0) {
+      // Filter to only URLs with supported vendors
+      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+
+      if (vendorUrls.length > 0) {
+        // Try each vendor URL with fallback
+        const vendorResult = await withUrlFallback(
+          vendorUrls,
+          async (remoteUrl: string) => {
+            const vendor = this.getSupportedVendor(remoteUrl)!;
+            return await this.vendorGetFileContent({
+              vendor,
+              remoteUrl,
               branch,
               path: params.path,
             });
+          },
+          { repoId: params.repoKey }
+        );
 
-            const content = typeof contentRaw === "string" ? contentRaw : String(contentRaw ?? "");
-
-            return {
-              content,
-              path: params.path,
-              ref: (branch || "").split("/").pop() || "",
-              encoding: "utf-8",
-              size: content.length,
-              fromVendor: false,
-            };
-          } catch (workerErr) {
-            // preserve vendor failure context as cause when worker also fails
-            try {
-              throw (wrapError as any)(vendorErr, workerErr);
-            } catch {
-              const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
-              (err as any).cause = vendorErr;
-              err.message = `${err.message}${ctx}`;
-              throw err;
-            }
-          }
+        if (vendorResult.success && vendorResult.result) {
+          return { ...vendorResult.result, fromVendor: true };
         }
+
+        // All vendor URLs failed, fall back to git worker
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for getFileContent, falling back to git worker`
+        );
       }
     }
 
     // 2) Git worker fallback
-    const contentRaw = await params.workerManager.getRepoFileContentFromEvent({
-      repoEvent: params.repoEvent,
-      repoKey: params.repoKey,
-      branch,
-      path: params.path,
-    });
-    const content = typeof contentRaw === "string" ? contentRaw : String(contentRaw ?? "");
+    try {
+      const contentRaw = await params.workerManager.getRepoFileContentFromEvent({
+        repoEvent: params.repoEvent,
+        repoKey: params.repoKey,
+        branch,
+        path: params.path,
+      });
+      const content = typeof contentRaw === "string" ? contentRaw : String(contentRaw ?? "");
 
-    return {
-      content,
-      path: params.path,
-      ref: (branch || "").split("/").pop() || "",
-      encoding: "utf-8",
-      size: content.length,
-      fromVendor: false,
-    };
+      return {
+        content,
+        path: params.path,
+        ref: (branch || "").split("/").pop() || "",
+        encoding: "utf-8",
+        size: content.length,
+        fromVendor: false,
+      };
+    } catch (workerErr) {
+      const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
+      err.message = `${err.message}${ctx}`;
+      throw err;
+    }
   }
 
   async listRefs(params: {
@@ -264,43 +249,28 @@ export class VendorReadRouter {
     repoEvent: RepoAnnouncementEvent;
     cloneUrls: string[];
   }): Promise<{ refs: VendorRef[]; fromVendor: boolean }> {
-    const remote = this.pickRemote(params.cloneUrls);
+    const remotes = this.getValidRemotes(params.cloneUrls);
 
-    // 1) Vendor-first if possible
-    if (this.preferVendorReads && remote) {
-      const vendor = this.getSupportedVendor(remote);
-      if (vendor) {
-        try {
-          const refs = await this.vendorListRefs({ vendor, remoteUrl: remote });
-          return { refs, fromVendor: true };
-        } catch (vendorErr) {
-          // vendor failed -> fall back to git worker
-          try {
-            const branches = await params.workerManager.listBranchesFromEvent({
-              repoEvent: params.repoEvent,
-            });
+    // 1) Vendor-first with URL fallback
+    if (this.preferVendorReads && remotes.length > 0) {
+      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
 
-            const refs: VendorRef[] = (branches || []).map((b: any) => {
-              const name = typeof b === "string" ? b : String(b?.name ?? "");
-              return {
-                name,
-                type: "heads",
-                fullRef: `refs/heads/${name}`,
-                commitId: String((b as any)?.commitId ?? (b as any)?.oid ?? ""),
-              };
-            });
-
-            return { refs, fromVendor: false };
-          } catch (workerErr) {
-            try {
-              throw (wrapError as any)(vendorErr, workerErr);
-            } catch {
-              const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
-              (err as any).cause = vendorErr;
-              throw err;
-            }
+      if (vendorUrls.length > 0) {
+        const vendorResult = await withUrlFallback(
+          vendorUrls,
+          async (remoteUrl: string) => {
+            const vendor = this.getSupportedVendor(remoteUrl)!;
+            return await this.vendorListRefs({ vendor, remoteUrl });
           }
+        );
+
+        if (vendorResult.success && vendorResult.result) {
+          return { refs: vendorResult.result, fromVendor: true };
         }
+
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listRefs, falling back to git worker`
+        );
       }
     }
 
@@ -337,70 +307,38 @@ export class VendorReadRouter {
     perPage?: number;
   }): Promise<VendorCommitResult> {
     const branch = params.branch || "main";
-    const remote = this.pickRemote(params.cloneUrls);
+    const remotes = this.getValidRemotes(params.cloneUrls);
     const depth = params.depth || 30;
     const page = params.page || 1;
     const perPage = params.perPage || 30;
 
-    // 1) Vendor-first if possible
-    if (this.preferVendorReads && remote) {
-      const vendor = this.getSupportedVendor(remote);
-      if (vendor) {
-        try {
-          const vendorResult = await this.vendorListCommits({
-            vendor,
-            remoteUrl: remote,
-            branch,
-            page,
-            perPage,
-          });
-          return { ...vendorResult, fromVendor: true };
-        } catch (vendorErr) {
-          // vendor failed -> fall back to git worker
-          try {
-            const commitsResult = await params.workerManager.getCommitHistory({
-              repoId: params.repoKey || "",
+    // 1) Vendor-first with URL fallback
+    if (this.preferVendorReads && remotes.length > 0) {
+      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+
+      if (vendorUrls.length > 0) {
+        const vendorResult = await withUrlFallback(
+          vendorUrls,
+          async (remoteUrl: string) => {
+            const vendor = this.getSupportedVendor(remoteUrl)!;
+            return await this.vendorListCommits({
+              vendor,
+              remoteUrl,
               branch,
-              depth,
+              page,
+              perPage,
             });
+          },
+          { repoId: params.repoKey }
+        );
 
-            const commits: VendorCommit[] = (commitsResult.commits || []).map((c: any) => ({
-              sha: c.oid || c.sha || "",
-              message: c.commit?.message || c.message || "",
-              author: {
-                name: c.commit?.author?.name || c.author?.name || "",
-                email: c.commit?.author?.email || c.author?.email || "",
-                date: c.commit?.author?.timestamp
-                  ? new Date(c.commit.author.timestamp * 1000).toISOString()
-                  : c.author?.date || "",
-              },
-              committer: {
-                name: c.commit?.committer?.name || c.committer?.name || "",
-                email: c.commit?.committer?.email || c.committer?.email || "",
-                date: c.commit?.committer?.timestamp
-                  ? new Date(c.commit.committer.timestamp * 1000).toISOString()
-                  : c.committer?.date || "",
-              },
-              parents: (c.commit?.parent || c.parents || []).map((p: any) =>
-                typeof p === "string" ? { sha: p } : { sha: p.sha || p.oid || "" }
-              ),
-            }));
-
-            return {
-              commits,
-              ref: branch.split("/").pop() || "",
-              fromVendor: false,
-            };
-          } catch (workerErr) {
-            try {
-              throw (wrapError as any)(vendorErr, workerErr);
-            } catch {
-              const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
-              (err as any).cause = vendorErr;
-              throw err;
-            }
-          }
+        if (vendorResult.success && vendorResult.result) {
+          return { ...vendorResult.result, fromVendor: true };
         }
+
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listCommits, falling back to git worker`
+        );
       }
     }
 
@@ -1236,17 +1174,19 @@ export class VendorReadRouter {
   // Fetch helpers + normalization
   // -------------------------
 
+  /**
+   * Get the first valid remote URL (for backward compatibility)
+   */
   private pickRemote(cloneUrls: string[]): string | null {
-    const urls = Array.isArray(cloneUrls) ? cloneUrls : [];
-    for (const u of urls) {
-      const s = String(u || "").trim();
-      if (!s) continue;
-      // Skip nostr/grasp-like pseudo URLs
-      if (s.startsWith("nostr://") || s.startsWith("nostr:")) continue;
-      // Prefer https URLs; allow ssh-looking but we can still parse host/owner/repo and build API URLs for known providers
-      return s;
-    }
-    return null;
+    const validUrls = this.getValidRemotes(cloneUrls);
+    return validUrls.length > 0 ? validUrls[0] : null;
+  }
+
+  /**
+   * Get all valid remote URLs for fallback attempts
+   */
+  private getValidRemotes(cloneUrls: string[]): string[] {
+    return filterValidCloneUrls(cloneUrls);
   }
 
   private ctx(parts: { op: string; remote?: string | null; branch?: string; path?: string }): string {
