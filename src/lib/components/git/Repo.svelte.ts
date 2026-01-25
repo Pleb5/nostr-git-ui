@@ -1262,22 +1262,21 @@ export class Repo {
         return { success: false, error: "Repository event, main branch, and repository ID are required" };
       }
 
-      // Get the branch from CommitManager's stored state (set during setSelectedBranch)
-      // This ensures loadPage uses the same branch that was set during branch switch
-      const storedBranch = this.commitManager.getCurrentBranch();
-      const branchToLoad = storedBranch || this.selectedBranch || effectiveMainBranch;
-
-      console.log(`[Repo.loadPage] page=${page}, storedBranch=${storedBranch}, selectedBranch=${this.selectedBranch}, branchToLoad=${branchToLoad}, effectiveMainBranch=${effectiveMainBranch}`);
-
       // Use the CommitManager's loadPage method which sets the page and calls loadCommits
       const originalLoadCommits = this.commitManager.loadCommits.bind(this.commitManager);
 
       // Temporarily override loadCommits to provide the required parameters
+      // IMPORTANT: Read the current branch at CALL TIME, not at closure creation time
+      // This fixes the stale closure bug where branch selection changes between
+      // when loadPage() is called and when loadCommits() is actually invoked
       this.commitManager.loadCommits = async () => {
-        console.log(`[Repo.loadPage] monkey-patched loadCommits called with branch=${branchToLoad}`);
+        // Get the branch fresh at call time to avoid stale closure capture
+        const storedBranch = this.commitManager.getCurrentBranch();
+        const currentBranchToLoad = storedBranch || this.selectedBranch || effectiveMainBranch;
+        console.log(`[Repo.loadPage] monkey-patched loadCommits called with branch=${currentBranchToLoad} (storedBranch=${storedBranch}, selectedBranch=${this.selectedBranch})`);
         return await originalLoadCommits(
           effectiveRepoId!, // Use the effective repository ID
-          branchToLoad, // Use selected branch if available, fallback to main
+          currentBranchToLoad, // Use current branch at call time, not stale captured value
           effectiveMainBranch!
         );
       };
