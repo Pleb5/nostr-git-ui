@@ -70,7 +70,7 @@ export interface ProcessedBranch extends Branch {
 export class BranchManager {
   private workerManager: WorkerManager;
   private cacheManager?: CacheManager;
-  private config: Required<BranchManagerConfig>;
+  private config: Required<Omit<BranchManagerConfig, 'vendorReadRouter'>> & Pick<BranchManagerConfig, 'vendorReadRouter'>;
 
   // Branch state
   private branches: ProcessedBranch[] = [];
@@ -448,6 +448,14 @@ export class BranchManager {
    */
   isLoading(): boolean {
     return this.loadingIds.branches !== null;
+  }
+
+  /**
+   * Set the repository event snapshot for vendor API fallback
+   * Call this before loadAllRefs when no RepoStateEvent is available
+   */
+  setRepoEvent(repoEvent: RepoAnnouncementEvent): void {
+    this.repoEventSnapshot = repoEvent;
   }
 
   /**

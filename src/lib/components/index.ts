@@ -29,6 +29,16 @@ export { default as StackedDiff } from "./git/StackedDiff.svelte";
 export { default as ForkRepoDialog } from "./git/ForkRepoDialog.svelte";
 export { Repo } from "./git/Repo.svelte";
 export { WorkerManager } from "./git/WorkerManager";
+export {
+  VendorReadRouter,
+  type VendorReadRouterConfig,
+  type VendorRef,
+  type VendorFileInfo,
+  type VendorDirectoryResult,
+  type VendorFileContentResult,
+  type VendorCommit,
+  type VendorCommitResult,
+} from "./git/VendorReadRouter";
 export { default as RepoPatchStatus } from "./git/RepoPatchStatus.svelte";
 export { default as BranchSelector } from "./git/BranchSelector.svelte";
 export { default as RepoAlertBadge } from "./git/RepoAlertBadge.svelte";

@@ -49,7 +49,33 @@ export interface VendorFileContentResult {
   fromVendor: boolean;
 }
 
-type SupportedVendor = "github" | "gitlab" | "gitea";
+/**
+ * Commit information from vendor REST APIs
+ */
+export interface VendorCommit {
+  sha: string;
+  message: string;
+  author: {
+    name: string;
+    email: string;
+    date: string;
+  };
+  committer: {
+    name: string;
+    email: string;
+    date: string;
+  };
+  parents: Array<{ sha: string }>;
+}
+
+export interface VendorCommitResult {
+  commits: VendorCommit[];
+  ref: string;
+  fromVendor: boolean;
+  hasMore?: boolean;
+}
+
+type SupportedVendor = "github" | "gitlab" | "gitea" | "bitbucket";
 
 /**
  * VendorReadRouter performs vendor API reads first (when supported) and falls back to worker git RPC.
@@ -296,6 +322,124 @@ export class VendorReadRouter {
     return { refs, fromVendor: false };
   }
 
+  /**
+   * List commits from a branch using vendor REST API first, then fall back to git worker.
+   * This is the main entry point for commit history that prefers REST API for performance.
+   */
+  async listCommits(params: {
+    workerManager: WorkerManager;
+    repoEvent: RepoAnnouncementEvent;
+    repoKey?: string;
+    cloneUrls: string[];
+    branch: string;
+    depth?: number;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    const branch = params.branch || "main";
+    const remote = this.pickRemote(params.cloneUrls);
+    const depth = params.depth || 30;
+    const page = params.page || 1;
+    const perPage = params.perPage || 30;
+
+    // 1) Vendor-first if possible
+    if (this.preferVendorReads && remote) {
+      const vendor = this.getSupportedVendor(remote);
+      if (vendor) {
+        try {
+          const vendorResult = await this.vendorListCommits({
+            vendor,
+            remoteUrl: remote,
+            branch,
+            page,
+            perPage,
+          });
+          return { ...vendorResult, fromVendor: true };
+        } catch (vendorErr) {
+          // vendor failed -> fall back to git worker
+          try {
+            const commitsResult = await params.workerManager.getCommitHistory({
+              repoId: params.repoKey || "",
+              branch,
+              depth,
+            });
+
+            const commits: VendorCommit[] = (commitsResult.commits || []).map((c: any) => ({
+              sha: c.oid || c.sha || "",
+              message: c.commit?.message || c.message || "",
+              author: {
+                name: c.commit?.author?.name || c.author?.name || "",
+                email: c.commit?.author?.email || c.author?.email || "",
+                date: c.commit?.author?.timestamp
+                  ? new Date(c.commit.author.timestamp * 1000).toISOString()
+                  : c.author?.date || "",
+              },
+              committer: {
+                name: c.commit?.committer?.name || c.committer?.name || "",
+                email: c.commit?.committer?.email || c.committer?.email || "",
+                date: c.commit?.committer?.timestamp
+                  ? new Date(c.commit.committer.timestamp * 1000).toISOString()
+                  : c.committer?.date || "",
+              },
+              parents: (c.commit?.parent || c.parents || []).map((p: any) =>
+                typeof p === "string" ? { sha: p } : { sha: p.sha || p.oid || "" }
+              ),
+            }));
+
+            return {
+              commits,
+              ref: branch.split("/").pop() || "",
+              fromVendor: false,
+            };
+          } catch (workerErr) {
+            try {
+              throw (wrapError as any)(vendorErr, workerErr);
+            } catch {
+              const err = workerErr instanceof Error ? workerErr : new Error(String(workerErr));
+              (err as any).cause = vendorErr;
+              throw err;
+            }
+          }
+        }
+      }
+    }
+
+    // 2) Git worker fallback
+    const commitsResult = await params.workerManager.getCommitHistory({
+      repoId: params.repoKey || "",
+      branch,
+      depth,
+    });
+
+    const commits: VendorCommit[] = (commitsResult.commits || []).map((c: any) => ({
+      sha: c.oid || c.sha || "",
+      message: c.commit?.message || c.message || "",
+      author: {
+        name: c.commit?.author?.name || c.author?.name || "",
+        email: c.commit?.author?.email || c.author?.email || "",
+        date: c.commit?.author?.timestamp
+          ? new Date(c.commit.author.timestamp * 1000).toISOString()
+          : c.author?.date || "",
+      },
+      committer: {
+        name: c.commit?.committer?.name || c.committer?.name || "",
+        email: c.commit?.committer?.email || c.committer?.email || "",
+        date: c.commit?.committer?.timestamp
+          ? new Date(c.commit.committer.timestamp * 1000).toISOString()
+          : c.committer?.date || "",
+      },
+      parents: (c.commit?.parent || c.parents || []).map((p: any) =>
+        typeof p === "string" ? { sha: p } : { sha: p.sha || p.oid || "" }
+      ),
+    }));
+
+    return {
+      commits,
+      ref: branch.split("/").pop() || "",
+      fromVendor: false,
+    };
+  }
+
   // -------------------------
   // Vendor implementations
   // -------------------------
@@ -306,6 +450,7 @@ export class VendorReadRouter {
       if (v === "github") return "github";
       if (v === "gitlab") return "gitlab";
       if (v === "gitea") return "gitea";
+      if (v === "bitbucket") return "bitbucket";
       return null;
     } catch {
       return null;
@@ -318,12 +463,15 @@ export class VendorReadRouter {
     branch: string;
     path: string;
   }): Promise<VendorDirectoryResult> {
-    switch (params.vendor) {
+    const { vendor, remoteUrl, branch, path } = params;
+    switch (vendor) {
       case "github":
       case "gitea":
-        return this.vendorListDirectoryGitHubLike(params);
+        return this.vendorListDirectoryGitHubLike({ vendor, remoteUrl, branch, path });
       case "gitlab":
-        return this.vendorListDirectoryGitLab(params);
+        return this.vendorListDirectoryGitLab({ vendor, remoteUrl, branch, path });
+      case "bitbucket":
+        return this.vendorListDirectoryBitbucket({ vendor, remoteUrl, branch, path });
     }
   }
 
@@ -333,12 +481,15 @@ export class VendorReadRouter {
     branch: string;
     path: string;
   }): Promise<VendorFileContentResult> {
-    switch (params.vendor) {
+    const { vendor, remoteUrl, branch, path } = params;
+    switch (vendor) {
       case "github":
       case "gitea":
-        return this.vendorGetFileContentGitHubLike(params);
+        return this.vendorGetFileContentGitHubLike({ vendor, remoteUrl, branch, path });
       case "gitlab":
-        return this.vendorGetFileContentGitLab(params);
+        return this.vendorGetFileContentGitLab({ vendor, remoteUrl, branch, path });
+      case "bitbucket":
+        return this.vendorGetFileContentBitbucket({ vendor, remoteUrl, branch, path });
     }
   }
 
@@ -350,6 +501,27 @@ export class VendorReadRouter {
         return this.vendorListRefsGitea(params.remoteUrl);
       case "gitlab":
         return this.vendorListRefsGitLab(params.remoteUrl);
+      case "bitbucket":
+        return this.vendorListRefsBitbucket(params.remoteUrl);
+    }
+  }
+
+  private async vendorListCommits(params: {
+    vendor: SupportedVendor;
+    remoteUrl: string;
+    branch: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    switch (params.vendor) {
+      case "github":
+        return this.vendorListCommitsGitHub(params);
+      case "gitea":
+        return this.vendorListCommitsGitea(params);
+      case "gitlab":
+        return this.vendorListCommitsGitLab(params);
+      case "bitbucket":
+        return this.vendorListCommitsBitbucket(params);
     }
   }
 
@@ -452,16 +624,12 @@ export class VendorReadRouter {
     });
 
     if (!json || typeof json !== "object") {
-      const err = createUnknownError();
-      err.message = `Unexpected vendor file response.${ctx}`;
-      throw err;
+      throw createUnknownError(`Unexpected vendor file response.${ctx}`);
     }
 
     const obj: any = json;
     if (obj.type && obj.type !== "file") {
-      const ferr = createFsError();
-      ferr.message = `Expected a file but got type='${String(obj.type)}'.${ctx}`;
-      throw ferr;
+      throw createFsError(`Expected a file but got type='${String(obj.type)}'.${ctx}`);
     }
 
     const encoding = String(obj.encoding || "");
@@ -491,9 +659,7 @@ export class VendorReadRouter {
       };
     }
 
-    const err = createUnknownError();
-    err.message = `Vendor did not return file content.${ctx}`;
-    throw err;
+    throw createUnknownError(`Vendor did not return file content.${ctx}`);
   }
 
   private async vendorListRefsGitHub(remoteUrl: string): Promise<VendorRef[]> {
@@ -604,9 +770,7 @@ export class VendorReadRouter {
     });
 
     if (!Array.isArray(json)) {
-      const err = createUnknownError();
-      err.message = `Unexpected GitLab tree response.${ctx}`;
-      throw err;
+      throw createUnknownError(`Unexpected GitLab tree response.${ctx}`);
     }
 
     const files: VendorFileInfo[] = json.map((item: any) => ({
@@ -705,6 +869,370 @@ export class VendorReadRouter {
   }
 
   // -------------------------
+  // Bitbucket vendor support
+  // -------------------------
+
+  private async vendorListDirectoryBitbucket(params: {
+    vendor: "bitbucket";
+    remoteUrl: string;
+    branch: string;
+    path: string;
+  }): Promise<VendorDirectoryResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("bitbucket", host);
+    const cleanPath = this.normalizeRepoPath(params.path);
+
+    // Bitbucket uses /src/{commit}/{path} for directory listing
+    const url = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/src/${encodeURIComponent(params.branch)}/${cleanPath ? encodeURIComponent(cleanPath) : ""}?pagelen=100`;
+
+    const ctx = this.ctx({
+      op: "listDirectory",
+      remote: params.remoteUrl,
+      branch: params.branch,
+      path: params.path,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "bitbucket",
+      ctx,
+    });
+
+    if (!json || typeof json !== "object") {
+      throw createUnknownError(`Unexpected Bitbucket directory response.${ctx}`);
+    }
+
+    const values = (json as any).values || [];
+    const files: VendorFileInfo[] = values.map((item: any) => ({
+      path: item.path || "",
+      type: item.type === "commit_directory" ? "directory" : "file",
+      size: item.size,
+      oid: item.commit?.hash,
+    }));
+
+    return {
+      files,
+      path: params.path || "/",
+      ref: (params.branch || "").split("/").pop() || "",
+      fromVendor: true,
+    };
+  }
+
+  private async vendorGetFileContentBitbucket(params: {
+    vendor: "bitbucket";
+    remoteUrl: string;
+    branch: string;
+    path: string;
+  }): Promise<VendorFileContentResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("bitbucket", host);
+    const filePath = this.normalizeRepoPath(params.path);
+
+    // Bitbucket returns raw file content from /src endpoint
+    const url = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/src/${encodeURIComponent(params.branch)}/${encodeURIComponent(filePath)}`;
+
+    const ctx = this.ctx({
+      op: "getFileContent",
+      remote: params.remoteUrl,
+      branch: params.branch,
+      path: params.path,
+    });
+
+    const content = await this.fetchTextWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "bitbucket",
+      ctx,
+    });
+
+    return {
+      content,
+      path: params.path,
+      ref: (params.branch || "").split("/").pop() || "",
+      encoding: "utf-8",
+      size: content.length,
+      fromVendor: true,
+    };
+  }
+
+  private async vendorListRefsBitbucket(remoteUrl: string): Promise<VendorRef[]> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
+    const apiBase = this.getApiBase("bitbucket", host);
+    const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
+
+    const branchesUrl = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/refs/branches?pagelen=100`;
+    const tagsUrl = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/refs/tags?pagelen=100`;
+
+    const [branchesJson, tagsJson] = await Promise.all([
+      this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "bitbucket", ctx }),
+      this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "bitbucket", ctx }),
+    ]);
+
+    const out: VendorRef[] = [];
+
+    if (branchesJson && Array.isArray((branchesJson as any).values)) {
+      for (const b of (branchesJson as any).values) {
+        const name = String(b?.name || "");
+        const commitId = String(b?.target?.hash || "");
+        if (!name) continue;
+        out.push({ name, type: "heads", fullRef: `refs/heads/${name}`, commitId });
+      }
+    }
+
+    if (tagsJson && Array.isArray((tagsJson as any).values)) {
+      for (const t of (tagsJson as any).values) {
+        const name = String(t?.name || "");
+        const commitId = String(t?.target?.hash || "");
+        if (!name) continue;
+        out.push({ name, type: "tags", fullRef: `refs/tags/${name}`, commitId });
+      }
+    }
+
+    return out;
+  }
+
+  // -------------------------
+  // Commit listing implementations
+  // -------------------------
+
+  private async vendorListCommitsGitHub(params: {
+    remoteUrl: string;
+    branch: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("github", host);
+    const page = params.page || 1;
+    const perPage = params.perPage || 30;
+
+    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/commits?sha=${encodeURIComponent(params.branch)}&page=${page}&per_page=${perPage}`;
+
+    const ctx = this.ctx({
+      op: "listCommits",
+      remote: params.remoteUrl,
+      branch: params.branch,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "github",
+      ctx,
+    });
+
+    if (!Array.isArray(json)) {
+      throw createUnknownError(`Unexpected GitHub commits response.${ctx}`);
+    }
+
+    const commits: VendorCommit[] = json.map((c: any) => ({
+      sha: c.sha || "",
+      message: c.commit?.message || "",
+      author: {
+        name: c.commit?.author?.name || "",
+        email: c.commit?.author?.email || "",
+        date: c.commit?.author?.date || "",
+      },
+      committer: {
+        name: c.commit?.committer?.name || "",
+        email: c.commit?.committer?.email || "",
+        date: c.commit?.committer?.date || "",
+      },
+      parents: (c.parents || []).map((p: any) => ({ sha: p.sha || "" })),
+    }));
+
+    return {
+      commits,
+      ref: params.branch.split("/").pop() || "",
+      fromVendor: true,
+      hasMore: commits.length === perPage,
+    };
+  }
+
+  private async vendorListCommitsGitea(params: {
+    remoteUrl: string;
+    branch: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("gitea", host);
+    const page = params.page || 1;
+    const perPage = params.perPage || 30;
+
+    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/commits?sha=${encodeURIComponent(params.branch)}&page=${page}&limit=${perPage}`;
+
+    const ctx = this.ctx({
+      op: "listCommits",
+      remote: params.remoteUrl,
+      branch: params.branch,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "gitea",
+      ctx,
+    });
+
+    if (!Array.isArray(json)) {
+      throw createUnknownError(`Unexpected Gitea commits response.${ctx}`);
+    }
+
+    const commits: VendorCommit[] = json.map((c: any) => ({
+      sha: c.sha || "",
+      message: c.commit?.message || "",
+      author: {
+        name: c.commit?.author?.name || "",
+        email: c.commit?.author?.email || "",
+        date: c.commit?.author?.date || "",
+      },
+      committer: {
+        name: c.commit?.committer?.name || "",
+        email: c.commit?.committer?.email || "",
+        date: c.commit?.committer?.date || "",
+      },
+      parents: (c.parents || []).map((p: any) => ({ sha: p.sha || "" })),
+    }));
+
+    return {
+      commits,
+      ref: params.branch.split("/").pop() || "",
+      fromVendor: true,
+      hasMore: commits.length === perPage,
+    };
+  }
+
+  private async vendorListCommitsGitLab(params: {
+    remoteUrl: string;
+    branch: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    const parsed = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const host = parsed.host;
+    const projectPath = `${parsed.owner}/${parsed.repo}`;
+    const projectId = encodeURIComponent(projectPath);
+    const apiBase = this.getApiBase("gitlab", host);
+    const page = params.page || 1;
+    const perPage = params.perPage || 30;
+
+    const url = `${apiBase}/projects/${projectId}/repository/commits?ref_name=${encodeURIComponent(
+      params.branch
+    )}&page=${page}&per_page=${perPage}`;
+
+    const ctx = this.ctx({
+      op: "listCommits",
+      remote: params.remoteUrl,
+      branch: params.branch,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "gitlab",
+      ctx,
+    });
+
+    if (!Array.isArray(json)) {
+      throw createUnknownError(`Unexpected GitLab commits response.${ctx}`);
+    }
+
+    const commits: VendorCommit[] = json.map((c: any) => ({
+      sha: c.id || "",
+      message: c.message || "",
+      author: {
+        name: c.author_name || "",
+        email: c.author_email || "",
+        date: c.authored_date || "",
+      },
+      committer: {
+        name: c.committer_name || "",
+        email: c.committer_email || "",
+        date: c.committed_date || "",
+      },
+      parents: (c.parent_ids || []).map((pid: string) => ({ sha: pid })),
+    }));
+
+    return {
+      commits,
+      ref: params.branch.split("/").pop() || "",
+      fromVendor: true,
+      hasMore: commits.length === perPage,
+    };
+  }
+
+  private async vendorListCommitsBitbucket(params: {
+    remoteUrl: string;
+    branch: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("bitbucket", host);
+    const perPage = params.perPage || 30;
+
+    // Bitbucket uses include parameter for branch filtering
+    const url = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/commits?include=${encodeURIComponent(params.branch)}&pagelen=${perPage}`;
+
+    const ctx = this.ctx({
+      op: "listCommits",
+      remote: params.remoteUrl,
+      branch: params.branch,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "bitbucket",
+      ctx,
+    });
+
+    if (!json || typeof json !== "object") {
+      throw createUnknownError(`Unexpected Bitbucket commits response.${ctx}`);
+    }
+
+    const values = (json as any).values || [];
+    const commits: VendorCommit[] = values.map((c: any) => ({
+      sha: c.hash || "",
+      message: c.message || "",
+      author: {
+        name: c.author?.user?.display_name || c.author?.raw?.split("<")[0]?.trim() || "",
+        email: c.author?.user?.email || c.author?.raw?.match(/<(.+)>/)?.[1] || "",
+        date: c.date || "",
+      },
+      committer: {
+        name: c.author?.user?.display_name || c.author?.raw?.split("<")[0]?.trim() || "",
+        email: c.author?.user?.email || c.author?.raw?.match(/<(.+)>/)?.[1] || "",
+        date: c.date || "",
+      },
+      parents: (c.parents || []).map((p: any) => ({ sha: p.hash || "" })),
+    }));
+
+    return {
+      commits,
+      ref: params.branch.split("/").pop() || "",
+      fromVendor: true,
+      hasMore: !!(json as any).next,
+    };
+  }
+
+  // -------------------------
   // Fetch helpers + normalization
   // -------------------------
 
@@ -745,6 +1273,11 @@ export class VendorReadRouter {
     }
     if (vendor === "gitlab") {
       return `https://${h}/api/v4`;
+    }
+    if (vendor === "bitbucket") {
+      // Special-case bitbucket.org to api.bitbucket.org; otherwise assume self-hosted
+      if (h.toLowerCase() === "bitbucket.org") return "https://api.bitbucket.org/2.0";
+      return `https://${h}/api/2.0`;
     }
     // gitea
     return `https://${h}/api/v1`;
@@ -791,9 +1324,7 @@ export class VendorReadRouter {
       return { host: g[1], owner: g[2], repo: g[3] };
     }
 
-    const err = createUnknownError();
-    err.message = `Unable to parse clone URL: ${raw}`;
-    throw err;
+    throw createUnknownError(`Unable to parse clone URL: ${raw}`);
   }
 
   private decodeBase64ToUtf8(base64: string): string {
@@ -806,9 +1337,7 @@ export class VendorReadRouter {
       const buf = (globalThis as any).Buffer.from(b64, "base64");
       binary = buf.toString("binary");
     } else {
-      const err = createUnknownError();
-      err.message = "No base64 decoder available in this environment";
-      throw err;
+      throw createUnknownError("No base64 decoder available in this environment");
     }
 
     const bytes = new Uint8Array(binary.length);
@@ -871,6 +1400,11 @@ export class VendorReadRouter {
       return headers;
     }
 
+    if (vendor === "bitbucket") {
+      headers["Authorization"] = `Bearer ${token}`;
+      return headers;
+    }
+
     return headers;
   }
 
@@ -890,8 +1424,7 @@ export class VendorReadRouter {
     try {
       json = txt ? JSON.parse(txt) : null;
     } catch (e) {
-      const err = createUnknownError();
-      err.message = `Invalid JSON response.${params.ctx}`;
+      const err = createUnknownError(`Invalid JSON response.${params.ctx}`);
       throw (wrapError as any)(e, err);
     }
     return json;
@@ -965,17 +1498,13 @@ export class VendorReadRouter {
       return aerr;
     }
     if (status === 404) {
-      const ferr = createFsError();
-      ferr.message = `Not found (HTTP 404).${ctx}`;
-      return ferr;
+      return createFsError(`Not found (HTTP 404).${ctx}`);
     }
     if (status === 429 || (status >= 500 && status <= 599)) {
       const nerr = createNetworkError();
       nerr.message = `Vendor service error (HTTP ${status}).${ctx}`;
       return nerr;
     }
-    const uerr = createUnknownError();
-    uerr.message = `Vendor request failed (HTTP ${status}).${ctx}`;
-    return uerr;
+    return createUnknownError(`Vendor request failed (HTTP ${status}).${ctx}`);
   }
 }

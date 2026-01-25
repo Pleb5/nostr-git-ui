@@ -105,7 +105,7 @@ export interface FileListingResult {
 export class FileManager {
   private workerManager: WorkerManager;
   private cacheManager?: CacheManager;
-  private config: Required<FileManagerConfig>;
+  private config: Required<Omit<FileManagerConfig, 'vendorReadRouter'>> & Pick<FileManagerConfig, 'vendorReadRouter'>;
   private vendorReadRouter?: VendorReadRouter;
 
   // Cache keys for different types of file operations
@@ -798,7 +798,7 @@ export class FileManager {
    * Get file manager statistics
    */
   getStats(): {
-    config: Required<FileManagerConfig>;
+    config: Required<Omit<FileManagerConfig, 'vendorReadRouter'>> & Pick<FileManagerConfig, 'vendorReadRouter'>;
     cacheEnabled: boolean;
     cacheManager: boolean;
   } {

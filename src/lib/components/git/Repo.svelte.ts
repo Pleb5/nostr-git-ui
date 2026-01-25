@@ -38,6 +38,7 @@ import {
   detectVendorFromUrl,
   extractHostname,
 } from "@nostr-git/core/git";
+import { VendorReadRouter } from "./VendorReadRouter";
 
 
 
@@ -101,6 +102,7 @@ export class Repo {
   commitManager!: CommitManager;
   branchManager!: BranchManager;
   fileManager!: FileManager;
+  vendorReadRouter!: VendorReadRouter;
 
 
   // Private caches used across helpers
@@ -279,19 +281,28 @@ export class Repo {
       enableCaching: true,
     });
 
-    // Initialize BranchManager with dependencies
+    // Initialize VendorReadRouter for API-first reads with git fallback
+    // This enables branch/tag discovery from vendor APIs (GitHub, GitLab, etc.) when no Repo State event is available
+    this.vendorReadRouter = new VendorReadRouter({
+      getTokens: () => tokens.waitForInitialization(),
+      preferVendorReads: true,
+    });
+
+    // Initialize BranchManager with dependencies and vendor router for ref discovery fallback
     this.branchManager = new BranchManager(this.workerManager, this.cacheManager, {
       enableCaching: true,
       autoRefresh: false,
+      vendorReadRouter: this.vendorReadRouter,
     });
 
-    // Initialize FileManager
+    // Initialize FileManager with vendor router for API-first file reads
     this.fileManager = new FileManager(this.workerManager, this.cacheManager, {
       enableCaching: true,
       contentCacheTTL: 10 * 60 * 1000, // 10 minutes
       listingCacheTTL: 5 * 60 * 1000, // 5 minutes
       maxCacheFileSize: 1024 * 1024, // 1MB
       autoCleanup: true,
+      vendorReadRouter: this.vendorReadRouter,
     });
 
     // Store initial repo event for deferred branch loading
@@ -471,9 +482,13 @@ export class Repo {
         if (this.refs.length === 0) {
           try {
             this.#refsLoading = true;
+            // Set repoEvent for vendor API fallback when no RepoStateEvent is available
+            if (this.repoEvent) {
+              this.branchManager.setRepoEvent(this.repoEvent);
+            }
             await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
             this.refs = this.branchManager.getAllRefs();
-            console.log(`✅ Loaded ${this.refs.length} refs from worker fallback`);
+            console.log(`✅ Loaded ${this.refs.length} refs from vendor/git fallback`);
           } catch (error) {
             console.error("Failed to load branches:", error);
             this.refs = [];
@@ -872,6 +887,9 @@ export class Repo {
   }
 
   async #loadBranchesFromRepo(repoEvent: RepoAnnouncementEvent) {
+    // Set repoEvent for vendor API fallback when no RepoStateEvent is available
+    this.branchManager.setRepoEvent(repoEvent);
+
     // Process repository state event for NIP-34 references if available
     if (this.#repoStateEvent) {
       // Prefer verified processing when we have the repoEvent
@@ -980,15 +998,11 @@ export class Repo {
         }
       }
     } else if (!this.#repoStateEvent) {
-      // Load branches from repository if not available and we have a repo event
-      if (this.branchManager && this.branchManager.getBranches().length === 0 && this.repoEvent) {
-        try {
-          await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
-        } catch (error) {
-          console.error("Failed to load branches from git repository:", error);
-          // Continue with empty branches rather than throwing
-        }
-      }
+      // No RepoStateEvent available - discover refs from vendor API or git worker
+      // Note: We don't call loadAllRefs here to avoid infinite recursion.
+      // Instead, we let loadAllRefs call us once via its callback, then it will
+      // attempt vendor/git fallback if we return empty refs.
+      // The branches will be populated by BranchManager.loadAllRefs() when called externally.
     }
 
     // Get NIP-34 references first (preferred)
