@@ -275,17 +275,18 @@ export class Repo {
     // Initialize PatchManager with dependencies
     this.patchManager = new PatchManager(this.workerManager, this.mergeAnalysisCacheManager);
 
-    // Initialize CommitManager with dependencies
-    this.commitManager = new CommitManager(this.workerManager, this.cacheManager, {
-      defaultCommitsPerPage: 30,
-      enableCaching: true,
-    });
-
     // Initialize VendorReadRouter for API-first reads with git fallback
     // This enables branch/tag discovery from vendor APIs (GitHub, GitLab, etc.) when no Repo State event is available
     this.vendorReadRouter = new VendorReadRouter({
       getTokens: () => tokens.waitForInitialization(),
       preferVendorReads: true,
+    });
+
+    // Initialize CommitManager with dependencies and vendor router for API-first commit reads
+    this.commitManager = new CommitManager(this.workerManager, this.cacheManager, {
+      defaultCommitsPerPage: 30,
+      enableCaching: true,
+      vendorReadRouter: this.vendorReadRouter,
     });
 
     // Initialize BranchManager with dependencies and vendor router for ref discovery fallback
@@ -321,6 +322,7 @@ export class Repo {
           canonicalKey: this.key,
           workerRepoId: this.repoEvent!.id,
         });
+        this.commitManager.setRepoEvent(event);
 
         // Invalidate branch cache when repo event changes
         this.invalidateBranchCache();
@@ -1412,10 +1414,56 @@ export class Repo {
 
   async getCommitHistory({ branch, depth }: { branch?: string; depth?: number }) {
     const targetBranch = branch || this.branchManager.getMainBranch();
+    const effectiveDepth = depth ?? this.commitManager.getCommitsPerPage();
+
+    // Try vendor API first if available (API-first, git fallback)
+    if (this.vendorReadRouter && this.repoEvent) {
+      try {
+        const cloneUrls = this.cloneUrls;
+        console.log(`[Repo.getCommitHistory] Trying VendorReadRouter.listCommits for branch=${targetBranch}`);
+
+        const vendorResult = await this.vendorReadRouter.listCommits({
+          workerManager: this.workerManager,
+          repoEvent: this.repoEvent,
+          repoKey: this.key,
+          cloneUrls,
+          branch: targetBranch,
+          depth: effectiveDepth,
+          perPage: effectiveDepth,
+        });
+
+        // Convert vendor result format to internal format
+        const commits = vendorResult.commits.map((c: any) => ({
+          oid: c.sha,
+          commit: {
+            message: c.message,
+            author: {
+              name: c.author.name,
+              email: c.author.email,
+              timestamp: c.author.date ? Math.floor(new Date(c.author.date).getTime() / 1000) : undefined,
+            },
+            committer: {
+              name: c.committer.name,
+              email: c.committer.email,
+              timestamp: c.committer.date ? Math.floor(new Date(c.committer.date).getTime() / 1000) : undefined,
+            },
+            parent: c.parents?.map((p: any) => p.sha) || [],
+          },
+        }));
+
+        console.log(`[Repo.getCommitHistory] VendorReadRouter returned ${commits.length} commits, fromVendor=${vendorResult.fromVendor}`);
+        return { success: true, commits };
+      } catch (vendorError) {
+        console.warn(`[Repo.getCommitHistory] VendorReadRouter.listCommits failed, falling back to git:`, vendorError);
+        // Fall through to git worker below
+      }
+    }
+
+    // Fall back to git worker
     return await this.workerManager.getCommitHistory({
       repoId: this.key,
       branch: targetBranch,
-      depth: depth ?? this.commitManager.getCommitsPerPage(),
+      depth: effectiveDepth,
     });
   }
 
