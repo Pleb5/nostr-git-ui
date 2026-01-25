@@ -772,7 +772,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       repoId: canonicalKey ?? config.name,
       path: result.repoPath,
       branch: config.defaultBranch,
-      initialCommit: result.initialCommit,
+      initialCommit: result.commitSha || result.initialCommit, // Worker returns commitSha
     };
   }
 
