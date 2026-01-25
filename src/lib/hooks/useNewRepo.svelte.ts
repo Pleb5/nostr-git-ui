@@ -166,12 +166,29 @@ export async function checkProviderRepoAvailability(
 
   // Try all tokens until one succeeds
   try {
+    console.log(`[checkProviderRepoAvailability] Trying tokens for ${provider} (host: ${defaultHost})`);
+    console.log(`[checkProviderRepoAvailability] Found ${matchingTokens.length} matching tokens`);
+    matchingTokens.forEach((t, i) => {
+      const tokenPreview = t.token ? `${t.token.substring(0, 4)}...${t.token.substring(t.token.length - 4)}` : 'empty';
+      console.log(`[checkProviderRepoAvailability] Token ${i + 1}: host="${t.host}", token=${tokenPreview}, length=${t.token?.length || 0}`);
+    });
+
     const result = await tryTokensForHost(
       tokens,
       defaultHost,
       async (token: string, host: string) => {
+        const tokenPreview = token ? `${token.substring(0, 4)}...${token.substring(token.length - 4)}` : 'empty';
+        console.log(`[checkProviderRepoAvailability] Attempting with token: ${tokenPreview} for host: ${host}`);
         const api = getGitServiceApi(provider as any, token);
-        const currentUser = await api.getCurrentUser();
+        console.log(`[checkProviderRepoAvailability] Calling getCurrentUser for ${provider}...`);
+        let currentUser;
+        try {
+          currentUser = await api.getCurrentUser();
+          console.log(`[checkProviderRepoAvailability] getCurrentUser succeeded:`, currentUser);
+        } catch (authError: any) {
+          console.error(`[checkProviderRepoAvailability] getCurrentUser failed:`, authError?.message || authError);
+          throw authError;
+        }
         const username = (currentUser as any).login || (currentUser as any).username || "me";
 
         try {
