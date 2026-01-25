@@ -134,6 +134,7 @@ export class CommitManager {
    * Get current commits
    */
   getCommits(): any[] {
+    console.log(`[CommitManager.getCommits] Returning ${this.commits.length} commits, currentBranch=${this.currentBranch}`);
     return this.commits;
   }
 
@@ -357,11 +358,13 @@ export class CommitManager {
       }
 
       // Load commits with the worker's optimized method
+      console.log(`[CommitManager] Calling worker.getCommitHistory with repoId=${effectiveRepoId}, branch=${branchName}, depth=${requiredDepth}`);
       const commitsResult = await this.workerManager.getCommitHistory({
         repoId: effectiveRepoId as string,
         branch: branchName as string,
         depth: requiredDepth as number,
       });
+      console.log(`[CommitManager] Worker returned ${commitsResult.commits?.length || 0} commits, success=${commitsResult.success}`);
 
       if (commitsResult.success) {
         const allCommits = commitsResult.commits || [];

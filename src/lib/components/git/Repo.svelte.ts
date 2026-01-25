@@ -921,12 +921,16 @@ export class Repo {
 
   // Expose currently loaded commits for UI components (reactive)
   get commits(): any[] {
+    console.log(`[Repo.commits getter] Returning ${this.#commitsState?.length || 0} commits`);
     return this.#commitsState;
   }
 
   // Sync commits from CommitManager to reactive state
   private syncCommitsState() {
-    this.#commitsState = this.commitManager.getCommits();
+    const newCommits = this.commitManager.getCommits();
+    const currentBranch = this.commitManager.getCurrentBranch();
+    console.log(`[Repo.syncCommitsState] Syncing ${newCommits.length} commits, currentBranch=${currentBranch}, selectedBranch=${this.selectedBranch}`);
+    this.#commitsState = newCommits;
     this.#totalCommitsState = this.commitManager.getTotalCommits();
     this.#hasMoreCommitsState = this.commitManager.getHasMoreCommits();
   }
@@ -1244,13 +1248,19 @@ export class Repo {
         return { success: false, error: "Repository event, main branch, and repository ID are required" };
       }
 
+      // Get the branch from CommitManager's stored state (set during setSelectedBranch)
+      // This ensures loadPage uses the same branch that was set during branch switch
+      const storedBranch = this.commitManager.getCurrentBranch();
+      const branchToLoad = storedBranch || this.selectedBranch || effectiveMainBranch;
+
+      console.log(`[Repo.loadPage] page=${page}, storedBranch=${storedBranch}, selectedBranch=${this.selectedBranch}, branchToLoad=${branchToLoad}, effectiveMainBranch=${effectiveMainBranch}`);
+
       // Use the CommitManager's loadPage method which sets the page and calls loadCommits
       const originalLoadCommits = this.commitManager.loadCommits.bind(this.commitManager);
-      
-      const branchToLoad = this.selectedBranch || effectiveMainBranch;
 
       // Temporarily override loadCommits to provide the required parameters
       this.commitManager.loadCommits = async () => {
+        console.log(`[Repo.loadPage] monkey-patched loadCommits called with branch=${branchToLoad}`);
         return await originalLoadCommits(
           effectiveRepoId!, // Use the effective repository ID
           branchToLoad, // Use selected branch if available, fallback to main
