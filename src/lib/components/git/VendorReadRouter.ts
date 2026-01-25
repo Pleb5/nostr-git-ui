@@ -111,10 +111,17 @@ export class VendorReadRouter {
     // 1) Vendor-first with URL fallback - try each supported vendor URL in order
     if (this.preferVendorReads && remotes.length > 0) {
       // Filter to only URLs with supported vendors
-      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+      const vendorUrls = remotes.filter((url) => {
+        const vendor = this.getSupportedVendor(url);
+        if (vendor) {
+          console.log(`[VendorReadRouter] Detected vendor: ${vendor} for URL: ${url}`);
+        }
+        return vendor !== null;
+      });
 
       if (vendorUrls.length > 0) {
         // Try each vendor URL with fallback
+        console.log(`[VendorReadRouter] Trying REST API for listDirectory...`);
         const vendorResult = await withUrlFallback(
           vendorUrls,
           async (remoteUrl: string) => {
@@ -130,12 +137,16 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { ...vendorResult.result, fromVendor: true };
         }
 
         // All vendor URLs failed, fall back to git worker
         console.warn(
-          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listDirectory, falling back to git worker`
+          `[VendorReadRouter] REST API failed, falling back to git`
+        );
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listDirectory`
         );
         for (const attempt of vendorResult.attempts) {
           if (!attempt.success) {
@@ -146,6 +157,7 @@ export class VendorReadRouter {
     }
 
     // 2) Git worker fallback
+    console.log(`[VendorReadRouter] Using git worker fallback`);
     try {
       const filesRaw = await params.workerManager.listRepoFilesFromEvent({
         repoEvent: params.repoEvent,
@@ -190,10 +202,17 @@ export class VendorReadRouter {
     // 1) Vendor-first with URL fallback - try each supported vendor URL in order
     if (this.preferVendorReads && remotes.length > 0) {
       // Filter to only URLs with supported vendors
-      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+      const vendorUrls = remotes.filter((url) => {
+        const vendor = this.getSupportedVendor(url);
+        if (vendor) {
+          console.log(`[VendorReadRouter] Detected vendor: ${vendor} for URL: ${url}`);
+        }
+        return vendor !== null;
+      });
 
       if (vendorUrls.length > 0) {
         // Try each vendor URL with fallback
+        console.log(`[VendorReadRouter] Trying REST API for getFileContent...`);
         const vendorResult = await withUrlFallback(
           vendorUrls,
           async (remoteUrl: string) => {
@@ -209,17 +228,22 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { ...vendorResult.result, fromVendor: true };
         }
 
         // All vendor URLs failed, fall back to git worker
         console.warn(
-          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for getFileContent, falling back to git worker`
+          `[VendorReadRouter] REST API failed, falling back to git`
+        );
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for getFileContent`
         );
       }
     }
 
     // 2) Git worker fallback
+    console.log(`[VendorReadRouter] Using git worker fallback`);
     try {
       const contentRaw = await params.workerManager.getRepoFileContentFromEvent({
         repoEvent: params.repoEvent,
@@ -253,9 +277,16 @@ export class VendorReadRouter {
 
     // 1) Vendor-first with URL fallback
     if (this.preferVendorReads && remotes.length > 0) {
-      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+      const vendorUrls = remotes.filter((url) => {
+        const vendor = this.getSupportedVendor(url);
+        if (vendor) {
+          console.log(`[VendorReadRouter] Detected vendor: ${vendor} for URL: ${url}`);
+        }
+        return vendor !== null;
+      });
 
       if (vendorUrls.length > 0) {
+        console.log(`[VendorReadRouter] Trying REST API for listRefs...`);
         const vendorResult = await withUrlFallback(
           vendorUrls,
           async (remoteUrl: string) => {
@@ -265,16 +296,21 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { refs: vendorResult.result, fromVendor: true };
         }
 
         console.warn(
-          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listRefs, falling back to git worker`
+          `[VendorReadRouter] REST API failed, falling back to git`
+        );
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listRefs`
         );
       }
     }
 
     // 2) Git worker fallback
+    console.log(`[VendorReadRouter] Using git worker fallback`);
     const branches = await params.workerManager.listBranchesFromEvent({
       repoEvent: params.repoEvent,
     });
@@ -314,9 +350,16 @@ export class VendorReadRouter {
 
     // 1) Vendor-first with URL fallback
     if (this.preferVendorReads && remotes.length > 0) {
-      const vendorUrls = remotes.filter((url) => this.getSupportedVendor(url) !== null);
+      const vendorUrls = remotes.filter((url) => {
+        const vendor = this.getSupportedVendor(url);
+        if (vendor) {
+          console.log(`[VendorReadRouter] Detected vendor: ${vendor} for URL: ${url}`);
+        }
+        return vendor !== null;
+      });
 
       if (vendorUrls.length > 0) {
+        console.log(`[VendorReadRouter] Trying REST API for listCommits...`);
         const vendorResult = await withUrlFallback(
           vendorUrls,
           async (remoteUrl: string) => {
@@ -333,16 +376,21 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { ...vendorResult.result, fromVendor: true };
         }
 
         console.warn(
-          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listCommits, falling back to git worker`
+          `[VendorReadRouter] REST API failed, falling back to git`
+        );
+        console.warn(
+          `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listCommits`
         );
       }
     }
 
     // 2) Git worker fallback
+    console.log(`[VendorReadRouter] Using git worker fallback`);
     const commitsResult = await params.workerManager.getCommitHistory({
       repoId: params.repoKey || "",
       branch,
