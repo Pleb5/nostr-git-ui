@@ -9,19 +9,19 @@ vi.mock('@nostr-git/core/errors', () => {
     }
   }
 
-  const mk = (name: string) => {
-    const e = new Error('');
+  const mk = (name: string, message: string = '') => {
+    const e = new Error(message);
     (e as any).name = name;
     return e;
   };
 
   return {
     FatalError,
-    createAuthRequiredError: vi.fn(() => mk('UserActionableError')),
-    createNetworkError: vi.fn(() => mk('RetriableError')),
-    createTimeoutError: vi.fn(() => mk('RetriableError')),
-    createFsError: vi.fn(() => mk('FatalError')),
-    createUnknownError: vi.fn(() => mk('RetriableError')),
+    createAuthRequiredError: vi.fn((opts: any) => mk('UserActionableError', typeof opts === 'string' ? opts : opts?.message || 'Auth required')),
+    createNetworkError: vi.fn((opts: any) => mk('RetriableError', typeof opts === 'string' ? opts : opts?.message || 'Network error')),
+    createTimeoutError: vi.fn((opts: any) => mk('RetriableError', typeof opts === 'string' ? opts : opts?.message || 'Timeout')),
+    createFsError: vi.fn((message: string) => mk('FatalError', message)),
+    createUnknownError: vi.fn((message: string) => mk('RetriableError', message)),
     wrapError: vi.fn((cause: any, err: any) => {
       (err as any).cause = cause;
       return err;
@@ -356,17 +356,18 @@ describe('WorkerManager Integration', () => {
   it('should handle worker errors gracefully', async () => {
     const manager = new WorkerManager();
     await manager.initialize();
-    
+
     // Mock error in worker
     const api = manager.apiInstance;
     if (api) {
       api.getStatus = vi.fn().mockRejectedValue(new Error('Worker error'));
     }
-    
+
+    // The error is wrapped by WorkerManager.execute, so we check for the wrapped message
     await expect(
       manager.getStatus({ repoId: 'test:repo' })
-    ).rejects.toThrow('Worker error');
-    
+    ).rejects.toThrow("Worker operation 'getStatus' failed");
+
     manager.dispose();
   });
 });
