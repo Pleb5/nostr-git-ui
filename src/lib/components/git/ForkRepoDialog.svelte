@@ -152,7 +152,7 @@
     error?: string;
     isOwnRepo?: boolean; // True if user is trying to fork their own repo
     forkName?: string; // Name of existing fork
-  } | null>(null);
+  } | null | undefined>(undefined);
   // GRASP-specific state
   let relayUrl = $state("");
   let relayUrlError = $state<string | undefined>();
@@ -354,7 +354,7 @@
     }
 
     // Reset existing fork info immediately to show we're about to check
-    existingForkInfo = null;
+    existingForkInfo = undefined;
 
     // Debounce the API call by 500ms
     checkTimeout = setTimeout(() => {
@@ -392,8 +392,10 @@
       return;
     }
 
+    // Set checking flag BEFORE clearing existingForkInfo to prevent race condition
+    // where template tries to access existingForkInfo.exists while it's null
     isCheckingExistingFork = true;
-    existingForkInfo = null;
+    existingForkInfo = undefined;
 
     try {
       // Get tokens and check if any are available
@@ -523,7 +525,7 @@
   function handleServiceChange(event: Event) {
     const target = event.target as HTMLSelectElement;
     selectedService = target.value;
-    existingForkInfo = null; // Reset fork check when service changes
+    existingForkInfo = undefined; // Reset fork check when service changes
     // Reset relay URL error when switching services
     if (selectedService !== "grasp") {
       relayUrlError = undefined;

@@ -330,9 +330,13 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         if (!config.relayUrl) {
           throw new Error("GRASP requires a relay URL");
         }
+        if (!userPubkey) {
+          throw new Error("GRASP requires a user pubkey (userPubkey option)");
+        }
         relayUrl = config.relayUrl;
-        // EventIO will provide the pubkey when needed
-        providerToken = "grasp-token"; // Placeholder - EventIO handles actual authentication
+        // For GRASP, the "token" parameter is actually the user's pubkey
+        pubkey = userPubkey;
+        providerToken = userPubkey; // Use actual pubkey for GraspApiProvider
         updateProgress("validate", "GRASP configuration validated", "completed");
       } else {
         updateProgress("validate", `Validating ${provider} token...`, "running");
