@@ -32,6 +32,7 @@
     onNavigate?: (commitId: string) => void;
     href?: string; // Optional direct href for navigation
     getParentHref?: (commitId: string) => string; // Function to generate parent commit href
+    disablePrefetch?: boolean; // Disable SvelteKit link prefetching
     // Optional avatar and display name supplied by app layer
     avatarUrl?: string;
     displayName?: string;
@@ -47,6 +48,7 @@
     onNavigate,
     href,
     getParentHref,
+    disablePrefetch = false,
     avatarUrl,
     displayName,
     pubkey,
@@ -98,7 +100,7 @@
   const computedHref = $derived(href || undefined);
 </script>
 
-<BaseItemCard clickable={true} href={computedHref} variant="commit">
+<BaseItemCard clickable={true} href={computedHref} variant="commit" {disablePrefetch}>
   <!-- title -->
   {#snippet slotTitle()}
     {commit.commit.message}

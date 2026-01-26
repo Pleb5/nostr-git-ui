@@ -1075,6 +1075,8 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         async (token: string, host: string) => {
 
           // For other providers, use safePushToRemote for preflight checks
+          // Note: requireUpToDate is false for new repo creation since we just created
+          // both the local and remote repos - no need to check if remote is "up to date"
           console.log("[NEW REPO] Using safePushToRemote for non-GRASP provider");
           const result = await api.safePushToRemote({
             repoId: canonicalKey || config.name,
@@ -1084,7 +1086,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
             provider: config.provider as any,
             preflight: {
               blockIfUncommitted: true,
-              requireUpToDate: true,
+              requireUpToDate: false, // Skip for new repo - we just created it
               blockIfShallow: false,
             },
           });

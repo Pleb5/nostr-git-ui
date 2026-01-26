@@ -11,6 +11,7 @@
     href?: string;
     clickable?: boolean;
     compact?: boolean;
+    disablePrefetch?: boolean;
     // snippets
     children: Snippet;
     slotIcon?: Snippet;
@@ -29,6 +30,7 @@
     href,
     clickable = false,
     compact = false,
+    disablePrefetch = false,
     children,
     slotIcon,
     slotTitle,
@@ -73,7 +75,7 @@
       <div class="flex items-center justify-between gap-2">
         <div class="flex-1 min-w-0">
           {#if href}
-            <a href={href} class={clickable ? 'cursor-pointer' : ''}>
+            <a href={href} class={clickable ? 'cursor-pointer' : ''} data-sveltekit-preload-data={disablePrefetch ? 'off' : undefined}>
               <h3 class={`text-base font-semibold leading-tight break-words line-clamp-2 ${clickable ? 'hover:text-accent transition-colors' : ''}`}>
                 {@render slotTitle?.()}
               </h3>
