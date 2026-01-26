@@ -7,9 +7,12 @@
     XCircle,
   } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
+  import type { PatchEvent } from "@nostr-git/core/events";
+  import { parsePatchEvent } from "@nostr-git/core/events";
   const { Card, CardHeader, CardTitle, CardContent, ScrollArea, Badge } = useRegistry();
 
-  interface Patch {
+  // Internal normalized patch type for display
+  interface NormalizedPatch {
     id: string;
     status: string;
     name: string;
@@ -19,15 +22,35 @@
     filesChanged: number;
     createdAt: string;
     author: string;
+    raw: PatchEvent;
   }
 
   interface Props {
-    patches: Patch[];
+    patches: PatchEvent[];
     selectedPatch?: { id: string } | null;
-    onPatchSelect: (patch: Patch) => void;
+    onPatchSelect: (patch: PatchEvent) => void;
   }
 
   const { patches, selectedPatch, onPatchSelect }: Props = $props();
+
+  // Convert PatchEvent[] to normalized patches for display
+  const normalizedPatches = $derived<NormalizedPatch[]>(
+    patches.map((event) => {
+      const parsed = parsePatchEvent(event);
+      return {
+        id: event.id,
+        status: parsed.status || "pending",
+        name: parsed.title || "Untitled Patch",
+        description: parsed.description || "",
+        linesAdded: 0, // Would need diff parsing
+        linesRemoved: 0,
+        filesChanged: 0,
+        createdAt: parsed.createdAt ? new Date(parsed.createdAt).toLocaleDateString() : "Unknown",
+        author: parsed.author?.name || parsed.author?.pubkey?.slice(0, 8) || "Unknown",
+        raw: event,
+      };
+    })
+  );
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -70,7 +93,7 @@
   <CardContent class="p-0">
     <ScrollArea class="h-80">
       <div class="p-3 space-y-2">
-        {#each patches as patch (patch.id)}
+        {#each normalizedPatches as patch (patch.id)}
           <button
             type="button"
             class={`p-3 rounded-lg border w-full text-left transition-all ${
@@ -78,7 +101,7 @@
                 ? "border-primary bg-primary/5 shadow-md"
                 : getStatusColor(patch.status)
             }`}
-            onclick={() => onPatchSelect(patch)}
+            onclick={() => onPatchSelect(patch.raw)}
           >
             <div class="flex items-start justify-between mb-2">
               <div class="flex items-center gap-2">
