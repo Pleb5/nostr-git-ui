@@ -353,10 +353,14 @@ export class BranchManager {
 
     if (newMainBranch) {
       this.mainBranch = newMainBranch;
+      // Auto-select the main branch if no branch is currently selected
+      if (!this.selectedBranch) {
+        this.selectedBranch = newMainBranch;
+      }
     }
 
     console.log(
-      `Verified ${this.nip34References.size} NIP-34 refs (heads filtered by existence), HEAD: ${newMainBranch}`
+      `Verified ${this.nip34References.size} NIP-34 refs (heads filtered by existence), HEAD: ${newMainBranch}, selectedBranch: ${this.selectedBranch}`
     );
   }
 

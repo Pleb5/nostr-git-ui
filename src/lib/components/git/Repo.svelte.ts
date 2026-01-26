@@ -940,6 +940,14 @@ export class Repo {
 
     // Delegate to BranchManager
     await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
+
+    // Sync selected branch state from BranchManager to reactive state
+    // This ensures the UI reflects the auto-selected main branch
+    const selectedFromManager = this.branchManager.getSelectedBranch();
+    if (selectedFromManager && !this.#selectedBranchState) {
+      this.#selectedBranchState = selectedFromManager;
+      console.log(`[Repo] Auto-selected branch from BranchManager: ${selectedFromManager}`);
+    }
   }
 
   get repoId() {
