@@ -168,7 +168,7 @@ interface ImportContext {
   parsed: ReturnType<typeof parseRepoUrl>;
 
   // Repository info
-  finalRepo: RepoMetadata;
+  finalRepo: RepoMetadata | null;
   repoAddr: string;
 
   // Timestamps
@@ -446,6 +446,11 @@ async function fetchRepoMetadata(
     );
   }
 
+  // At this point finalRepo should be set (either from fork or ownership check)
+  if (!context.finalRepo) {
+    throw new Error("Repository metadata is unexpectedly null");
+  }
+  
   return context.finalRepo;
 }
 
@@ -616,6 +621,7 @@ async function fetchAndPublishIssuesStreaming(
  * Processes and publishes each PR immediately, keeping only ID mappings in memory
  */
 async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<number> {
+  console.log('[DEBUG] fetchAndPublishPRsStreaming START, finalRepo:', context.finalRepo?.name);
   context.updateProgress("Fetching and publishing pull requests...");
   context.abortController.throwIfAborted();
 
@@ -624,6 +630,7 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
   let totalPRs = 0;
 
   while (true) {
+    console.log('[DEBUG] PR loop iteration, page:', page, 'finalRepo:', context.finalRepo?.name);
     context.abortController.throwIfAborted();
 
     const sinceDate = context.config.sinceDate ? context.config.sinceDate.toISOString() : undefined;
@@ -651,12 +658,14 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
 
     // Process and publish each PR immediately
     for (const pr of filteredPrs) {
+      console.log('[DEBUG] Processing PR #', pr.number, 'finalRepo:', context.finalRepo?.name);
       context.abortController.throwIfAborted();
 
       // Generate profile if needed (incremental)
       await ensureUserProfile(context, pr.author.login, pr.author.avatarUrl);
 
       // Convert single PR to Nostr event
+      console.log('[DEBUG] About to convert PR to Nostr event, finalRepo:', context.finalRepo?.name);
       const prEventData = convertPullRequestsToNostrEvents(
         [pr], // Single PR
         context.repoAddr,
@@ -992,6 +1001,10 @@ function convertRepoEvents(context: ImportContext): {
   context.updateProgress("Converting repository metadata...");
   context.abortController.throwIfAborted();
 
+  if (!context.finalRepo) {
+    throw new Error("Repository metadata is not available for conversion");
+  }
+
   // Get relays from config (required for repo announcement)
   const relays: string[] = context.config.relays || [];
 
@@ -1163,7 +1176,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         ...partialContext,
         rateLimiter,
         withRateLimit: withRateLimitFn,
-        finalRepo: {} as RepoMetadata, // Will be set below
+        finalRepo: null, // Will be set during repository setup
         repoAddr: "", // Will be set below
         importTimestamp: Math.floor(Date.now() / 1000),
         startTimestamp: 0, // Will be set below
@@ -1185,24 +1198,46 @@ export function useImportRepo(options: UseImportRepoOptions) {
         throw new Error("Failed to fetch repository information");
       }
       
+      // Set initial repo
       context.finalRepo = ownershipRepo;
-      context.finalRepo = await ensureForkedRepo(context, isOwner);
-      context.finalRepo = await fetchRepoMetadata(context, ownershipRepo);
-
-      if (!context.finalRepo) {
+      console.log('[DEBUG] Set initial finalRepo:', context.finalRepo?.name);
+      
+      // Fork if needed (this updates context.finalRepo)
+      const forkedOrOriginalRepo = await ensureForkedRepo(context, isOwner);
+      if (!forkedOrOriginalRepo) {
+        throw new Error("Failed to ensure repository access");
+      }
+      context.finalRepo = forkedOrOriginalRepo;
+      console.log('[DEBUG] After fork/ensure, finalRepo:', context.finalRepo?.name);
+      
+      // Fetch full metadata if needed
+      const repoWithMetadata = await fetchRepoMetadata(context, ownershipRepo);
+      if (!repoWithMetadata) {
         throw new Error("Failed to fetch repository metadata");
+      }
+      context.finalRepo = repoWithMetadata;
+      console.log('[DEBUG] After metadata fetch, finalRepo:', context.finalRepo?.name);
+
+      // Final safety check before proceeding
+      if (!context.finalRepo) {
+        throw new Error("Repository metadata is null after setup - this should not happen");
       }
 
       // Initialize repo address and timestamps
+      console.log('[DEBUG] About to access finalRepo.name, finalRepo is:', context.finalRepo);
       const repoName = context.finalRepo.fullName.split("/").pop() || context.finalRepo.name;
+      console.log('[DEBUG] Successfully got repoName:', repoName);
       context.repoAddr = `30617:${userPubkey}:${repoName}`;
       context.startTimestamp = context.importTimestamp - 3600; // Start from 1 hour ago
       context.currentTimestamp = context.startTimestamp;
 
       // Step 1: Convert and publish repo events (unchanged)
+      console.log('[DEBUG] Before convertRepoEvents, finalRepo:', context.finalRepo?.name);
       const repoEvents = convertRepoEvents(context);
+      console.log('[DEBUG] After convertRepoEvents, finalRepo:', context.finalRepo?.name);
       const { announcement: signedRepoAnnouncement, state: signedRepoState } =
         await publishRepoEvents(context, repoEvents);
+      console.log('[DEBUG] After publishRepoEvents, finalRepo:', context.finalRepo?.name);
 
       // Step 2: Stream issues (fetch, process, publish immediately)
       let issuesImported = 0;
@@ -1214,15 +1249,19 @@ export function useImportRepo(options: UseImportRepoOptions) {
       // Step 3: Stream PRs (fetch, process, publish immediately)
       let prsImported = 0;
       if (config.mirrorPullRequests) {
+        console.log('[DEBUG] Before PRs, finalRepo:', context.finalRepo?.name);
         prsImported = await fetchAndPublishPRsStreaming(context);
+        console.log('[DEBUG] After PRs, finalRepo:', context.finalRepo?.name);
       }
 
-      // Step 4: Stream comments (only for published issues/PRs)
+      // Step 4: Stream comments (if enabled)
       let commentsImported = 0;
       if (config.mirrorComments) {
+        console.log('[DEBUG] Before comments, finalRepo:', context.finalRepo?.name);
         const issueNumbers = new Set(Array.from(context.issueEventIdMap.keys()));
         const prNumbers = new Set(Array.from(context.prEventIdMap.keys()));
         commentsImported = await fetchAndPublishCommentsStreaming(context, issueNumbers, prNumbers);
+        console.log('[DEBUG] After comments, finalRepo:', context.finalRepo?.name);
       }
 
       // Step 5: Publish profiles (batch at end - small memory footprint)
@@ -1238,7 +1277,9 @@ export function useImportRepo(options: UseImportRepoOptions) {
       }
 
       // Final validation before returning result
+      console.log('[DEBUG] Before creating result, finalRepo:', context.finalRepo);
       if (!context.finalRepo) {
+        console.error('[DEBUG] ERROR: finalRepo is null when creating result!');
         throw new Error("Repository metadata was lost during import");
       }
 
