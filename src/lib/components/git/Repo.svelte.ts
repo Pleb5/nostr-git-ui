@@ -73,6 +73,10 @@ export class Repo {
   address: string = $state("");
   viewerPubkey: string | null = $state(null);
   editable: boolean = $state(false);
+  
+  // User identity for git commit operations (author name and email)
+  authorName: string = $state("");
+  authorEmail: string = $state("");
 
   repoEvent: RepoAnnouncementEvent | undefined = $state(undefined);
   #repo: RepoAnnouncement | undefined = $state(undefined);
@@ -188,6 +192,8 @@ export class Repo {
     viewerPubkey,
     workerConfig,
     workerManager: existingWorkerManager,
+    authorName: initialAuthorName,
+    authorEmail: initialAuthorEmail,
   }: {
     repoEvent: Readable<RepoAnnouncementEvent>;
     repoStateEvent: Readable<RepoStateEvent>;
@@ -201,7 +207,14 @@ export class Repo {
     workerConfig?: { workerFactory?: () => Worker; workerUrl?: string | URL };
     /** Optional: pass an existing WorkerManager to share across Repo instances */
     workerManager?: WorkerManager;
+    /** User's display name for git commit author */
+    authorName?: string;
+    /** User's email (nip-05 or npub-based) for git commit author */
+    authorEmail?: string;
   }) {
+    // Set author info if provided
+    if (initialAuthorName) this.authorName = initialAuthorName;
+    if (initialAuthorEmail) this.authorEmail = initialAuthorEmail;
     // Use provided WorkerManager or create a new one
     if (existingWorkerManager) {
       this.workerManager = existingWorkerManager;

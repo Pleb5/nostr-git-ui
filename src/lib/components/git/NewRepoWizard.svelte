@@ -48,6 +48,10 @@
     ) => Promise<void>;
     defaultRelays?: string[];
     userPubkey?: string; // User's nostr pubkey (required for GRASP repos)
+    /** Default author name for git commits (from user profile) */
+    defaultAuthorName?: string;
+    /** Default author email for git commits (nip-05 or npub-based email) */
+    defaultAuthorEmail?: string;
     getProfile?: (
       pubkey: string
     ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
@@ -75,6 +79,8 @@
     onPublishEvent,
     defaultRelays = [],
     userPubkey,
+    defaultAuthorName = "",
+    defaultAuthorEmail = "",
     getProfile,
     searchProfiles,
     searchRelays,
@@ -229,9 +235,9 @@
     gitignoreTemplate: "",
     licenseTemplate: "",
     defaultBranch: "master",
-    // Author information (should be populated from current user)
-    authorName: "",
-    authorEmail: "",
+    // Author information (populated from user profile via props)
+    authorName: defaultAuthorName,
+    authorEmail: defaultAuthorEmail,
     // NIP-34 metadata
     maintainers: [] as string[],
     relays: [...defaultRelays] as string[],
