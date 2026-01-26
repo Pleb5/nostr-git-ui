@@ -152,6 +152,12 @@ export class Repo {
     progress: 0,
   });
 
+  // Initialization state - tracks when repo is ready for operations
+  #initPromise: Promise<void> | null = null;
+  #initResolve: (() => void) | null = null;
+  #initReject: ((error: Error) => void) | null = null;
+  isInitialized = $state(false);
+
   syncStatus: any = $state(null);
 
   #updateEditable() {
@@ -449,6 +455,12 @@ export class Repo {
 
     // Note: Token subscription consolidated above in constructor
 
+    // Create initialization promise that consumers can await
+    this.#initPromise = new Promise<void>((resolve, reject) => {
+      this.#initResolve = resolve;
+      this.#initReject = reject;
+    });
+
     // Smart initialization - refs are loaded from subscription handlers
     // Worker initialization happens in background, refs fallback runs after worker is ready
     (async () => {
@@ -503,6 +515,10 @@ export class Repo {
         if (this.#autoMergeAnalysisEnabled && this.patches.length > 0) {
           await this.#performMergeAnalysis(this.patches);
         }
+
+        // Mark initialization as complete
+        this.isInitialized = true;
+        this.#initResolve?.();
       } catch (error) {
         console.error("Git initialization failed:", error);
 
@@ -514,6 +530,10 @@ export class Repo {
             duration: 5000,
           });
         }
+
+        // Still mark as initialized (with error) so waiters don't hang forever
+        this.isInitialized = true;
+        this.#initResolve?.();
       }
     })();
 
@@ -521,6 +541,26 @@ export class Repo {
       this.issues = issueEvents;
     });
     // Note: Token subscription consolidated at the top of constructor
+  }
+
+  /**
+   * Wait for repository initialization to complete.
+   * This includes worker initialization, token loading, and initial clone/sync.
+   * Use this before attempting operations that require the repo to be ready.
+   * 
+   * @example
+   * ```typescript
+   * await repoClass.waitForReady();
+   * const readme = await repoClass.getFileContent({ path: 'README.md', branch: 'main' });
+   * ```
+   */
+  async waitForReady(): Promise<void> {
+    if (this.isInitialized) {
+      return;
+    }
+    if (this.#initPromise) {
+      await this.#initPromise;
+    }
   }
 
   /**
