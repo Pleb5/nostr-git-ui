@@ -36,8 +36,11 @@
   const canEdit = $derived.by(() => !!repoClass.editable);
   
   // Track clone URL errors from the Repo class
-  const cloneUrlErrors = $derived(repoClass.cloneUrlErrors);
-  const hasCloneUrlErrors = $derived(cloneUrlErrors.length > 0);
+  // DISABLED: Returning false positives, needs investigation
+  // const cloneUrlErrors = $derived(repoClass.cloneUrlErrors);
+  // const hasCloneUrlErrors = $derived(cloneUrlErrors.length > 0);
+  const cloneUrlErrors: Array<{ url: string; error: string; status?: number }> = [];
+  const hasCloneUrlErrors = false;
   
   // Dismiss errors
   function dismissErrors() {
