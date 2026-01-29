@@ -285,7 +285,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
    * 4. Create and emit NIP-34 events
    */
   async function forkRepository(
-    originalRepo: { owner: string; name: string; description?: string },
+    originalRepo: { owner: string; name: string; description?: string; cloneUrls?: string[]; sourceRepoId?: string },
     config: ForkConfig
   ): Promise<ForkResult | null> {
     if (isForking) {
@@ -394,6 +394,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           provider: provider,
           baseUrl: relayUrl,
           dir: destinationPath,
+          sourceCloneUrls: originalRepo.cloneUrls ? [...originalRepo.cloneUrls] : undefined, // Convert to plain array for Comlink
+          sourceRepoId: originalRepo.sourceRepoId || undefined, // Pass source repo ID for finding existing local clone
           // Note: onProgress callback removed - functions cannot be serialized through Comlink
         });
         console.log("[useForkRepo] forkAndCloneRepo returned", workerResult);
@@ -420,6 +422,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
               provider: provider,
               baseUrl: relayUrl,
               dir: destinationPath,
+              sourceCloneUrls: originalRepo.cloneUrls ? [...originalRepo.cloneUrls] : undefined, // Convert to plain array for Comlink
+              sourceRepoId: originalRepo.sourceRepoId || undefined, // Pass source repo ID for finding existing local clone
               // Note: onProgress callback removed - functions cannot be serialized through Comlink
             });
             console.log("[useForkRepo] forkAndCloneRepo returned", result);

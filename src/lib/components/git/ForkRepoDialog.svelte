@@ -129,6 +129,8 @@
     owner: parsedUrl.owner,
     name: parsedUrl.name,
     description: repo.description || "",
+    cloneUrls: repo.clone || [], // Pass all clone URLs for cross-platform forking
+    sourceRepoId: repo.repoId || "", // Pass the source repo's canonical ID for finding existing local clone
   });
 
   // Determine default service based on hostname
@@ -1035,7 +1037,7 @@
                   <span>Checking if fork already exists...</span>
                 </div>
               </div>
-            {:else if existingForkInfo}
+            {:else if existingForkInfo && typeof existingForkInfo.exists !== 'undefined'}
               <div class="bg-gray-800 border border-gray-600 rounded-lg p-3">
                 <div class="flex items-start space-x-2 text-sm">
                   {#if existingForkInfo.exists}
