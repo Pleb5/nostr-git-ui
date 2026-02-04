@@ -35,6 +35,7 @@ import type {
   RepoAnnouncementEvent,
   RepoStateEvent,
   NostrEvent,
+  NostrFilter,
   EventIO,
 } from "@nostr-git/core";
 import type {
@@ -43,6 +44,7 @@ import type {
   GitPullRequest as PullRequest,
   RepoMetadata,
 } from "@nostr-git/core";
+import { nip19 } from "nostr-tools";
 
 /**
  * Import progress information
@@ -124,6 +126,12 @@ export interface UseImportRepoOptions {
   eventIO?: EventIO;
 
   /**
+   * Fetch events from Nostr relays. Used for NIP-39 bridged identity lookups.
+   * Can use host app's relay pool directly (e.g. welshman load) without needing full EventIO.
+   */
+  onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>;
+
+  /**
    * Function to sign events (required if eventIO not provided)
    */
   onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>;
@@ -180,6 +188,10 @@ interface ImportContext {
   userProfiles: UserProfileMap;
   profileEvents: Map<string, NostrEvent>;
 
+  // NIP-39 bridged identities: platform:username -> Nostr pubkey (when profile has i-tag proof)
+  bridgedNostrPubkeys: Map<string, string>;
+  nip39CheckedKeys: Set<string>; // profileKeys we've already looked up (avoid re-query)
+
   // Lightweight tracking maps (for dependency resolution)
   issueEventIdMap: Map<number, string>; // issue.number -> nostr event ID
   prEventIdMap: Map<number, string>; // pr.number -> nostr event ID
@@ -203,6 +215,7 @@ interface ImportContext {
   onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>;
   onPublishEvent?: (event: NostrEvent) => Promise<void>;
   eventIO?: EventIO;
+  onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>;
 }
 
 // ===== Batch Publishing Functions =====
@@ -321,7 +334,8 @@ async function initializeImportContext(
   withRateLimit: ImportContext["withRateLimit"],
   onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>,
   onPublishEvent?: (event: NostrEvent) => Promise<void>,
-  eventIO?: EventIO
+  eventIO?: EventIO,
+  onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>
 ): Promise<Partial<ImportContext>> {
   updateProgress("Parsing repository URL...");
   abortController.throwIfAborted();
@@ -353,6 +367,7 @@ async function initializeImportContext(
     onSignEvent,
     onPublishEvent,
     eventIO,
+    onFetchEvents,
     withRateLimit,
     updateProgress,
   };
@@ -456,6 +471,176 @@ async function fetchRepoMetadata(
 
 // ===== Profile Management Functions =====
 
+const NIP39_VERIFICATION_PREFIX =
+  "Verifying that I control the following Nostr public key: ";
+// npub is "npub1" + 52 bech32 chars; use {50,60} for flexibility
+const NIP39_NPUB_REGEX =
+  /Verifying that I control the following Nostr public key:\s*(npub1[a-zA-HJ-NP-Z0-9]{50,60})/;
+
+/**
+ * Verify NIP-39 GitHub Gist proof.
+ * Fetches the gist, checks owner matches username, and that content contains
+ * the attestation text with npub that decodes to expectedPubkey.
+ *
+ * @see https://github.com/nostr-protocol/nips/blob/master/39.md#github
+ */
+async function verifyGitHubGistProof(
+  username: string,
+  proof: string,
+  expectedPubkey: string,
+  withRateLimit: ImportContext["withRateLimit"]
+): Promise<boolean> {
+  if (!proof || !/^[a-f0-9]{32}$|^[a-zA-Z0-9]+$/.test(proof)) {
+    return false;
+  }
+
+  try {
+    const res = await withRateLimit("github", "GET", () =>
+      fetch(`https://api.github.com/gists/${proof}`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      })
+    );
+
+    if (!res.ok) return false;
+
+    const gist = (await res.json()) as {
+      owner?: { login?: string };
+      files?: Record<string, { content?: string }>;
+    };
+
+    const ownerLogin = gist.owner?.login;
+    if (!ownerLogin) return false;
+
+    if (ownerLogin.toLowerCase() !== username.toLowerCase()) {
+      return false;
+    }
+
+    const files = gist.files;
+    if (!files || typeof files !== "object") return false;
+
+    let foundNpub: string | null = null;
+    for (const file of Object.values(files)) {
+      const content = file?.content ?? "";
+      const match = content.match(NIP39_NPUB_REGEX);
+      if (match) {
+        foundNpub = match[1];
+        break;
+      }
+      if (content.includes(NIP39_VERIFICATION_PREFIX)) {
+        const idx = content.indexOf(NIP39_VERIFICATION_PREFIX);
+        const after = content.slice(idx + NIP39_VERIFICATION_PREFIX.length);
+        const npubMatch = after.match(/^(npub1[a-zA-HJ-NP-Z0-9]{50,60})/);
+        if (npubMatch) {
+          foundNpub = npubMatch[1];
+          break;
+        }
+      }
+    }
+
+    if (!foundNpub) return false;
+
+    const decoded = nip19.decode(foundNpub);
+    if (decoded.type !== "npub") return false;
+
+    const verifiedPubkey = decoded.data as string;
+    return verifiedPubkey === expectedPubkey;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Look up Nostr pubkey for a platform user via NIP-39 identity proof.
+ * Queries kind 0 (profile) events with ["i", "platform:identity", proof] tags.
+ * Verifies the GitHub Gist proof before accepting. Returns the pubkey if a
+ * verified bridged profile is found, null otherwise.
+ *
+ * @see https://github.com/nostr-protocol/nips/blob/master/39.md
+ */
+async function lookupNip39BridgedPubkey(
+  context: ImportContext,
+  platform: string,
+  username: string
+): Promise<string | null> {
+  const profileKey = getProfileMapKey(platform, username);
+  if (context.bridgedNostrPubkeys.has(profileKey)) {
+    return context.bridgedNostrPubkeys.get(profileKey)!;
+  }
+  if (context.nip39CheckedKeys.has(profileKey)) {
+    return null;
+  }
+
+  // NIP-39 supports github, twitter, etc. For now we only look up GitHub.
+  if (platform !== "github") {
+    return null;
+  }
+
+  const identity = `github:${username}`;
+
+  const fetchEvents = context.onFetchEvents ?? context.eventIO?.fetchEvents;
+  if (!fetchEvents) {
+    return null;
+  }
+
+  try {
+    const events = await fetchEvents([
+      { kinds: [0], "#i": [identity], limit: 1 },
+    ]);
+
+    if (events.length > 0) {
+      // Take the most recent (relays often return newest first)
+      const profile = events.reduce((a, b) =>
+        (a.created_at > b.created_at ? a : b)
+      );
+
+      const iTag = profile.tags?.find(
+        (t) => t[0] === "i" && t[1] === identity
+      ) as [string, string, string] | undefined;
+      const proof = iTag?.[2];
+
+      if(proof) {
+        const verified = await verifyGitHubGistProof(
+          username,
+          proof,
+          profile.pubkey,
+          context.withRateLimit
+        );
+        if (verified) {
+          context.bridgedNostrPubkeys.set(profileKey, profile.pubkey);
+          return profile.pubkey;
+        }
+  
+      }
+    }
+  } catch (err) {
+    console.warn(`[import] NIP-39 lookup failed for ${identity}:`, err);
+  }
+
+  context.nip39CheckedKeys.add(profileKey);
+  return null;
+}
+
+/**
+ * Add p-tag for bridged Nostr identity when NIP-39 match exists.
+ * Being tagged notifies the user and allows them to later claim the event.
+ */
+function addBridgedPTags(
+  event: Omit<NostrEvent, "id" | "sig" | "pubkey">,
+  platform: string,
+  username: string,
+  bridgedNostrPubkeys: Map<string, string>
+): void {
+  const profileKey = getProfileMapKey(platform, username);
+  const bridgedPubkey = bridgedNostrPubkeys.get(profileKey);
+  if (bridgedPubkey && bridgedPubkey.length === 64) {
+    event.tags = event.tags || [];
+    event.tags.push(["p", bridgedPubkey]);
+  }
+}
+
 /**
  * Ensure a user profile exists in the context
  * Uses provided username and avatarUrl directly (no API call needed)
@@ -466,9 +651,11 @@ async function ensureUserProfile(context: ImportContext, username: string, avata
     return;
   }
 
+  // Try NIP-39 lookup for bridged identities (github:username -> Nostr pubkey)
+  await lookupNip39BridgedPubkey(context, context.platform, username);
+
   // Generate profile directly from available data (no API call needed!)
   // GitHub already provides username and avatarUrl in issues/PRs/comments
-  // We don't have the user's full name, but that's okay - it will use username as fallback
   const profile = generatePlatformUserProfile(context.platform, username);
 
   context.userProfiles.set(profileKey, {
@@ -543,6 +730,14 @@ async function fetchAndPublishIssuesStreaming(
 
       if (issueEventData.length > 0) {
         const [eventData] = issueEventData;
+
+        // Add p-tag for bridged Nostr identity (NIP-39) when match found
+        addBridgedPTags(
+          eventData.event,
+          context.platform,
+          issue.author.login,
+          context.bridgedNostrPubkeys
+        );
 
         // Sign issue event
         const signedIssueEvent = signEvent(eventData.event, eventData.privkey);
@@ -664,7 +859,36 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
       // Generate profile if needed (incremental)
       await ensureUserProfile(context, pr.author.login, pr.author.avatarUrl);
 
-      // Convert single PR to Nostr event
+      // Optionally fetch PR commits when the API supports it (for richer import)
+      let prCommits: Map<number, string[]> | undefined;
+      if (context.api.listPullRequestCommits) {
+        try {
+          const allShas: string[] = [];
+          let commitPage = 1;
+          const perPage = 100;
+          while (true) {
+            context.abortController.throwIfAborted();
+            const commits = await context.withRateLimit(context.platform, "GET", () =>
+              context.api.listPullRequestCommits!(
+                context.parsed.owner,
+                context.parsed.repo,
+                pr.number,
+                { per_page: perPage, page: commitPage }
+              )
+            );
+            for (const c of commits) allShas.push(c.sha);
+            if (commits.length < perPage) break;
+            commitPage++;
+          }
+          if (allShas.length > 0) {
+            prCommits = new Map([[pr.number, allShas]]);
+          }
+        } catch (err) {
+          console.warn(`[import] Could not fetch commits for PR #${pr.number}:`, err);
+        }
+      }
+
+      // Convert single PR to Nostr event (with title, body, branch, base, labels, commits)
       console.log('[DEBUG] About to convert PR to Nostr event, finalRepo:', context.finalRepo?.name);
       const prEventData = convertPullRequestsToNostrEvents(
         [pr], // Single PR
@@ -672,11 +896,20 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
         context.platform,
         context.userProfiles,
         context.importTimestamp,
-        context.currentTimestamp
+        context.currentTimestamp,
+        prCommits
       );
 
       if (prEventData.length > 0) {
         const [eventData] = prEventData;
+
+        // Add p-tag for bridged Nostr identity (NIP-39) when match found
+        addBridgedPTags(
+          eventData.event,
+          context.platform,
+          pr.author.login,
+          context.bridgedNostrPubkeys
+        );
 
         // Sign PR event
         const signedPrEvent = signEvent(eventData.event, eventData.privkey);
@@ -804,6 +1037,14 @@ async function fetchAndPublishCommentsStreaming(
         if (convertedComments.length > 0) {
           const [convertedComment] = convertedComments;
 
+          // Add p-tag for bridged Nostr identity (NIP-39) when match found
+          addBridgedPTags(
+            convertedComment.event,
+            context.platform,
+            comment.author.login,
+            context.bridgedNostrPubkeys
+          );
+
           // Sign comment event
           const signedCommentEvent = signEvent(convertedComment.event, convertedComment.privkey);
 
@@ -887,6 +1128,14 @@ async function fetchAndPublishCommentsStreaming(
 
           if (convertedComments.length > 0) {
             const [convertedComment] = convertedComments;
+
+            addBridgedPTags(
+              convertedComment.event,
+              context.platform,
+              comment.author.login,
+              context.bridgedNostrPubkeys
+            );
+
             const signedCommentEvent = signEvent(convertedComment.event, convertedComment.privkey);
 
             // Publish comment event (batched)
@@ -960,6 +1209,14 @@ async function fetchAndPublishCommentsStreaming(
 
           if (convertedComments.length > 0) {
             const [convertedComment] = convertedComments;
+
+            addBridgedPTags(
+              convertedComment.event,
+              context.platform,
+              comment.author.login,
+              context.bridgedNostrPubkeys
+            );
+
             const signedCommentEvent = signEvent(convertedComment.event, convertedComment.privkey);
 
             // Publish comment event (batched)
@@ -1105,7 +1362,7 @@ async function publishProfileEvents(context: ImportContext): Promise<void> {
  * Svelte 5 composable for importing repositories from Git hosting providers
  */
 export function useImportRepo(options: UseImportRepoOptions) {
-  const { onProgress, onImportCompleted, userPubkey, eventIO, onSignEvent, onPublishEvent } =
+  const { onProgress, onImportCompleted, userPubkey, eventIO, onFetchEvents, onSignEvent, onPublishEvent } =
     options;
 
   // Validate that we have a way to sign user events (repo events, status events)
@@ -1168,7 +1425,8 @@ export function useImportRepo(options: UseImportRepoOptions) {
         withRateLimitFn,
         onSignEvent,
         onPublishEvent,
-        eventIO
+        eventIO,
+        onFetchEvents
       );
 
       // Complete context initialization
@@ -1183,6 +1441,8 @@ export function useImportRepo(options: UseImportRepoOptions) {
         currentTimestamp: 0, // Will be set below
         userProfiles: new Map(),
         profileEvents: new Map(),
+        bridgedNostrPubkeys: new Map(),
+        nip39CheckedKeys: new Set(),
         issueEventIdMap: new Map(),
         prEventIdMap: new Map(),
         commentEventMap: new Map(),

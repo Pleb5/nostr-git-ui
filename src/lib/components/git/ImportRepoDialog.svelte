@@ -38,6 +38,7 @@
     pubkey: string;
     onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>; // Optional - works with all signers
     eventIO?: EventIO;
+    onFetchEvents?: (filters: import("@nostr-git/core").NostrFilter[]) => Promise<NostrEvent[]>;
     onClose: () => void;
     onPublishEvent?: (event: NostrEvent) => Promise<void>;
     onImportComplete?: (result: ImportResult) => void;
@@ -49,6 +50,7 @@
     pubkey,
     onSignEvent,
     eventIO,
+    onFetchEvents,
     onClose,
     onPublishEvent,
     onImportComplete,
@@ -66,6 +68,7 @@
     userPubkey: pubkey,
     onSignEvent,
     eventIO,
+    onFetchEvents,
     onProgress: (progress) => {
       currentProgress = progress;
     },
