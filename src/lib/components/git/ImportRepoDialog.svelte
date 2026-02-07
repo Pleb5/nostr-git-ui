@@ -18,6 +18,9 @@
     useImportRepo,
     type ImportProgress,
     type ImportResult,
+    IMPORT_PHASES,
+    IMPORT_PHASE_LABELS,
+    type ImportPhase,
   } from "../../hooks/useImportRepo.svelte";
   import { tokens } from "../../stores/tokens.js";
   import {
@@ -377,6 +380,11 @@
 
         forkName = ownership.isOwner ? parsed.repo : `${parsed.repo}-fork`;
         forkRepo = !ownership.isOwner; // Mandatory fork if not owner (checkbox will be disabled)
+        // Owner: mirror issues/PRs/comments by default; fork: uncheck by default
+        const mirrorByDefault = ownership.isOwner;
+        mirrorIssues = mirrorByDefault;
+        mirrorPullRequests = mirrorByDefault;
+        mirrorComments = mirrorByDefault;
 
         currentStep = 2;
       } catch (err) {
@@ -519,6 +527,46 @@
       (repoMetadata.isOwner || (!repoMetadata.isOwner && forkRepo && forkName.trim()))
   );
   const isProgressComplete = $derived(currentProgress?.isComplete && completedResult !== null);
+
+  // Phased progress from hook: use explicit phase and IMPORT_PHASES order (no string matching)
+  type PhaseStatus = "completed" | "active" | "pending";
+  const progressPhases = $derived.by(() => {
+    const p = currentProgress;
+    const list = IMPORT_PHASES.map((id): { id: ImportPhase; label: string; status: PhaseStatus; detail?: string; current?: number; total?: number; mirroredCount?: number } => ({
+      id,
+      label: IMPORT_PHASE_LABELS[id],
+      status: "pending" as PhaseStatus,
+    }));
+    if (!p) return list;
+
+    const c = p.completedCounts;
+    list.forEach((ph) => {
+      if (ph.id === "issues" && c?.issues != null) ph.mirroredCount = c.issues;
+      if (ph.id === "pull_requests" && c?.pull_requests != null) ph.mirroredCount = c.pull_requests;
+      if (ph.id === "comments" && c?.comments != null) ph.mirroredCount = c.comments;
+    });
+
+    const phaseIndex =
+      p.phase === "complete"
+        ? list.length
+        : IMPORT_PHASES.indexOf((p.phase ?? "connecting") as (typeof IMPORT_PHASES)[number]);
+    const activeIndex = phaseIndex >= 0 ? Math.min(phaseIndex, list.length - 1) : 0;
+
+    if (p.isComplete) {
+      list.forEach((ph) => (ph.status = "completed"));
+      return list;
+    }
+
+    list.forEach((ph, i) => {
+      ph.status = i < activeIndex ? "completed" : i === activeIndex ? "active" : "pending";
+      if (i === activeIndex) {
+        ph.detail = p.step;
+        ph.current = p.current;
+        ph.total = p.total;
+      }
+    });
+    return list;
+  });
 </script>
 
 <svelte:window onkeydown={handleBackdropKeydown} />
@@ -892,21 +940,96 @@
       {:else if currentStep === 3}
         <div class="space-y-4">
           <div>
-            <h3 class="text-lg font-medium text-white mb-4">Step 3: Import Progress</h3>
+            <h3 class="text-lg font-medium text-white mb-1">Import progress</h3>
+            <p class="text-sm text-gray-400 mb-4">
+              {#if currentProgress?.isComplete}
+                All done. Your repository is ready.
+              {:else if currentProgress?.error}
+                Something went wrong. You can cancel and try again.
+              {:else}
+                This may take a few minutes. Don’t close this window.
+              {/if}
+            </p>
 
+            <!-- Phased stepper -->
             {#if currentProgress}
-              <!-- Current Step Message -->
-              <div class="mb-4">
-                <p class="text-sm text-gray-300">{currentProgress.step}</p>
+              <div class="space-y-0 mb-4">
+                {#each progressPhases as phase, i}
+                  {@const isLast = i === progressPhases.length - 1}
+                  <div class="flex gap-3">
+                    <!-- Left: icon + connector line -->
+                    <div class="flex flex-col items-center flex-shrink-0">
+                      <div
+                        class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors"
+                        class:bg-green-600={phase.status === 'completed'}
+                        class:bg-blue-600={phase.status === 'active' && !currentProgress.error}
+                        class:bg-red-600={phase.status === 'active' && currentProgress.error}
+                        class:bg-gray-600={phase.status === 'pending'}
+                      >
+                        {#if phase.status === "completed"}
+                          <CheckCircle2 class="w-4 h-4 text-white" />
+                        {:else if phase.status === "active"}
+                          {#if currentProgress.error}
+                            <AlertCircle class="w-4 h-4 text-white" />
+                          {:else}
+                            <Loader2 class="w-4 h-4 text-white animate-spin" />
+                          {/if}
+                        {:else}
+                          <span class="text-xs font-medium text-gray-300">{i + 1}</span>
+                        {/if}
+                      </div>
+                      {#if !isLast}
+                        <div
+                          class="w-0.5 h-6 mt-1 rounded-full transition-colors"
+                          class:bg-green-600={phase.status === "completed"}
+                          class:bg-gray-600={phase.status !== "completed"}
+                        ></div>
+                      {/if}
+                    </div>
+                    <!-- Right: label + detail + progress -->
+                    <div class="flex-1 min-w-0 pb-4">
+                      <p
+                        class="text-sm font-medium transition-colors"
+                        class:text-green-400={phase.status === 'completed'}
+                        class:text-blue-400={phase.status === 'active' && !currentProgress.error}
+                        class:text-red-400={phase.status === 'active' && currentProgress.error}
+                        class:text-gray-500={phase.status === 'pending'}
+                      >
+                        {phase.label}
+                      </p>
+                      {#if phase.status === 'completed' && phase.mirroredCount != null}
+                        <p class="text-xs text-green-300/90 mt-0.5">{phase.mirroredCount} mirrored</p>
+                      {/if}
+                      {#if phase.status === "active" && phase.detail}
+                        <p class="text-sm text-gray-400 mt-0.5 truncate" title={phase.detail}>
+                          {phase.detail}
+                        </p>
+                        {#if phase.current != null && phase.total != null && phase.total > 0}
+                          <div class="mt-2 flex items-center gap-2">
+                            <div class="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                              <div
+                                class="h-full bg-blue-500 rounded-full transition-all duration-300"
+                                style="width: {(phase.total && phase.total >= 1 ? Math.min(100, (phase.current ?? 0) / phase.total * 100) : 0) + '%'}"
+                              ></div>
+                            </div>
+                            <span class="text-xs text-gray-500 tabular-nums">{phase.current} / {phase.total}</span>
+                          </div>
+                        {:else if phase.current != null}
+                          <p class="text-xs text-gray-500 mt-0.5">{phase.current} so far</p>
+                        {/if}
+                      {/if}
+                    </div>
+                  </div>
+                {/each}
               </div>
 
-              <!-- Progress Messages -->
+              <!-- Error message (inline with stepper, or banner) -->
               {#if currentProgress.error}
                 <div class="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
                   <div class="flex items-start space-x-3">
                     <AlertCircle class="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" />
                     <div class="flex-1">
-                      <p class="text-sm text-red-400 font-medium">Import Failed</p>
+                      <p class="text-sm text-red-400 font-medium">Import failed</p>
                       <p class="text-sm text-red-300 mt-1">{currentProgress.error}</p>
                     </div>
                   </div>
@@ -916,12 +1039,11 @@
                   <div class="flex items-start space-x-3">
                     <CheckCircle2 class="w-5 h-5 text-green-400 mt-0.5 flex-shrink-0" />
                     <div class="flex-1">
-                      <p class="text-sm text-green-400 font-medium">Import Completed!</p>
+                      <p class="text-sm text-green-400 font-medium">Import completed</p>
                       <p class="text-sm text-green-300 mt-1">
-                        Imported {completedResult.issuesImported} issues,
+                        {completedResult.issuesImported} issues,
                         {completedResult.commentsImported} comments,
-                        {completedResult.prsImported} PRs, and created{" "}
-                        {completedResult.profilesCreated} profiles.
+                        {completedResult.prsImported} PRs, and {completedResult.profilesCreated} profiles created.
                       </p>
                     </div>
                   </div>
@@ -931,20 +1053,20 @@
 
             <!-- Abort Button -->
             {#if currentStep === 3 && currentProgress && !currentProgress.isComplete}
-              <div class="flex justify-center">
+              <div class="flex justify-center pt-2">
                 <button
                   type="button"
                   onclick={handleAbort}
                   class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
                 >
-                  Cancel Import
+                  Cancel import
                 </button>
               </div>
             {/if}
 
             <!-- Action Buttons (when complete) -->
             {#if isProgressComplete}
-              <div class="flex justify-between">
+              <div class="flex justify-between pt-2 border-t border-gray-700">
                 <button
                   type="button"
                   onclick={handleClose}
@@ -964,7 +1086,7 @@
                     class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
                   >
                     <ExternalLink class="w-4 h-4" />
-                    View Repository
+                    View repository
                   </button>
                 {/if}
               </div>

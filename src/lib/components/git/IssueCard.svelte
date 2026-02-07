@@ -79,6 +79,21 @@
 
   const { id, subject: title, content: description, labels, createdAt } = parsed;
 
+  // Mirrored issues (from import) have "imported" and "original_date" tags — show original date
+  const isMirrored = $derived(
+    (event.tags as Array<[string, string]> | undefined)?.some((t) => t[0] === "imported") ?? false
+  );
+  const originalDateTag = $derived(
+    (event.tags as Array<[string, string]> | undefined)?.find((t) => t[0] === "original_date")?.[1]
+  );
+  const displayDate = $derived.by(() => {
+    if (isMirrored && originalDateTag) {
+      const sec = parseInt(originalDateTag, 10);
+      if (!Number.isNaN(sec)) return new Date(sec * 1000).toISOString();
+    }
+    return createdAt;
+  });
+  
   // Helper functions for label normalization (matching centralized logic)
   function toNaturalLabel(label: string): string {
     if (typeof label !== "string") return "";
@@ -278,17 +293,20 @@
           statusEvents={statusEvents}
           actorPubkey={actorPubkey}
           compact={true}
-        />
+          isMirrored={isMirrored} />
       {:else if statusIcon}
         {@const { icon: IconCmp, color } = statusIcon}
         <IconCmp class={`h-6 w-6 mt-1 ${color}`} />
       {/if}
-      <span class="whitespace-nowrap">Opened <TimeAgo date={createdAt} /></span>
+      <span class="whitespace-nowrap">Opened <TimeAgo date={displayDate} /></span>
       <div class="flex items-center gap-1">
         <span class="whitespace-nowrap">• By </span>
         <NostrAvatar pubkey={event.pubkey} title={title || "Issue author"} />
         <ProfileLink pubkey={event.pubkey} />
       </div>
+      {#if isMirrored}
+        <span class="whitespace-nowrap">• Imported <TimeAgo date={createdAt} /></span>
+      {/if}
       <span class="whitespace-nowrap">• {commentCount} comments</span>
       {#if assigneeTotal > 0}
         <div class="flex items-center gap-1">

@@ -21,7 +21,7 @@ import {
   convertRepoToNostrEvent,
   convertRepoToStateEvent,
   convertIssuesToNostrEvents,
-  convertIssueStatusesToEvents,
+  convertIssueStatusToEvent,
   convertCommentsToNostrEvents,
   convertPullRequestsToNostrEvents,
   signEvent,
@@ -47,11 +47,51 @@ import type {
 import { nip19 } from "nostr-tools";
 
 /**
+ * Import phase identifiers for structured progress reporting.
+ * Order matches the actual import flow.
+ */
+export const IMPORT_PHASES = [
+  "connecting",
+  "repository",
+  "issues",
+  "pull_requests",
+  "comments",
+  "profiles",
+] as const;
+
+export type ImportPhase = (typeof IMPORT_PHASES)[number] | "complete";
+
+/** Human-readable labels for each phase (for UI) */
+export const IMPORT_PHASE_LABELS: Record<ImportPhase, string> = {
+  connecting: "Connecting",
+  repository: "Repository",
+  issues: "Issues",
+  pull_requests: "Pull requests",
+  comments: "Comments",
+  profiles: "User profiles",
+  complete: "Complete",
+};
+
+/**
+ * Counts of mirrored items per phase (set as each phase completes)
+ */
+export interface ImportCompletedCounts {
+  issues?: number;
+  pull_requests?: number;
+  comments?: number;
+}
+
+/**
  * Import progress information
  */
 export interface ImportProgress {
   /**
-   * Current step/message
+   * Current phase in the import flow
+   */
+  phase: ImportPhase;
+
+  /**
+   * Current step/message (human-readable detail for the current phase)
    */
   step: string;
 
@@ -74,6 +114,11 @@ export interface ImportProgress {
    * Error message if import failed
    */
   error?: string;
+
+  /**
+   * Counts of mirrored items for completed phases (issues, pull_requests, comments)
+   */
+  completedCounts?: ImportCompletedCounts;
 }
 
 /**
@@ -703,13 +748,13 @@ async function fetchAndPublishIssuesStreaming(
       break;
     }
 
-    // Filter by sinceDate if provided (API might not support it)
-    const filteredIssues = context.config.sinceDate
-      ? pageIssues.filter((issue) => {
-          const issueDate = new Date(issue.createdAt);
-          return issueDate >= context.config.sinceDate!;
-        })
-      : pageIssues;
+    const filteredIssues = pageIssues
+      .filter((issue) => !issue.isPullRequest)
+      .filter((issue) =>
+        context.config.sinceDate
+          ? new Date(issue.createdAt) >= context.config.sinceDate!
+          : true
+      );
 
     // Process and publish each issue immediately
     for (const issue of filteredIssues) {
@@ -717,6 +762,11 @@ async function fetchAndPublishIssuesStreaming(
 
       // Generate profile if needed (incremental)
       await ensureUserProfile(context, issue.author.login, issue.author.avatarUrl);
+      
+      // Also generate profile for the user who closed the issue (if different from author)
+      if (issue.closedBy && issue.closedBy.login !== issue.author.login) {
+        await ensureUserProfile(context, issue.closedBy.login, issue.closedBy.avatarUrl);
+      }
 
       // Convert single issue to Nostr event
       const issueEventData = convertIssuesToNostrEvents(
@@ -752,43 +802,38 @@ async function fetchAndPublishIssuesStreaming(
         context.issuesPublished = totalIssues;
 
         // Generate and publish status events immediately
-        const statusEvents = convertIssueStatusesToEvents(
+        const originalDate =
+          issue.state === 'open' ? issue.createdAt : (issue.closedAt ?? issue.createdAt);
+        const statusEvent = convertIssueStatusToEvent(
           signedIssueEvent.id,
           issue.state,
-          issue.closedAt,
-          context.userPubkey,
+          originalDate,
           context.repoAddr,
-          context.importTimestamp,
           context.currentTimestamp
         );
 
-        for (const statusData of statusEvents) {
-          context.abortController.throwIfAborted();
+        context.abortController.throwIfAborted();
 
-          // Sign status event
-          let signedStatusEvent: NostrEvent;
-          if (context.onSignEvent) {
-            signedStatusEvent = await context.onSignEvent(statusData.event);
-          } else if (context.eventIO) {
-            const result = await context.eventIO.publishEvent(statusData.event);
-            if (!result.ok) {
-              throw new Error(
-                `Failed to publish status event for issue #${issue.number}: ${result.error || "Unknown error"}`
-              );
-            }
-            context.currentTimestamp += 1;
-            statusEventsPublished++;
-            continue; // EventIO already published it
-          } else {
-            throw new Error("No signing method available for status events");
-          }
-
-          // Publish status event (batched)
-          await publishEventBatched(context, signedStatusEvent);
-
-          context.currentTimestamp += 1;
-          statusEventsPublished++;
+        // Sign status event with the profile of the user who created or closed the issue
+        const signerUser = issue.state === 'open' 
+          ? issue.author 
+          : (issue.closedBy || issue.author);
+        
+        const signerProfileKey = getProfileMapKey(context.platform, signerUser.login);
+        const signerProfile = context.userProfiles.get(signerProfileKey);
+        if (!signerProfile) {
+          throw new Error(
+            `Missing profile for issue ${issue.state === 'open' ? 'creator' : 'closer'} ${signerUser.login}; cannot sign status event for issue #${issue.number}`
+          );
         }
+        const signedStatusEvent = signEvent(statusEvent, signerProfile.privkey);
+
+        // Publish status event (batched)
+        await publishEventBatched(context, signedStatusEvent);
+
+        context.currentTimestamp += 1;
+        statusEventsPublished++;
+        
 
         // Update progress with count of published issues
         context.updateProgress(`Publishing issues... (${totalIssues} published)`, totalIssues);
@@ -1375,17 +1420,30 @@ export function useImportRepo(options: UseImportRepoOptions) {
   let error = $state<string | null>(null);
   let abortController: ImportAbortController | null = null;
 
+  /** Current phase; updated before each phase so context.updateProgress(step, current, total) uses it */
+  const currentPhaseRef = { current: "connecting" as ImportPhase };
+
+  /** Counts of mirrored items per phase; updated as each phase completes (for UI to show "X mirrored") */
+  const completedCountsRef: { current: ImportCompletedCounts } = { current: {} };
+
   /**
-   * Update progress state and call callback
+   * Update progress state and call callback.
    */
-  function updateProgress(step: string, current?: number, total?: number): void {
+  function setProgress(phase: ImportPhase, step: string, current?: number, total?: number): void {
     progress = {
+      phase,
       step,
       current,
       total,
-      isComplete: false,
+      isComplete: phase === "complete",
+      completedCounts: { ...completedCountsRef.current },
     };
     onProgress?.(progress);
+  }
+
+  /** Passed to context: updates progress using currentPhaseRef.current as phase */
+  function contextUpdateProgress(step: string, current?: number, total?: number): void {
+    setProgress(currentPhaseRef.current, step, current, total);
   }
 
   /**
@@ -1408,9 +1466,10 @@ export function useImportRepo(options: UseImportRepoOptions) {
     isImporting = true;
     error = null;
     abortController = new ImportAbortController();
+    currentPhaseRef.current = "connecting";
 
-    // Create rate limiter and wrapper
-    const rateLimiter = createRateLimiter(updateProgress);
+    // Create rate limiter and wrapper (context progress uses currentPhaseRef)
+    const rateLimiter = createRateLimiter(contextUpdateProgress);
     const withRateLimitFn = createWithRateLimit(rateLimiter, abortController);
 
     try {
@@ -1420,7 +1479,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         token,
         config,
         userPubkey,
-        updateProgress,
+        contextUpdateProgress,
         abortController,
         withRateLimitFn,
         onSignEvent,
@@ -1453,15 +1512,16 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       // Validation & Repository Setup
       const { repo: ownershipRepo, isOwner } = await validateTokenAndOwnership(context);
-      
+
       if (!ownershipRepo) {
         throw new Error("Failed to fetch repository information");
       }
-      
+
       // Set initial repo
       context.finalRepo = ownershipRepo;
       console.log('[DEBUG] Set initial finalRepo:', context.finalRepo?.name);
-      
+
+      currentPhaseRef.current = "repository";
       // Fork if needed (this updates context.finalRepo)
       const forkedOrOriginalRepo = await ensureForkedRepo(context, isOwner);
       if (!forkedOrOriginalRepo) {
@@ -1491,7 +1551,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
       context.startTimestamp = context.importTimestamp - 3600; // Start from 1 hour ago
       context.currentTimestamp = context.startTimestamp;
 
-      // Step 1: Convert and publish repo events (unchanged)
+      // Step 1: Convert and publish repo events (still under repository phase)
       console.log('[DEBUG] Before convertRepoEvents, finalRepo:', context.finalRepo?.name);
       const repoEvents = convertRepoEvents(context);
       console.log('[DEBUG] After convertRepoEvents, finalRepo:', context.finalRepo?.name);
@@ -1502,39 +1562,43 @@ export function useImportRepo(options: UseImportRepoOptions) {
       // Step 2: Stream issues (fetch, process, publish immediately)
       let issuesImported = 0;
       if (config.mirrorIssues) {
+        currentPhaseRef.current = "issues";
         const issueResult = await fetchAndPublishIssuesStreaming(context);
         issuesImported = issueResult.count;
+        completedCountsRef.current.issues = issuesImported;
       }
 
       // Step 3: Stream PRs (fetch, process, publish immediately)
       let prsImported = 0;
       if (config.mirrorPullRequests) {
+        currentPhaseRef.current = "pull_requests";
         console.log('[DEBUG] Before PRs, finalRepo:', context.finalRepo?.name);
         prsImported = await fetchAndPublishPRsStreaming(context);
         console.log('[DEBUG] After PRs, finalRepo:', context.finalRepo?.name);
+        completedCountsRef.current.pull_requests = prsImported;
       }
 
       // Step 4: Stream comments (if enabled)
       let commentsImported = 0;
       if (config.mirrorComments) {
+        currentPhaseRef.current = "comments";
         console.log('[DEBUG] Before comments, finalRepo:', context.finalRepo?.name);
         const issueNumbers = new Set(Array.from(context.issueEventIdMap.keys()));
         const prNumbers = new Set(Array.from(context.prEventIdMap.keys()));
         commentsImported = await fetchAndPublishCommentsStreaming(context, issueNumbers, prNumbers);
         console.log('[DEBUG] After comments, finalRepo:', context.finalRepo?.name);
+        completedCountsRef.current.comments = commentsImported;
       }
 
-      // Step 5: Publish profiles (batch at end - small memory footprint)
+      // Step 5: Publish user profiles encountered on the Git platform
+      currentPhaseRef.current = "profiles";
       await publishProfileEvents(context);
 
       // Final flush: ensure all queued events are published before completing
       await flushEventQueue(context);
 
       // Complete
-      updateProgress("Import completed successfully!");
-      if (progress) {
-        progress.isComplete = true;
-      }
+      setProgress("complete", "Import completed successfully!");
 
       // Final validation before returning result
       console.log('[DEBUG] Before creating result, finalRepo:', context.finalRepo);
