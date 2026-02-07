@@ -10,11 +10,7 @@
     FileCode,
   } from "@lucide/svelte";
   import { toast } from "../../stores/toast";
-  import type {
-    CommentEvent,
-    IssueEvent,
-    StatusEvent 
-  } from "@nostr-git/core/events";
+  import type { CommentEvent, IssueEvent, StatusEvent } from "@nostr-git/core/events";
   import {
     getTagValue,
     GIT_STATUS_CLOSED,
@@ -32,7 +28,6 @@
   const { Button, ProfileLink, Card, EventActions } = useRegistry();
   import BaseItemCard from "../BaseItemCard.svelte";
 
-
   interface Props {
     event: IssueEvent;
     comments?: CommentEvent[];
@@ -47,7 +42,8 @@
     // When provided, NIP-19 codes in description are replaced by this URL template.
     // e.g. "https://njump.me/{raw}" or "/spaces/{type}/{id}"
     nip19LinkTemplate?: string;
-    assigneeCount?: number; // New optional prop for displaying number of assignees
+    assigneeCount?: number; // Optional prop for displaying number of assignees
+    assignees?: string[]; // Optional list of assignee pubkeys
     relays?: string[]; // Relay URLs for EventActions
   }
   // Accept event and optional author (Profile store)
@@ -63,6 +59,7 @@
     actorPubkey,
     nip19LinkTemplate,
     assigneeCount = 0,
+    assignees = [],
     relays = [],
   }: Props = $props();
 
@@ -81,63 +78,66 @@
   const parsed = parseIssueEvent(event);
 
   const { id, subject: title, content: description, labels, createdAt } = parsed;
-  
+
   // Helper functions for label normalization (matching centralized logic)
   function toNaturalLabel(label: string): string {
-    if (typeof label !== "string") return ""
-    const trimmed = label.trim()
-    if (!trimmed) return ""
-    const idx = trimmed.lastIndexOf("/")
+    if (typeof label !== "string") return "";
+    const trimmed = label.trim();
+    if (!trimmed) return "";
+    const idx = trimmed.lastIndexOf("/");
     if (idx >= 0 && idx < trimmed.length - 1) {
-      return trimmed.slice(idx + 1)
+      return trimmed.slice(idx + 1);
     }
-    return trimmed.replace(/^#/, "")
+    return trimmed.replace(/^#/, "");
   }
 
   function toStringSet(value: unknown): Set<string> {
-    if (!value) return new Set<string>()
+    if (!value) return new Set<string>();
     if (value instanceof Set) {
-      return new Set(Array.from(value).filter(v => typeof v === "string") as string[])
+      return new Set(Array.from(value).filter((v) => typeof v === "string") as string[]);
     }
     if (Array.isArray(value)) {
-      return new Set(value.filter(v => typeof v === "string") as string[])
+      return new Set(value.filter((v) => typeof v === "string") as string[]);
     }
     if (typeof value === "string") {
-      return new Set([value])
+      return new Set([value]);
     }
-    return new Set<string>()
+    return new Set<string>();
   }
 
-  function normalizeEffectiveLabels(eff?: any | null): { flat: Set<string>; byNamespace: Record<string, Set<string>> } {
-    const flat = toStringSet(eff?.flat)
-    const byNamespace: Record<string, Set<string>> = {}
-    
+  function normalizeEffectiveLabels(eff?: any | null): {
+    flat: Set<string>;
+    byNamespace: Record<string, Set<string>>;
+  } {
+    const flat = toStringSet(eff?.flat);
+    const byNamespace: Record<string, Set<string>> = {};
+
     if (eff && typeof eff.byNamespace === "object") {
       for (const ns of Object.keys(eff.byNamespace)) {
-        byNamespace[ns] = toStringSet(eff.byNamespace[ns])
+        byNamespace[ns] = toStringSet(eff.byNamespace[ns]);
       }
     }
-    
-    return { flat, byNamespace }
+
+    return { flat, byNamespace };
   }
 
   function toNaturalArray(values?: Iterable<string> | null): string[] {
-    if (!values) return []
-    const out = new Set<string>()
+    if (!values) return [];
+    const out = new Set<string>();
     for (const val of values) {
       if (typeof val === "string") {
-        out.add(toNaturalLabel(val))
+        out.add(toNaturalLabel(val));
       }
     }
-    return Array.from(out)
+    return Array.from(out);
   }
 
   function groupLabels(view: { flat: Set<string>; byNamespace: Record<string, Set<string>> }): {
-    Status: string[]
-    Type: string[]
-    Area: string[]
-    Tags: string[]
-    Other: string[]
+    Status: string[];
+    Type: string[];
+    Area: string[];
+    Tags: string[];
+    Other: string[];
   } {
     const groupSets = {
       Status: new Set<string>(),
@@ -145,20 +145,20 @@
       Area: new Set<string>(),
       Tags: new Set<string>(),
       Other: new Set<string>(),
-    }
+    };
 
     const namespaceToGroup = (ns: string): keyof typeof groupSets => {
-      if (ns === "org.nostr.git.status") return "Status"
-      if (ns === "org.nostr.git.type") return "Type"
-      if (ns === "org.nostr.git.area") return "Area"
-      if (ns === "#t") return "Tags"
-      return "Other"
-    }
+      if (ns === "org.nostr.git.status") return "Status";
+      if (ns === "org.nostr.git.type") return "Type";
+      if (ns === "org.nostr.git.area") return "Area";
+      if (ns === "#t") return "Tags";
+      return "Other";
+    };
 
     for (const ns of Object.keys(view.byNamespace)) {
-      const group = namespaceToGroup(ns)
+      const group = namespaceToGroup(ns);
       for (const val of view.byNamespace[ns]) {
-        groupSets[group].add(toNaturalLabel(val))
+        groupSets[group].add(toNaturalLabel(val));
       }
     }
 
@@ -168,30 +168,41 @@
       Area: Array.from(groupSets.Area),
       Tags: Array.from(groupSets.Tags),
       Other: Array.from(groupSets.Other),
-    }
+    };
   }
 
   const displayLabels = $derived.by(() => {
     // First, normalize the extraLabels (which come from the centralized label system)
     const normalizedExtraLabels = toNaturalArray(extraLabels);
-    
+
     // Also include any labels from the parsed issue event
     const parsedLabels = toNaturalArray(labels);
-    
+
     // Merge and deduplicate
     const merged = Array.from(new Set([...parsedLabels, ...normalizedExtraLabels]));
-    
+
     // Debug logging
     console.debug(`[IssueCard] Issue ${id}:`, {
       extraLabels,
       normalizedExtraLabels,
       parsedLabels,
       merged,
-      labels
+      labels,
     });
-    
+
     return merged;
   });
+
+  const normalizedAssignees = $derived.by(() => {
+    if (!assignees || assignees.length === 0) return [];
+    return Array.from(new Set(assignees.filter(Boolean)));
+  });
+
+  const assigneeTotal = $derived.by(() => {
+    return normalizedAssignees.length > 0 ? normalizedAssignees.length : assigneeCount;
+  });
+
+  const assigneePreview = $derived.by(() => normalizedAssignees.slice(0, 3));
 
   const commentsOnThisIssue = $derived.by(() => {
     return comments?.filter((c) => getTagValue(c, "E") === id);
@@ -266,7 +277,8 @@
           rootAuthor={event.pubkey}
           statusEvents={statusEvents}
           actorPubkey={actorPubkey}
-          compact={true} />
+          compact={true}
+        />
       {:else if statusIcon}
         {@const { icon: IconCmp, color } = statusIcon}
         <IconCmp class={`h-6 w-6 mt-1 ${color}`} />
@@ -274,16 +286,45 @@
       <span class="whitespace-nowrap">Opened <TimeAgo date={createdAt} /></span>
       <div class="flex items-center gap-1">
         <span class="whitespace-nowrap">• By </span>
-        <NostrAvatar pubkey={event.pubkey} title={title || 'Issue author'} />
+        <NostrAvatar pubkey={event.pubkey} title={title || "Issue author"} />
         <ProfileLink pubkey={event.pubkey} />
       </div>
       <span class="whitespace-nowrap">• {commentCount} comments</span>
-      <span class="whitespace-nowrap">• {assigneeCount} assignee{assigneeCount === 1 ? "" : "s"}</span>
+      {#if assigneeTotal > 0}
+        <div class="flex items-center gap-1">
+          <span class="whitespace-nowrap">• Assignees</span>
+          {#if assigneePreview.length > 0}
+            <div class="flex items-center -space-x-1">
+              {#each assigneePreview as assignee (assignee)}
+                <NostrAvatar
+                  pubkey={assignee}
+                  size={18}
+                  class="ring-2 ring-background"
+                  title="Assignee"
+                />
+              {/each}
+            </div>
+            {#if assigneeTotal > assigneePreview.length}
+              <span class="text-xs text-muted-foreground"
+                >+{assigneeTotal - assigneePreview.length}</span
+              >
+            {/if}
+          {:else}
+            <span class="whitespace-nowrap"
+              >{assigneeTotal} assignee{assigneeTotal === 1 ? "" : "s"}</span
+            >
+          {/if}
+        </div>
+      {/if}
     {/snippet}
 
     <!-- body content -->
     <div class="line-clamp-2 prose prose-sm max-w-none">
-      <RichText content={description || ""} prose={false} linkTemplate={nip19LinkTemplate ?? "https://njump.me/{raw}"} />
+      <RichText
+        content={description || ""}
+        prose={false}
+        linkTemplate={nip19LinkTemplate ?? "https://njump.me/{raw}"}
+      />
     </div>
 
     <!-- tags -->
