@@ -6,7 +6,6 @@
  */
 
 import {
-  getGitServiceApi,
   getGitServiceApiFromUrl,
   parseRepoUrl,
   validateTokenPermissions,
@@ -27,9 +26,6 @@ import {
   signEvent,
   type UserProfileMap,
   type CommentEventMap,
-  type ConvertedComment,
-  type GitServiceApi,
-  type ListCommentsOptions,
 } from "@nostr-git/core";
 import type {
   RepoAnnouncementEvent,
@@ -597,11 +593,81 @@ async function verifyGitHubGistProof(
   }
 }
 
+const GITLAB_SNIPPETS_BASE = "https://gitlab.com/api/v4/snippets";
+
+/**
+ * Verify NIP-39 GitLab Snippet proof.
+ * Fetches the snippet, checks author matches username, and that raw content
+ * contains the attestation text with npub that decodes to expectedPubkey.
+ * Uses GitLab.com; public snippets are readable without auth.
+ *
+ * @see https://docs.gitlab.com/ee/api/snippets.html
+ */
+async function verifyGitLabSnippetProof(
+  username: string,
+  proof: string,
+  expectedPubkey: string,
+  withRateLimit: ImportContext["withRateLimit"]
+): Promise<boolean> {
+  const snippetId = proof.trim();
+  if (!snippetId || !/^\d+$/.test(snippetId)) {
+    return false;
+  }
+
+  try {
+    const metaRes = await withRateLimit("gitlab", "GET", () =>
+      fetch(`${GITLAB_SNIPPETS_BASE}/${snippetId}`, {
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    if (!metaRes.ok) return false;
+
+    const meta = (await metaRes.json()) as {
+      author?: { username?: string };
+    };
+
+    const authorUsername = meta.author?.username;
+    if (!authorUsername || authorUsername.toLowerCase() !== username.toLowerCase()) {
+      return false;
+    }
+
+    const rawRes = await withRateLimit("gitlab", "GET", () =>
+      fetch(`${GITLAB_SNIPPETS_BASE}/${snippetId}/raw`, {
+        headers: { Accept: "text/plain" },
+      })
+    );
+
+    if (!rawRes.ok) return false;
+
+    const content = await rawRes.text();
+
+    const match = content.match(NIP39_NPUB_REGEX);
+    let foundNpub: string | null = match ? match[1] : null;
+    if (!foundNpub && content.includes(NIP39_VERIFICATION_PREFIX)) {
+      const idx = content.indexOf(NIP39_VERIFICATION_PREFIX);
+      const after = content.slice(idx + NIP39_VERIFICATION_PREFIX.length);
+      const npubMatch = after.match(/^(npub1[a-zA-HJ-NP-Z0-9]{50,60})/);
+      if (npubMatch) foundNpub = npubMatch[1];
+    }
+
+    if (!foundNpub) return false;
+
+    const decoded = nip19.decode(foundNpub);
+    if (decoded.type !== "npub") return false;
+
+    const verifiedPubkey = decoded.data as string;
+    return verifiedPubkey === expectedPubkey;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Look up Nostr pubkey for a platform user via NIP-39 identity proof.
  * Queries kind 0 (profile) events with ["i", "platform:identity", proof] tags.
- * Verifies the GitHub Gist proof before accepting. Returns the pubkey if a
- * verified bridged profile is found, null otherwise.
+ * Verifies the platform-specific proof (GitHub Gist or GitLab Snippet) before
+ * accepting. Returns the pubkey if a verified bridged profile is found, null otherwise.
  *
  * @see https://github.com/nostr-protocol/nips/blob/master/39.md
  */
@@ -618,12 +684,11 @@ async function lookupNip39BridgedPubkey(
     return null;
   }
 
-  // NIP-39 supports github, twitter, etc. For now we only look up GitHub.
-  if (platform !== "github") {
+  if (platform !== "github" && platform !== "gitlab") {
     return null;
   }
 
-  const identity = `github:${username}`;
+  const identity = `${platform}:${username}`;
 
   const fetchEvents = context.onFetchEvents ?? context.eventIO?.fetchEvents;
   if (!fetchEvents) {
@@ -636,7 +701,6 @@ async function lookupNip39BridgedPubkey(
     ]);
 
     if (events.length > 0) {
-      // Take the most recent (relays often return newest first)
       const profile = events.reduce((a, b) =>
         (a.created_at > b.created_at ? a : b)
       );
@@ -646,18 +710,25 @@ async function lookupNip39BridgedPubkey(
       ) as [string, string, string] | undefined;
       const proof = iTag?.[2];
 
-      if(proof) {
-        const verified = await verifyGitHubGistProof(
-          username,
-          proof,
-          profile.pubkey,
-          context.withRateLimit
-        );
+      if (proof) {
+        const verified =
+          platform === "github"
+            ? await verifyGitHubGistProof(
+                username,
+                proof,
+                profile.pubkey,
+                context.withRateLimit
+              )
+            : await verifyGitLabSnippetProof(
+                username,
+                proof,
+                profile.pubkey,
+                context.withRateLimit
+              );
         if (verified) {
           context.bridgedNostrPubkeys.set(profileKey, profile.pubkey);
           return profile.pubkey;
         }
-  
       }
     }
   } catch (err) {
@@ -696,11 +767,11 @@ async function ensureUserProfile(context: ImportContext, username: string, avata
     return;
   }
 
-  // Try NIP-39 lookup for bridged identities (github:username -> Nostr pubkey)
+  // Try NIP-39 lookup for bridged identities (platform:username -> Nostr pubkey)
   await lookupNip39BridgedPubkey(context, context.platform, username);
 
   // Generate profile directly from available data (no API call needed!)
-  // GitHub already provides username and avatarUrl in issues/PRs/comments
+  // GitHub/GitLab already provide username and avatarUrl in issues/MRs/comments
   const profile = generatePlatformUserProfile(context.platform, username);
 
   context.userProfiles.set(profileKey, {
