@@ -31,6 +31,19 @@
 
   type StatusState = "open" | "draft" | "closed" | "merged" | "resolved"
 
+  interface StatusProps {
+    repo: Repo
+    rootId: string
+    rootKind: 1621 | 1617 | 1618
+    rootAuthor: string
+    statusEvents?: StatusEvent[]
+    actorPubkey?: string
+    compact?: boolean
+    onPublish?: (event: StatusEvent) => Promise<any>
+    ProfileComponent?: any
+    isMirrored?: boolean
+  }
+
   const {
     repo,
     rootId,
@@ -41,17 +54,8 @@
     compact = false,
     onPublish,
     ProfileComponent = ProfileLink,
-  }: {
-    repo: Repo
-    rootId: string
-    rootKind: 1621 | 1617 | 1618
-    rootAuthor: string
-    statusEvents?: StatusEvent[]
-    actorPubkey?: string
-    compact?: boolean
-    onPublish?: (event: StatusEvent) => Promise<any>
-    ProfileComponent?: any
-  } = $props()
+    isMirrored = false,
+  }: StatusProps = $props()
 
   // Authority check
   const isAuthorized = $derived.by(() => {
@@ -68,12 +72,23 @@
   })
 
   const authorizedEvents = $derived.by(() => {
+    // For mirrored issues, all status events are considered authorized
+    // since they represent the actual state from the original platform
+    if (isMirrored) {
+      return statusEvents
+    }
+    
     return statusEvents.filter(
       (e) => e.pubkey === rootAuthor || maintainerSet.has(e.pubkey)
     )
   })
 
   const suggestedEvents = $derived.by(() => {
+    // For mirrored issues, there are no suggestions since all events are authorized
+    if (isMirrored) {
+      return []
+    }
+    
     return statusEvents.filter(
       (e) => e.pubkey !== rootAuthor && !maintainerSet.has(e.pubkey)
     )
@@ -182,6 +197,28 @@
         return rootKind === 1617 ? "merged" : "resolved"
       default:
         return "open"
+    }
+  }
+
+  /** For mirrored status events (from import): get original_date and whether to show "imported by" */
+  function getStatusDisplayInfo(event: StatusEvent): {
+    isMirrored: boolean
+    displayDate: Date
+  } {
+
+    console.log("[Status] getStatusDisplayInfo", event)
+
+    const tags = (event.tags || []) as Array<[string, string]>
+    const hasImported = tags.some((t) => t[0] === "imported")
+    const originalDateTag = tags.find((t) => t[0] === "original_date")?.[1]
+    const isMirrored = !!(hasImported && originalDateTag)
+    const sec = originalDateTag ? parseInt(originalDateTag, 10) : NaN
+    const displayDate = isMirrored && !Number.isNaN(sec)
+      ? new Date(sec * 1000)
+      : new Date((event.created_at ?? 0) * 1000)
+    return {
+      isMirrored,
+      displayDate,
     }
   }
 
@@ -354,11 +391,12 @@
               {currentState.charAt(0).toUpperCase() + currentState.slice(1)}
             </Badge>
             {#if currentStatusEvent}
+              {@const info = getStatusDisplayInfo(currentStatusEvent)}
               <span class="text-xs text-muted-foreground flex flex-wrap items-center gap-1">
                 <span>by</span>
                 <ProfileComponent pubkey={currentStatusEvent.pubkey} />
                 <span class="hidden sm:inline">•</span>
-                <span class="break-all sm:break-normal">{new Date(currentStatusEvent.created_at * 1000).toLocaleString()}</span>
+                <span class="break-all sm:break-normal">{info.displayDate.toLocaleString()}</span>
               </span>
             {/if}
           </div>
@@ -469,6 +507,7 @@
               {#snippet historyItem()}
                 {@const state = kindToState(event.kind)}
                 {@const { icon: Icon, color } = getStateIcon(state)}
+                {@const info = getStatusDisplayInfo(event)}
                 <div class="flex items-start gap-2 text-[10px] sm:text-xs">
                   <Icon class={`mt-0.5 h-3 w-3 ${color} flex-shrink-0`} />
                   <div class="flex-1 min-w-0">
@@ -478,7 +517,7 @@
                         <span>by</span>
                         <ProfileComponent pubkey={event.pubkey} />
                         <span class="hidden sm:inline">•</span>
-                        <span class="break-all sm:break-normal">{new Date(event.created_at * 1000).toLocaleString()}</span>
+                        <span class="break-all sm:break-normal">{info.displayDate.toLocaleString()}</span>
                       </span>
                     </div>
                     {#if event.content}
@@ -503,6 +542,7 @@
               {#snippet suggestionItem()}
                 {@const state = kindToState(event.kind)}
                 {@const { icon: Icon, color } = getStateIcon(state)}
+                {@const info = getStatusDisplayInfo(event)}
                 <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 rounded border border-border/50 bg-muted/20 p-2">
                   <div class="flex items-start gap-2 text-[10px] sm:text-xs min-w-0 flex-1">
                     <Icon class={`mt-0.5 h-3 w-3 ${color} flex-shrink-0`} />
@@ -513,7 +553,7 @@
                           <span>by</span>
                           <ProfileComponent pubkey={event.pubkey} />
                           <span class="hidden sm:inline">•</span>
-                          <span class="break-all sm:break-normal">{new Date(event.created_at * 1000).toLocaleString()}</span>
+                          <span class="break-all sm:break-normal">{info.displayDate.toLocaleString()}</span>
                         </span>
                       </div>
                       {#if event.content}

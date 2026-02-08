@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { NewRepoResult } from "../../hooks/useNewRepo.svelte";
+
   interface Props {
     isCreating: boolean;
     progress: {
@@ -9,10 +11,12 @@
     }[];
     onRetry?: () => void;
     onClose?: () => void;
-    onViewRepo?: () => void;
+    /** Set when repo was just created; enables "Navigate to repo" when onNavigateToRepo is provided */
+    createdRepoResult?: NewRepoResult | null;
+    onNavigateToRepo?: (result: NewRepoResult) => void;
   }
 
-  const { isCreating, progress, onRetry, onClose, onViewRepo }: Props = $props();
+  const { isCreating, progress, onRetry, onClose, createdRepoResult = null, onNavigateToRepo }: Props = $props();
 
   const completedSteps = $derived(progress.filter((step) => step.completed).length);
   const totalSteps = $derived(progress.length);
@@ -130,7 +134,7 @@
 
   <!-- Action Buttons -->
   {#if !isCreating}
-    <div class="flex justify-end space-x-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+    <div class="flex justify-end flex-wrap gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
       {#if hasErrors && onRetry}
         <button
           onclick={onRetry}
@@ -140,12 +144,12 @@
         </button>
       {/if}
 
-      {#if isComplete && onViewRepo}
+      {#if isComplete && onNavigateToRepo && createdRepoResult}
         <button
-          onclick={onViewRepo}
-          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
+          onclick={() => onNavigateToRepo(createdRepoResult)}
+          class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors"
         >
-          View Repository
+          Navigate to repo
         </button>
       {/if}
 

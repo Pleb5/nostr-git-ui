@@ -42,6 +42,7 @@
     workerApi?: any; // Git worker API instance (optional for backward compatibility)
     workerInstance?: Worker; // Worker instance for event signing
     onRepoCreated?: (repoData: NewRepoResult) => void;
+    /** Called when user chooses to navigate to the newly created repo (app should goto repo URL) */
     onNavigateToRepo?: (repoData: NewRepoResult) => void;
     onCancel?: () => void;
     onPublishEvent?: (
@@ -107,12 +108,15 @@
       }));
     },
     onRepoCreated: (result) => {
-      createdResult = result;
+      createdRepoResult = result;
       onRepoCreated?.(result);
     },
     onPublishEvent: onPublishEvent,
     userPubkey, // Pass user pubkey for GRASP repos
   });
+
+  // Store result when repo is created so we can offer "Navigate to repo"
+  let createdRepoResult = $state<NewRepoResult | null>(null);
 
   // Token management
   let tokens = $state<Token[]>([]);
@@ -715,7 +719,8 @@
         progress={progressSteps}
         onRetry={handleRetry}
         onClose={handleClose}
-        onViewRepo={createdResult && onNavigateToRepo ? handleViewRepo : undefined}
+        createdRepoResult={createdRepoResult}
+        onNavigateToRepo={onNavigateToRepo}
       />
     {/if}
   </div>
