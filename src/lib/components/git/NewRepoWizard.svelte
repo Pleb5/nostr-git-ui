@@ -42,6 +42,7 @@
     workerApi?: any; // Git worker API instance (optional for backward compatibility)
     workerInstance?: Worker; // Worker instance for event signing
     onRepoCreated?: (repoData: NewRepoResult) => void;
+    onNavigateToRepo?: (repoData: NewRepoResult) => void;
     onCancel?: () => void;
     onPublishEvent?: (
       event: Omit<NostrEvent, "id" | "sig" | "pubkey" | "created_at">
@@ -55,9 +56,7 @@
     getProfile?: (
       pubkey: string
     ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
-    searchProfiles?: (
-      query: string
-    ) => Promise<
+    searchProfiles?: (query: string) => Promise<
       Array<{
         pubkey: string;
         name?: string;
@@ -75,6 +74,7 @@
     workerApi,
     workerInstance,
     onRepoCreated,
+    onNavigateToRepo,
     onCancel,
     onPublishEvent,
     defaultRelays = [],
@@ -88,6 +88,8 @@
   }: Props = $props();
 
   console.log("defaultRelays", defaultRelays);
+
+  let createdResult = $state<NewRepoResult | null>(null);
 
   // Initialize the useNewRepo hook
   const { createRepository, isCreating, progress, error, reset } = useNewRepo({
@@ -105,6 +107,7 @@
       }));
     },
     onRepoCreated: (result) => {
+      createdResult = result;
       onRepoCreated?.(result);
     },
     onPublishEvent: onPublishEvent,
@@ -128,7 +131,11 @@
     // Pre-populate GRASP relay URLs from the user's saved GRASP relay set
     void selectedProvider;
     void graspServerOptions;
-    if (selectedProvider === "grasp" && graspRelayUrls.length === 0 && graspServerOptions.length > 0) {
+    if (
+      selectedProvider === "grasp" &&
+      graspRelayUrls.length === 0 &&
+      graspServerOptions.length > 0
+    ) {
       graspRelayUrls = [...graspServerOptions];
     }
   });
@@ -180,7 +187,7 @@
     if (!userEditedWebUrl) {
       let url = "";
       if (selectedProvider === "grasp") {
-        url = `https://gitworkshop.dev/${userPubkey ?? '[pubkey]'}/${name}`
+        url = `https://gitworkshop.dev/${userPubkey ?? "[pubkey]"}/${name}`;
       } else if (selectedProvider) {
         const host = availabilityHost || providerHost(selectedProvider);
         if (host && username) {
@@ -203,14 +210,10 @@
         advancedSettings.cloneUrls = nostrUrl ? [nostrUrl] : [];
       } else {
         // For non-GRASP: prefer HTTPS primary (when derivable), plus nostr secondary
-        const httpsUrl = host && username
-          ? `https://${host}/${username}/${name}.git` 
-          : undefined;
+        const httpsUrl = host && username ? `https://${host}/${username}/${name}.git` : undefined;
 
         if (httpsUrl) {
-          advancedSettings.cloneUrls = nostrUrl 
-            ? [httpsUrl, nostrUrl] 
-            : [httpsUrl];
+          advancedSettings.cloneUrls = nostrUrl ? [httpsUrl, nostrUrl] : [httpsUrl];
         } else {
           // If HTTPS not derivable yet, avoid populating with transient nostr values
           advancedSettings.cloneUrls = [];
@@ -442,6 +445,7 @@
     if (!selectedProvider) return;
 
     try {
+      createdResult = null;
       await createRepository({
         name: repoDetails.name,
         description: repoDetails.description,
@@ -468,6 +472,7 @@
 
   function handleRetry() {
     // Reset progress and try again using the hook
+    createdResult = null;
     reset();
     startRepositoryCreation();
   }
@@ -475,6 +480,12 @@
   function handleClose() {
     if (onCancel) {
       onCancel();
+    }
+  }
+
+  function handleViewRepo() {
+    if (createdResult && onNavigateToRepo) {
+      onNavigateToRepo(createdResult);
     }
   }
 
@@ -704,6 +715,7 @@
         progress={progressSteps}
         onRetry={handleRetry}
         onClose={handleClose}
+        onViewRepo={createdResult && onNavigateToRepo ? handleViewRepo : undefined}
       />
     {/if}
   </div>
@@ -711,22 +723,11 @@
   <!-- Navigation Buttons -->
   {#if currentStep < 4}
     <div class="flex justify-between pt-4">
-      <Button onclick={onCancel}
-        variant="outline" 
-        class="btn btn-secondary"
-      >
-        Cancel
-      </Button>
+      <Button onclick={onCancel} variant="outline" class="btn btn-secondary">Cancel</Button>
 
       <div class="flex space-x-3">
         {#if currentStep > 1}
-          <Button
-            onclick={prevStep}
-            variant="outline"
-            class="btn btn-secondary"
-          >
-            Previous
-          </Button>
+          <Button onclick={prevStep} variant="outline" class="btn btn-secondary">Previous</Button>
         {/if}
 
         <Button
@@ -736,7 +737,7 @@
             (currentStep === 2 && !validateStep1())}
           variant="git"
           class="btn btn-primary"
-          >
+        >
           {currentStep === 3 ? "Create Repository" : "Next"}
         </Button>
       </div>

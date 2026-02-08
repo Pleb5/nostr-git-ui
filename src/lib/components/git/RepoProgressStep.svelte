@@ -9,9 +9,10 @@
     }[];
     onRetry?: () => void;
     onClose?: () => void;
+    onViewRepo?: () => void;
   }
 
-  const { isCreating, progress, onRetry, onClose }: Props = $props();
+  const { isCreating, progress, onRetry, onClose, onViewRepo }: Props = $props();
 
   const completedSteps = $derived(progress.filter((step) => step.completed).length);
   const totalSteps = $derived(progress.length);
@@ -136,6 +137,15 @@
           class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
         >
           Try Again
+        </button>
+      {/if}
+
+      {#if isComplete && onViewRepo}
+        <button
+          onclick={onViewRepo}
+          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
+        >
+          View Repository
         </button>
       {/if}
 
