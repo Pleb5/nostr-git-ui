@@ -1,6 +1,14 @@
 <script lang="ts">
   import { cn } from "../../utils";
-  import { GitBranch, GitFork, RotateCcw, Settings, Bookmark, AlertTriangle, X } from "@lucide/svelte";
+  import {
+    GitBranch,
+    GitFork,
+    RotateCcw,
+    Settings,
+    Bookmark,
+    AlertTriangle,
+    X,
+  } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
   const { Button } = useRegistry();
   import { Repo } from "./Repo.svelte";
@@ -31,25 +39,25 @@
     isBookmarked?: boolean;
     isTogglingBookmark?: boolean;
   } = $props();
-  const name = $state(repoClass.name);
-  const description = $state(repoClass.description);
+  const name = $derived.by(() => repoClass.name);
+  const description = $derived.by(() => repoClass.description);
   const canEdit = $derived.by(() => !!repoClass.editable);
-  
+
   // Track clone URL errors from the Repo class
   // DISABLED: Returning false positives, needs investigation
   // const cloneUrlErrors = $derived(repoClass.cloneUrlErrors);
   // const hasCloneUrlErrors = $derived(cloneUrlErrors.length > 0);
   const cloneUrlErrors: Array<{ url: string; error: string; status?: number }> = [];
   const hasCloneUrlErrors = false;
-  
+
   // Dismiss errors
   function dismissErrors() {
     repoClass.clearCloneUrlErrors();
   }
-  
+
   // Format error message for display
   function formatError(error: { url: string; error: string; status?: number }): string {
-    const urlShort = error.url.replace(/^https?:\/\//, '').replace(/\.git$/, '');
+    const urlShort = error.url.replace(/^https?:\/\//, "").replace(/\.git$/, "");
     if (error.status === 404) {
       return `Repository not found: ${urlShort}`;
     } else if (error.status === 401 || error.status === 403) {
@@ -89,11 +97,7 @@
   <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
     <h1 class="text-xl sm:text-2xl font-bold flex items-center gap-2 min-w-0">
       <GitBranch class="h-5 w-5 sm:h-6 sm:w-6 flex-shrink-0" />
-      <button 
-        onclick={overviewRepo}
-        class="truncate text-left"
-        title={name}
-      >
+      <button onclick={overviewRepo} class="truncate text-left" title={name}>
         {name}
       </button>
     </h1>
