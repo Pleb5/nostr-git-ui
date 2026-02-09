@@ -94,14 +94,14 @@
       </div>
     </div>
   {/if}
-  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+  <div class="flex flex-col gap-2 mb-4">
     <h1 class="text-xl sm:text-2xl font-bold flex items-center gap-2 min-w-0">
       <GitBranch class="h-5 w-5 sm:h-6 sm:w-6 flex-shrink-0" />
       <button onclick={overviewRepo} class="truncate text-left" title={name}>
         {name}
       </button>
     </h1>
-    <div class="flex items-center gap-1 sm:gap-2 flex-wrap sm:flex-nowrap">
+    <div class="flex items-center flex-wrap gap-2 sm:gap-3">
       {#if bookmarkRepo}
         <Button
           variant={isBookmarked ? "default" : "outline"}
@@ -148,7 +148,7 @@
           <span class="hidden sm:inline">Settings</span>
         </Button>
       {/if}
-      <div class="flex-shrink-0 min-w-0">
+      <div class="flex-shrink-0 min-w-0 sm:ml-auto">
         <BranchSelector repo={repoClass} />
       </div>
     </div>
