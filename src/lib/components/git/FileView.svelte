@@ -8,17 +8,14 @@
   import { GIT_PERMALINK } from "@nostr-git/core/types";
   import type { Repo } from "./Repo.svelte";
   import CodeMirror from "svelte-codemirror-editor";
-  import {
-    detectFileType,
-    type FileTypeInfo,
-  } from "../../utils/fileTypeDetection.js";
+  import { detectFileType, type FileTypeInfo } from "../../utils/fileTypeDetection.js";
   import FileMetadataPanel from "./FileMetadataPanel.svelte";
   import {
     ImageViewer,
     PDFViewer,
     VideoViewer,
     AudioViewer,
-    BinaryViewer
+    BinaryViewer,
   } from "./viewers/index.js";
   import { lineNumbers } from "@codemirror/view";
 
@@ -63,7 +60,7 @@
   let fileTypeInfo = $state<FileTypeInfo | null>(null);
   let metadata = $state<Record<string, string>>({});
   let selectedStart: number | null = $state(null);
-  let selectedEnd: number | null = $state(null);  
+  let selectedEnd: number | null = $state(null);
   let cmExtensions: any[] = $state([]);
   let showPermalinkMenu = $state(false);
   let editorHost: HTMLElement | null = $state(null);
@@ -72,10 +69,16 @@
   let gutterMenuX = $state(0);
   let gutterMenuY = $state(0);
   let isDraggingSelect = $state(false);
+  let isTouchSelecting = $state(false);
+  let touchTimer: number | null = $state(null);
+  let touchStartX = $state(0);
+  let touchStartY = $state(0);
+  let touchMoved = $state(false);
+  let touchIdentifier = $state<number | null>(null);
 
   let hasLoadedOnce = false;
   let fileViewElement: HTMLElement | null = $state(null);
-  
+
   $effect(() => {
     if (isExpanded && type === "file") {
       // Clear selection only when FIRST opening a file, not on every re-render
@@ -84,13 +87,13 @@
         selectedStart = null;
         selectedEnd = null;
         hasLoadedOnce = true;
-        
+
         // Scroll to the top of this file view
         if (fileViewElement) {
-          fileViewElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          fileViewElement.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       }
-      
+
       if (!content) {
         isLoading = true;
         getFileContent(path)
@@ -116,7 +119,9 @@
 
   // Update URL hash from current selection when user selects lines
   function syncHashFromSelection() {
-    console.log(`[${instanceId}:${path}] syncHash called, start=${selectedStart}, end=${selectedEnd}, current hash=${location.hash}`);
+    console.log(
+      `[${instanceId}:${path}] syncHash called, start=${selectedStart}, end=${selectedEnd}, current hash=${location.hash}`
+    );
     if (selectedStart) {
       const hash = `#L${selectedStart}${selectedEnd ? `-L${selectedEnd}` : ""}`;
       if (location.hash !== hash) {
@@ -127,70 +132,70 @@
       }
     }
   }
-  
+
   // Get line numbers from browser's text selection
   function getLinesFromSelection(): { start: number; end: number } | null {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return null;
     const range = sel.getRangeAt(0);
     if (range.collapsed) return null;
-    
+
     // startContainer/endContainer can be text nodes, so we need to get their parent element
     const getLineElement = (node: Node): HTMLElement | null => {
       if (node.nodeType === Node.ELEMENT_NODE) {
-        return (node as HTMLElement).closest('.cm-line');
+        return (node as HTMLElement).closest(".cm-line");
       } else if (node.parentElement) {
-        return node.parentElement.closest('.cm-line');
+        return node.parentElement.closest(".cm-line");
       }
       return null;
     };
-    
+
     const startLine = getLineElement(range.startContainer);
     const endLine = getLineElement(range.endContainer);
-    
+
     if (!startLine || !endLine) return null;
-    
+
     // Get all lines in the editor
-    const allLines = Array.from(editorHost!.querySelectorAll('.cm-line')) as HTMLElement[];
+    const allLines = Array.from(editorHost!.querySelectorAll(".cm-line")) as HTMLElement[];
     const startIdx = allLines.indexOf(startLine);
     const endIdx = allLines.indexOf(endLine);
-    
+
     if (startIdx === -1 || endIdx === -1) return null;
-    
+
     // Convert to 1-based line numbers
     return {
       start: Math.min(startIdx, endIdx) + 1,
-      end: Math.max(startIdx, endIdx) + 1
+      end: Math.max(startIdx, endIdx) + 1,
     };
   }
-  
+
   // Select lines in the CodeMirror editor
   function selectLinesInEditor(startLine: number, endLine: number) {
     if (!editorHost) return;
-    
-    const lines = Array.from(editorHost.querySelectorAll('.cm-line')) as HTMLElement[];
+
+    const lines = Array.from(editorHost.querySelectorAll(".cm-line")) as HTMLElement[];
     if (lines.length === 0) return;
-    
+
     // Ensure start <= end
     const start = Math.min(startLine, endLine);
     const end = Math.max(startLine, endLine);
-    
+
     // Convert to 0-based indices
     const startIdx = start - 1;
     const endIdx = end - 1;
-    
+
     if (startIdx < 0 || endIdx >= lines.length) return;
-    
+
     const startLineEl = lines[startIdx];
     const endLineEl = lines[endIdx];
-    
+
     if (!startLineEl || !endLineEl) return;
-    
+
     // Create a range and select it
     const range = document.createRange();
     range.setStart(startLineEl, 0);
     range.setEnd(endLineEl, endLineEl.childNodes.length);
-    
+
     const selection = window.getSelection();
     if (selection) {
       selection.removeAllRanges();
@@ -202,35 +207,35 @@
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Check if click is inside any menu popup
-      const inMenu = target.closest?.('.permalink-menu-popup');
-      
+      const inMenu = target.closest?.(".permalink-menu-popup");
+
       // Close menus if clicking outside
       if (!inMenu) {
         showPermalinkMenu = false;
         showGutterMenu = false;
       }
     };
-    window.addEventListener('click', handler);
-    return () => window.removeEventListener('click', handler);
+    window.addEventListener("click", handler);
+    return () => window.removeEventListener("click", handler);
   });
-  
+
   // Watch for text selection changes in the editor
   $effect(() => {
     if (!editorHost) return;
     const editor = editorHost; // Capture for closure
-    
+
     const handleSelectionChange = () => {
       // Only process if the selection is within our editor
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
-      
+
       const range = selection.getRangeAt(0);
       const startNode = range.startContainer;
       const endNode = range.endContainer;
-      
+
       // Check if selection is within our editor
       if (!editor.contains(startNode) || !editor.contains(endNode)) return;
-      
+
       // Get the selected lines
       const lines = getLinesFromSelection();
       if (lines && lines.start !== lines.end) {
@@ -239,9 +244,9 @@
         syncHashFromSelection();
       }
     };
-    
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
   });
 
   // Capture gutter interactions from CodeMirror reliably
@@ -255,43 +260,49 @@
 
     const handleClickOrContext = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.('.cm-gutterElement') as HTMLElement | null;
+      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
       if (!gutterEl) return;
-      
+
       const n = getLineFromGutter(gutterEl);
       if (n == null) return;
-      
+
       // On left-click: just update selection, don't open menu
-      if (e.type === 'click') {
-        console.log(`[${instanceId}:${path}] click line ${n}, shift=${(e as MouseEvent).shiftKey}, current start=${selectedStart}`);
+      if (e.type === "click") {
+        console.log(
+          `[${instanceId}:${path}] click line ${n}, shift=${(e as MouseEvent).shiftKey}, current start=${selectedStart}`
+        );
         if ((e as MouseEvent).shiftKey && selectedStart) {
           // Extend selection: keep start, set end
           selectedEnd = n;
-          console.log(`[${instanceId}:${path}] after shift-click: start=${selectedStart}, end=${selectedEnd}`);
-          
+          console.log(
+            `[${instanceId}:${path}] after shift-click: start=${selectedStart}, end=${selectedEnd}`
+          );
+
           // Select the text in the editor
           selectLinesInEditor(selectedStart, selectedEnd);
         } else {
           // New selection: set start, clear end
           selectedStart = n;
           selectedEnd = null;
-          console.log(`[${instanceId}:${path}] after click: start=${selectedStart}, end=${selectedEnd}`);
+          console.log(
+            `[${instanceId}:${path}] after click: start=${selectedStart}, end=${selectedEnd}`
+          );
         }
         syncHashFromSelection();
         return;
       }
-      
+
       // On right-click: open menu with current selection (or set to clicked line)
-      if (e.type === 'contextmenu') {
+      if (e.type === "contextmenu") {
         e.preventDefault();
-        
+
         // If no selection exists, select the clicked line
         if (!selectedStart) {
           selectedStart = n;
           selectedEnd = null;
           syncHashFromSelection();
         }
-        
+
         // Open menu at mouse position
         const rect = editorHost!.getBoundingClientRect();
         gutterMenuX = Math.max(8, e.clientX - rect.left + editorHost!.scrollLeft);
@@ -303,9 +314,9 @@
 
     const handleMouseDown = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.('.cm-gutterElement') as HTMLElement | null;
+      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
       // Allow starting selection from gutter or content
-      if (!gutterEl && !el.closest?.('.cm-content')) return;
+      if (!gutterEl && !el.closest?.(".cm-content")) return;
       const n = gutterEl ? getLineFromGutter(gutterEl) : null;
       if (n == null && gutterEl) return; // Gutter click but no line number
       if (n != null) {
@@ -319,7 +330,7 @@
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDraggingSelect) return;
       const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.('.cm-gutterElement') as HTMLElement | null;
+      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
       const n = getLineFromGutter(gutterEl);
       if (n != null) {
         selectedEnd = n;
@@ -336,12 +347,100 @@
         // Don't open menu on mouseup - wait for contextmenu
       }
     };
-    
+
+    const clearTouchTimer = () => {
+      if (touchTimer) {
+        window.clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    };
+
+    const openGutterMenuAt = (clientX: number, clientY: number) => {
+      const rect = editorHost!.getBoundingClientRect();
+      gutterMenuX = Math.max(8, clientX - rect.left + editorHost!.scrollLeft);
+      gutterMenuY = Math.max(8, clientY - rect.top + editorHost!.scrollTop);
+      showPermalinkMenu = false;
+      showGutterMenu = true;
+      isTouchSelecting = false;
+      touchIdentifier = null;
+      clearTouchTimer();
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      const el = e.target as HTMLElement;
+      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
+      if (!gutterEl) return;
+
+      const n = getLineFromGutter(gutterEl);
+      if (n == null) return;
+
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+
+      touchIdentifier = touch.identifier;
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchMoved = false;
+
+      selectedStart = n;
+      selectedEnd = null;
+      isTouchSelecting = true;
+      showGutterMenu = false;
+      showPermalinkMenu = false;
+      syncHashFromSelection();
+
+      clearTouchTimer();
+      touchTimer = window.setTimeout(() => {
+        if (!touchMoved) {
+          openGutterMenuAt(touchStartX, touchStartY);
+        }
+      }, 500);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isTouchSelecting) return;
+      const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
+      if (!touch) return;
+
+      e.preventDefault();
+
+      const dx = touch.clientX - touchStartX;
+      const dy = touch.clientY - touchStartY;
+      if (Math.hypot(dx, dy) > 6) {
+        touchMoved = true;
+        clearTouchTimer();
+      }
+
+      const target = document.elementFromPoint(touch.clientX, touch.clientY) as HTMLElement | null;
+      const gutterEl = target?.closest?.(".cm-gutterElement") as HTMLElement | null;
+      const n = getLineFromGutter(gutterEl);
+      if (n == null || !selectedStart) return;
+
+      if (n !== selectedStart && !touchMoved) {
+        touchMoved = true;
+        clearTouchTimer();
+      }
+
+      selectedEnd = n;
+      selectLinesInEditor(selectedStart, selectedEnd);
+      syncHashFromSelection();
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (!isTouchSelecting) return;
+      const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
+      if (!touch) return;
+
+      clearTouchTimer();
+      isTouchSelecting = false;
+      touchIdentifier = null;
+    };
+
     const handleContentContextMenu = (e: MouseEvent) => {
       // Check if this is a right-click on selected text in content
       const el = e.target as HTMLElement;
-      if (!el.closest?.('.cm-content')) return;
-      
+      if (!el.closest?.(".cm-content")) return;
+
       const lines = getLinesFromSelection();
       if (lines && lines.start !== lines.end) {
         e.preventDefault();
@@ -356,19 +455,37 @@
       }
     };
 
-    editorHost.addEventListener('click', handleClickOrContext, { capture: true } as any);
-    editorHost.addEventListener('contextmenu', handleClickOrContext, { capture: true } as any);
-    editorHost.addEventListener('contextmenu', handleContentContextMenu, { capture: true } as any);
-    editorHost.addEventListener('mousedown', handleMouseDown, { capture: true } as any);
-    window.addEventListener('mousemove', handleMouseMove, { capture: true } as any);
-    window.addEventListener('mouseup', handleMouseUp, { capture: true } as any);
+    editorHost.addEventListener("click", handleClickOrContext, { capture: true } as any);
+    editorHost.addEventListener("contextmenu", handleClickOrContext, { capture: true } as any);
+    editorHost.addEventListener("contextmenu", handleContentContextMenu, { capture: true } as any);
+    editorHost.addEventListener("mousedown", handleMouseDown, { capture: true } as any);
+    editorHost.addEventListener("touchstart", handleTouchStart, {
+      capture: true,
+      passive: true,
+    } as any);
+    editorHost.addEventListener("touchmove", handleTouchMove, {
+      capture: true,
+      passive: false,
+    } as any);
+    editorHost.addEventListener("touchend", handleTouchEnd, { capture: true } as any);
+    editorHost.addEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+    window.addEventListener("mousemove", handleMouseMove, { capture: true } as any);
+    window.addEventListener("mouseup", handleMouseUp, { capture: true } as any);
     return () => {
-      editorHost?.removeEventListener('click', handleClickOrContext, { capture: true } as any);
-      editorHost?.removeEventListener('contextmenu', handleClickOrContext, { capture: true } as any);
-      editorHost?.removeEventListener('contextmenu', handleContentContextMenu, { capture: true } as any);
-      editorHost?.removeEventListener('mousedown', handleMouseDown, { capture: true } as any);
-      window.removeEventListener('mousemove', handleMouseMove, { capture: true } as any);
-      window.removeEventListener('mouseup', handleMouseUp, { capture: true } as any);
+      editorHost?.removeEventListener("click", handleClickOrContext, { capture: true } as any);
+      editorHost?.removeEventListener("contextmenu", handleClickOrContext, {
+        capture: true,
+      } as any);
+      editorHost?.removeEventListener("contextmenu", handleContentContextMenu, {
+        capture: true,
+      } as any);
+      editorHost?.removeEventListener("mousedown", handleMouseDown, { capture: true } as any);
+      editorHost?.removeEventListener("touchstart", handleTouchStart, { capture: true } as any);
+      editorHost?.removeEventListener("touchmove", handleTouchMove, { capture: true } as any);
+      editorHost?.removeEventListener("touchend", handleTouchEnd, { capture: true } as any);
+      editorHost?.removeEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+      window.removeEventListener("mousemove", handleMouseMove, { capture: true } as any);
+      window.removeEventListener("mouseup", handleMouseUp, { capture: true } as any);
     };
   });
 
@@ -423,9 +540,7 @@
 
   function shareLink(event?: MouseEvent) {
     event?.stopPropagation();
-    const hash = selectedStart
-      ? `#L${selectedStart}${selectedEnd ? `-L${selectedEnd}` : ""}`
-      : "";
+    const hash = selectedStart ? `#L${selectedStart}${selectedEnd ? `-L${selectedEnd}` : ""}` : "";
     const shareUrl = `${location.origin}/git/repo/${path}${hash}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareUrl);
@@ -444,7 +559,7 @@
 
   async function showMetadata(event?: MouseEvent) {
     event?.stopPropagation();
-    
+
     // Ensure fileTypeInfo is populated
     if (!fileTypeInfo) {
       // If content is already loaded, detect type from it
@@ -455,7 +570,7 @@
         fileTypeInfo = detectFileType(name, "");
       }
     }
-    
+
     isMetadataPanelOpen = true;
   }
 
@@ -546,11 +661,21 @@
     }
     // Ensure line numbers are shown for code files
     try {
-      const hasLineNumbers = (cmExtensions || []).some((e: any) => String(e ?? '').includes('lineNumbers'));
+      const hasLineNumbers = (cmExtensions || []).some((e: any) =>
+        String(e ?? "").includes("lineNumbers")
+      );
       if (!hasLineNumbers) {
         cmExtensions = [...cmExtensions, lineNumbers()];
       }
     } catch {}
+  }
+
+  function getSelectedContent(source: string) {
+    if (!selectedStart) return source;
+    const lines = source.split("\n");
+    const start = Math.max(1, selectedStart);
+    const end = selectedEnd ? Math.max(start, selectedEnd) : start;
+    return lines.slice(start - 1, end).join("\n");
   }
 
   function buildPermalinkEvent(): PermalinkEvent | null {
@@ -581,7 +706,7 @@
       if (fileTypeInfo?.language) tags.push(["l", String(fileTypeInfo.language)]);
       const evt: PermalinkEvent = {
         kind: GIT_PERMALINK,
-        content: content || "",
+        content: getSelectedContent(content || ""),
         tags,
         pubkey: "",
         created_at: Math.floor(Date.now() / 1000),
@@ -599,21 +724,28 @@
     event?.stopPropagation();
     showPermalinkMenu = false;
     showGutterMenu = false;
-    
+
     const evt = buildPermalinkEvent();
     if (!evt) {
       const missing = !repo ? "repo context" : "file path";
-      toast.push({ title: "Cannot create permalink", description: `Missing ${missing}`, variant: "destructive" });
+      toast.push({
+        title: "Cannot create permalink",
+        description: `Missing ${missing}`,
+        variant: "destructive",
+      });
       return;
     }
-    
+
     // Show immediate feedback
     toast.push({ title: "Creating permalink...", description: "Publishing to relays" });
-    
+
     try {
       if (publish) {
         await publish(evt);
-        toast.push({ title: "Permalink published", description: "Permalink published successfully" });
+        toast.push({
+          title: "Permalink published",
+          description: "Permalink published successfully",
+        });
         console.log("Permalink published successfully", evt);
       } else {
         await navigator.clipboard.writeText(JSON.stringify(evt));
@@ -632,7 +764,6 @@
     showGutterMenu = false;
     shareLink();
   }
-
 
   function getFileIcon() {
     if (type === "directory") return Folder;
@@ -659,13 +790,22 @@
   }
 </script>
 
-<div class="border" style="border-color: hsl(var(--border)); rounded-lg mb-2" bind:this={fileViewElement}>
+<div
+  class="border"
+  style="border-color: hsl(var(--border)); rounded-lg mb-2"
+  bind:this={fileViewElement}
+>
   <div
     role="button"
     tabindex="0"
     class="flex items-center justify-between p-2 hover:bg-secondary/30 cursor-pointer w-full text-left"
     onclick={() => (isExpanded = !isExpanded)}
-    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); isExpanded = !isExpanded; } }}
+    onkeydown={(e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        isExpanded = !isExpanded;
+      }
+    }}
     aria-expanded={type === "file" ? isExpanded : undefined}
   >
     <div class="flex items-center">
@@ -688,13 +828,33 @@
           <Info class="h-4 w-4" />
         </Button>
         <div class="relative" data-permalink-menu>
-          <Button variant="ghost" size="sm" class="h-8 w-8 p-0" onclick={togglePermalinkMenu} title="Permalink actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-8 w-8 p-0"
+            onclick={togglePermalinkMenu}
+            title="Permalink actions"
+          >
             <Share class="h-4 w-4" />
           </Button>
           {#if showPermalinkMenu}
-            <div class="permalink-menu-popup absolute right-0 mt-1 z-10 w-44 rounded border bg-popover text-popover-foreground shadow-md" style="border-color: hsl(var(--border));">
-              <button class="w-full text-left px-3 py-2 hover:bg-secondary/50" onclick={copyLinkToLines}>Copy link to {selectedStart ? (selectedEnd ? `lines ${selectedStart}-${selectedEnd}` : `line ${selectedStart}`) : 'file'}</button>
-              <button class="w-full text-left px-3 py-2 hover:bg-secondary/50" onclick={createPermalink}>Create permalink</button>
+            <div
+              class="permalink-menu-popup absolute right-0 mt-1 z-10 w-44 rounded border bg-popover text-popover-foreground shadow-md"
+              style="border-color: hsl(var(--border));"
+            >
+              <button
+                class="w-full text-left px-3 py-2 hover:bg-secondary/50"
+                onclick={copyLinkToLines}
+                >Copy link to {selectedStart
+                  ? selectedEnd
+                    ? `lines ${selectedStart}-${selectedEnd}`
+                    : `line ${selectedStart}`
+                  : "file"}</button
+              >
+              <button
+                class="w-full text-left px-3 py-2 hover:bg-secondary/50"
+                onclick={createPermalink}>Create permalink</button
+              >
             </div>
           {/if}
         </div>
@@ -739,15 +899,36 @@
           </div>
         {:else}
           <div class="p-4 border-t" style="border-color: hsl(var(--border));">
-            <div class="relative bg-background text-foreground rounded border" style="border-color: hsl(var(--border));" bind:this={editorHost} role="group" data-permalink-menu>
-              <CodeMirror bind:value={content} extensions={cmExtensions.length ? cmExtensions : [lineNumbers()]} />
+            <div
+              class="relative bg-background text-foreground rounded border"
+              style="border-color: hsl(var(--border));"
+              bind:this={editorHost}
+              role="group"
+              data-permalink-menu
+            >
+              <CodeMirror
+                bind:value={content}
+                extensions={cmExtensions.length ? cmExtensions : [lineNumbers()]}
+              />
               {#if showGutterMenu}
-                <div class="permalink-menu-popup absolute z-20 w-44 rounded border bg-popover text-popover-foreground shadow-md"
-                     style="left: {gutterMenuX}px; top: {gutterMenuY}px; border-color: hsl(var(--border));">
-                  <button class="w-full text-left px-3 py-2 hover:bg-secondary/50" onclick={copyLinkToLines}>
-                    Copy link to {selectedStart ? (selectedEnd ? `lines ${selectedStart}-${selectedEnd}` : `line ${selectedStart}`) : 'file'}
+                <div
+                  class="permalink-menu-popup absolute z-20 w-44 rounded border bg-popover text-popover-foreground shadow-md"
+                  style="left: {gutterMenuX}px; top: {gutterMenuY}px; border-color: hsl(var(--border));"
+                >
+                  <button
+                    class="w-full text-left px-3 py-2 hover:bg-secondary/50"
+                    onclick={copyLinkToLines}
+                  >
+                    Copy link to {selectedStart
+                      ? selectedEnd
+                        ? `lines ${selectedStart}-${selectedEnd}`
+                        : `line ${selectedStart}`
+                      : "file"}
                   </button>
-                  <button class="w-full text-left px-3 py-2 hover:bg-secondary/50" onclick={createPermalink}>Create permalink</button>
+                  <button
+                    class="w-full text-left px-3 py-2 hover:bg-secondary/50"
+                    onclick={createPermalink}>Create permalink</button
+                  >
                 </div>
               {/if}
             </div>
@@ -776,21 +957,21 @@
     background-color: hsl(var(--background)) !important;
     color: hsl(var(--foreground)) !important;
   }
-  
+
   :global(.cm-gutters) {
     background-color: hsl(var(--muted)) !important;
     color: hsl(var(--muted-foreground)) !important;
     border-right: 1px solid hsl(var(--border)) !important;
   }
-  
+
   :global(.cm-activeLineGutter) {
     background-color: hsl(var(--accent)) !important;
   }
-  
+
   :global(.cm-line) {
     color: hsl(var(--foreground)) !important;
   }
-  
+
   :global(.cm-content) {
     caret-color: hsl(var(--foreground)) !important;
   }

@@ -9,7 +9,8 @@
     CheckCircle,
   } from "@lucide/svelte";
   import { Button } from "@nostr-git/ui";
-  import type { Patch } from "@nostr-git/core/types";
+  import type { Patch, PermalinkEvent } from "@nostr-git/core/types";
+  import type { Repo } from "./Repo.svelte";
 
   // Use parse-diff File type from DiffViewer
   type AnyFileChange = import("parse-diff").File;
@@ -26,6 +27,8 @@
     rootEvent?: any;
     onComment?: (comment: any) => void;
     currentPubkey?: string | null;
+    repo?: Repo;
+    publish?: (permalink: PermalinkEvent) => Promise<void>;
     diffViewerProps?: {
       showLineNumbers?: boolean;
       expandAll?: boolean;
@@ -44,6 +47,8 @@
     rootEvent,
     onComment,
     currentPubkey,
+    repo,
+    publish,
     diffViewerProps = {},
   }: Props = $props();
 
@@ -320,15 +325,20 @@
               <div class="flex-grow min-w-0">
                 <div
                   class="line-clamp-2 break-words font-semibold overflow-hidden"
-                  title={selectedPatch.title || `Patch ${selectedPatch.id}`}>
+                  title={selectedPatch.title || `Patch ${selectedPatch.id}`}
+                >
                   {selectedPatch.title || `Patch ${selectedPatch.id}`}
                 </div>
-                <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm sm:text-base text-muted-foreground">
+                <div
+                  class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm sm:text-base text-muted-foreground"
+                >
                   <span>
                     {selectedPatch.author.name || selectedPatch.author.pubkey.slice(0, 8)}
                   </span>
                   <span class="hidden sm:inline">•</span>
-                  <span class="break-words">{new Date(selectedPatch.createdAt).toLocaleString()}</span>
+                  <span class="break-words"
+                    >{new Date(selectedPatch.createdAt).toLocaleString()}</span
+                  >
                   {#if selectedPatch.commitHash}
                     <span class="hidden sm:inline">•</span>
                     <span class="font-mono">{selectedPatch.commitHash.slice(0, 8)}</span>
@@ -348,6 +358,8 @@
                   rootEvent={rootEvent}
                   onComment={onComment}
                   currentPubkey={currentPubkey}
+                  repo={repo}
+                  publish={publish}
                   {...diffViewerProps}
                 />
               {:else}
