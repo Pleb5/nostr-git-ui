@@ -8,11 +8,32 @@
   const branches = $derived(refs.filter((ref) => ref.type === "heads"));
   const tags = $derived(refs.filter((ref) => ref.type === "tags"));
   const selectedBranch = $derived(repo.selectedBranch || repo.mainBranch || "");
+  const selectedLabel = $derived.by(() => {
+    if (!refs.length) return "No branches found";
+    if (!selectedBranch) return "";
+    const isMainBranch =
+      selectedBranch === repo.mainBranch &&
+      branches.some((branch) => branch.name === selectedBranch);
+    return isMainBranch ? `${selectedBranch} (default)` : selectedBranch;
+  });
+  const selectWidthCh = $derived.by(() => {
+    const label = selectedLabel || "Branch";
+    const paddingCh = 4;
+    const minCh = 12;
+    return Math.max(minCh, label.length + paddingCh);
+  });
   const isSwitching = $derived(repo.isBranchSwitching);
 
   // Debug logging
   $effect(() => {
-    console.log("[BranchSelector] refs:", refs.length, "branches:", branches.length, "tags:", tags.length);
+    console.log(
+      "[BranchSelector] refs:",
+      refs.length,
+      "branches:",
+      branches.length,
+      "tags:",
+      tags.length
+    );
     console.log("[BranchSelector] selectedBranch:", selectedBranch, "mainBranch:", repo.mainBranch);
     console.log("[BranchSelector] isSwitching:", isSwitching);
   });
@@ -21,7 +42,14 @@
     const target = e.target as HTMLSelectElement;
     const branchName = target.value;
     const currentSelected = repo.selectedBranch;
-    console.log("[BranchSelector] handleChange called with:", branchName, "current:", currentSelected, "isSwitching:", isSwitching);
+    console.log(
+      "[BranchSelector] handleChange called with:",
+      branchName,
+      "current:",
+      currentSelected,
+      "isSwitching:",
+      isSwitching
+    );
     if (branchName && !isSwitching && branchName !== currentSelected) {
       console.log("[BranchSelector] Calling setSelectedBranch with:", branchName);
       repo.setSelectedBranch(branchName);
@@ -36,6 +64,7 @@
     value={selectedBranch}
     onchange={handleChange}
     disabled={isSwitching}
+    style:width={`${selectWidthCh}ch`}
     class="rounded-md border border-border bg-background px-2 sm:px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed min-w-0 max-w-full"
   >
     {#if refs.length === 0}
