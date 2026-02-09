@@ -584,167 +584,168 @@
 </script>
 
 <div
-  class="max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto p-6 space-y-6 bg-background text-foreground rounded-lg border border-border shadow"
+  class="bg-background text-foreground rounded-lg border border-border shadow w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto max-h-[calc(100vh-4rem)] flex flex-col overflow-hidden"
 >
-  <!-- Header -->
-  <div class="text-center space-y-2">
-    <h1 class="text-3xl font-bold tracking-tight text-foreground">Create a New Repository</h1>
-    <p class="text-muted-foreground">Set up a new git repository with Nostr integration</p>
-  </div>
-
-  <!-- Progress Indicator -->
-  <div
-    class="grid grid-cols-2 gap-4 mb-8 px-4 md:px-0 md:flex md:items-center md:justify-center md:space-x-4"
-  >
-    <div class="flex items-center space-x-2">
-      <div
-        class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
-        class:bg-accent={currentStep >= 1}
-        class:text-accent-foreground={currentStep >= 1}
-        class:bg-muted={currentStep < 1}
-        class:text-muted-foreground={currentStep < 1}
-      >
-        {currentStep > 1 ? "✓" : "1"}
-      </div>
-      <span class="text-sm font-medium text-foreground">Choose Service</span>
+  <div class="px-6 pt-6 pb-4 border-b border-border space-y-4">
+    <!-- Header -->
+    <div class="text-center space-y-2">
+      <h1 class="text-3xl font-bold tracking-tight text-foreground">Create a New Repository</h1>
+      <p class="text-muted-foreground">Set up a new git repository with Nostr integration</p>
     </div>
 
-    <div class="hidden md:block w-12 h-px bg-border"></div>
-
-    <div class="flex items-center space-x-2">
-      <div
-        class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
-        class:bg-accent={currentStep >= 2}
-        class:text-accent-foreground={currentStep >= 2}
-        class:bg-muted={currentStep < 2}
-        class:text-muted-foreground={currentStep < 2}
-      >
-        {currentStep > 2 ? "✓" : "2"}
+    <!-- Progress Indicator -->
+    <div class="grid grid-cols-2 gap-4 md:flex md:items-center md:justify-center md:space-x-4">
+      <div class="flex items-center space-x-2">
+        <div
+          class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
+          class:bg-accent={currentStep >= 1}
+          class:text-accent-foreground={currentStep >= 1}
+          class:bg-muted={currentStep < 1}
+          class:text-muted-foreground={currentStep < 1}
+        >
+          {currentStep > 1 ? "✓" : "1"}
+        </div>
+        <span class="text-sm font-medium text-foreground">Choose Service</span>
       </div>
-      <span class="text-sm font-medium text-foreground">Repository Details</span>
-    </div>
 
-    <div class="hidden md:block w-12 h-px bg-border"></div>
+      <div class="hidden md:block w-12 h-px bg-border"></div>
 
-    <div class="flex items-center space-x-2">
-      <div
-        class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
-        class:bg-accent={currentStep >= 3}
-        class:text-accent-foreground={currentStep >= 3}
-        class:bg-muted={currentStep < 3}
-        class:text-muted-foreground={currentStep < 3}
-      >
-        {currentStep > 3 ? "✓" : "3"}
+      <div class="flex items-center space-x-2">
+        <div
+          class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
+          class:bg-accent={currentStep >= 2}
+          class:text-accent-foreground={currentStep >= 2}
+          class:bg-muted={currentStep < 2}
+          class:text-muted-foreground={currentStep < 2}
+        >
+          {currentStep > 2 ? "✓" : "2"}
+        </div>
+        <span class="text-sm font-medium text-foreground">Repository Details</span>
       </div>
-      <span class="text-sm font-medium text-foreground">Advanced Settings</span>
-    </div>
 
-    <div class="hidden md:block w-12 h-px bg-border"></div>
+      <div class="hidden md:block w-12 h-px bg-border"></div>
 
-    <div class="flex items-center space-x-2">
-      <div
-        class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
-        class:bg-accent={currentStep >= 4}
-        class:text-accent-foreground={currentStep >= 4}
-        class:bg-muted={currentStep < 4}
-        class:text-muted-foreground={currentStep < 4}
-      >
-        {currentStep > 4 ? "✓" : "4"}
+      <div class="flex items-center space-x-2">
+        <div
+          class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
+          class:bg-accent={currentStep >= 3}
+          class:text-accent-foreground={currentStep >= 3}
+          class:bg-muted={currentStep < 3}
+          class:text-muted-foreground={currentStep < 3}
+        >
+          {currentStep > 3 ? "✓" : "3"}
+        </div>
+        <span class="text-sm font-medium text-foreground">Advanced Settings</span>
       </div>
-      <span class="text-sm font-medium text-foreground">Create Repository</span>
+
+      <div class="hidden md:block w-12 h-px bg-border"></div>
+
+      <div class="flex items-center space-x-2">
+        <div
+          class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium"
+          class:bg-accent={currentStep >= 4}
+          class:text-accent-foreground={currentStep >= 4}
+          class:bg-muted={currentStep < 4}
+          class:text-muted-foreground={currentStep < 4}
+        >
+          {currentStep > 4 ? "✓" : "4"}
+        </div>
+        <span class="text-sm font-medium text-foreground">Create Repository</span>
+      </div>
     </div>
   </div>
 
   <!-- Step Content -->
-  <div
-    bind:this={stepContentContainer}
-    class="bg-card text-card-foreground rounded-lg border shadow-sm p-6 max-h-[70vh] overflow-auto"
-  >
-    {#if currentStep === 1}
-      <StepChooseService
-        selectedProvider={selectedProvider as any}
-        onProviderChange={handleProviderChange as any}
-        disabledProviders={nameAvailabilityResults?.conflictProviders || []}
-        relayUrls={graspRelayUrls}
-        onRelayUrlsChange={handleRelayUrlsChange}
-        graspServerOptions={graspServerOptions}
-      />
-    {:else if currentStep === 2}
-      <RepoDetailsStep
-        repoName={repoDetails.name}
-        description={repoDetails.description}
-        initializeWithReadme={repoDetails.initializeWithReadme}
-        defaultBranch={advancedSettings.defaultBranch}
-        gitignoreTemplate={advancedSettings.gitignoreTemplate}
-        licenseTemplate={advancedSettings.licenseTemplate}
-        onRepoNameChange={handleRepoNameChange}
-        onDescriptionChange={handleDescriptionChange}
-        onReadmeChange={handleReadmeChange}
-        onDefaultBranchChange={handleDefaultBranchChange}
-        onGitignoreChange={handleGitignoreChange}
-        onLicenseChange={handleLicenseChange}
-        validationErrors={validationErrors}
-        nameAvailabilityResults={nameAvailabilityResults}
-        isCheckingAvailability={isCheckingAvailability}
-      />
-    {:else if currentStep === 3}
-      <AdvancedSettingsStep
-        gitignoreTemplate={advancedSettings.gitignoreTemplate}
-        licenseTemplate={advancedSettings.licenseTemplate}
-        defaultBranch={advancedSettings.defaultBranch}
-        authorName={advancedSettings.authorName}
-        authorEmail={advancedSettings.authorEmail}
-        maintainers={advancedSettings.maintainers}
-        relays={advancedSettings.relays}
-        tags={advancedSettings.tags}
-        webUrls={advancedSettings.webUrls}
-        cloneUrls={advancedSettings.cloneUrls}
-        onGitignoreChange={handleGitignoreChange}
-        onLicenseChange={handleLicenseChange}
-        onDefaultBranchChange={handleDefaultBranchChange}
-        onAuthorNameChange={handleAuthorNameChange}
-        onAuthorEmailChange={handleAuthorEmailChange}
-        onMaintainersChange={handleMaintainersChange}
-        onRelaysChange={handleRelaysChange}
-        onTagsChange={handleTagsChange}
-        onWebUrlsChange={handleWebUrlsChange}
-        getProfile={getProfile}
-        searchProfiles={searchProfiles}
-        searchRelays={searchRelays}
-        onCloneUrlsChange={handleCloneUrlsChange}
-      />
-    {:else if currentStep === 4}
-      <RepoProgressStep
-        isCreating={isCreating()}
-        progress={progressSteps}
-        onRetry={handleRetry}
-        onClose={handleClose}
-        createdRepoResult={createdRepoResult}
-        onNavigateToRepo={onNavigateToRepo}
-      />
-    {/if}
+  <div bind:this={stepContentContainer} class="flex-1 min-h-0 overflow-y-auto">
+    <div class="px-6 pt-6 pb-16">
+      {#if currentStep === 1}
+        <StepChooseService
+          selectedProvider={selectedProvider as any}
+          onProviderChange={handleProviderChange as any}
+          disabledProviders={nameAvailabilityResults?.conflictProviders || []}
+          relayUrls={graspRelayUrls}
+          onRelayUrlsChange={handleRelayUrlsChange}
+          graspServerOptions={graspServerOptions}
+        />
+      {:else if currentStep === 2}
+        <RepoDetailsStep
+          repoName={repoDetails.name}
+          description={repoDetails.description}
+          initializeWithReadme={repoDetails.initializeWithReadme}
+          defaultBranch={advancedSettings.defaultBranch}
+          gitignoreTemplate={advancedSettings.gitignoreTemplate}
+          licenseTemplate={advancedSettings.licenseTemplate}
+          onRepoNameChange={handleRepoNameChange}
+          onDescriptionChange={handleDescriptionChange}
+          onReadmeChange={handleReadmeChange}
+          onDefaultBranchChange={handleDefaultBranchChange}
+          onGitignoreChange={handleGitignoreChange}
+          onLicenseChange={handleLicenseChange}
+          validationErrors={validationErrors}
+          nameAvailabilityResults={nameAvailabilityResults}
+          isCheckingAvailability={isCheckingAvailability}
+        />
+      {:else if currentStep === 3}
+        <AdvancedSettingsStep
+          gitignoreTemplate={advancedSettings.gitignoreTemplate}
+          licenseTemplate={advancedSettings.licenseTemplate}
+          defaultBranch={advancedSettings.defaultBranch}
+          authorName={advancedSettings.authorName}
+          authorEmail={advancedSettings.authorEmail}
+          maintainers={advancedSettings.maintainers}
+          relays={advancedSettings.relays}
+          tags={advancedSettings.tags}
+          webUrls={advancedSettings.webUrls}
+          cloneUrls={advancedSettings.cloneUrls}
+          onGitignoreChange={handleGitignoreChange}
+          onLicenseChange={handleLicenseChange}
+          onDefaultBranchChange={handleDefaultBranchChange}
+          onAuthorNameChange={handleAuthorNameChange}
+          onAuthorEmailChange={handleAuthorEmailChange}
+          onMaintainersChange={handleMaintainersChange}
+          onRelaysChange={handleRelaysChange}
+          onTagsChange={handleTagsChange}
+          onWebUrlsChange={handleWebUrlsChange}
+          getProfile={getProfile}
+          searchProfiles={searchProfiles}
+          searchRelays={searchRelays}
+          onCloneUrlsChange={handleCloneUrlsChange}
+        />
+      {:else if currentStep === 4}
+        <RepoProgressStep
+          isCreating={isCreating()}
+          progress={progressSteps}
+          onRetry={handleRetry}
+          onClose={handleClose}
+          createdRepoResult={createdRepoResult}
+          onNavigateToRepo={onNavigateToRepo}
+        />
+      {/if}
+    </div>
   </div>
 
   <!-- Navigation Buttons -->
   {#if currentStep < 4}
-    <div class="flex justify-between pt-4">
-      <Button onclick={onCancel} variant="outline" class="btn btn-secondary">Cancel</Button>
+    <div class="px-6 py-4 border-t border-border bg-background">
+      <div class="flex justify-between">
+        <Button onclick={onCancel} variant="outline" class="btn btn-secondary">Cancel</Button>
 
-      <div class="flex space-x-3">
-        {#if currentStep > 1}
-          <Button onclick={prevStep} variant="outline" class="btn btn-secondary">Previous</Button>
-        {/if}
+        <div class="flex space-x-3">
+          {#if currentStep > 1}
+            <Button onclick={prevStep} variant="outline" class="btn btn-secondary">Previous</Button>
+          {/if}
 
-        <Button
-          onclick={nextStep}
-          disabled={(currentStep === 1 &&
-            (!selectedProvider || (selectedProvider === "grasp" && !isValidGraspConfig()))) ||
-            (currentStep === 2 && !validateStep1())}
-          variant="git"
-          class="btn btn-primary"
-        >
-          {currentStep === 3 ? "Create Repository" : "Next"}
-        </Button>
+          <Button
+            onclick={nextStep}
+            disabled={(currentStep === 1 &&
+              (!selectedProvider || (selectedProvider === "grasp" && !isValidGraspConfig()))) ||
+              (currentStep === 2 && !validateStep1())}
+            variant="git"
+            class="btn btn-primary"
+          >
+            {currentStep === 3 ? "Create Repository" : "Next"}
+          </Button>
+        </div>
       </div>
     </div>
   {/if}

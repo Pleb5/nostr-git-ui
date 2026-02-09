@@ -19,7 +19,7 @@
   const graspServerOptions = $derived(__props.graspServerOptions ?? []);
 </script>
 
-<div class="space-y-4 max-h-[40vh] md:max-h-[50vh]">
+<div class="space-y-4">
   <ProviderSelectionStep
     selectedProvider={selectedProvider || undefined}
     onProviderChange={onProviderChange as any}

@@ -139,7 +139,7 @@
   }
 </script>
 
-<div class="space-y-6 max-h-[40vh] md:max-h-[50vh]">
+<div class="space-y-6">
   <div class="space-y-4">
     <h2 class="text-xl font-semibold text-gray-100">Repository Details</h2>
     <p class="text-sm text-gray-300">Set up the basic information for your new repository.</p>
@@ -214,7 +214,9 @@
                   </div>
                   <div class="flex items-center space-x-1">
                     {#if result.error}
-                      <span class="text-yellow-600 dark:text-yellow-400" title={result.error}>⚠ Check failed</span>
+                      <span class="text-yellow-600 dark:text-yellow-400" title={result.error}
+                        >⚠ Check failed</span
+                      >
                     {:else if result.available}
                       <span class="text-green-600 dark:text-green-400">✓ Available</span>
                     {:else}
@@ -232,13 +234,14 @@
                   provider{#if nameAvailabilityResults.conflictProviders[0]}
                     ({nameAvailabilityResults.conflictProviders[0]}){/if}.
                 </div>
-              {:else if nameAvailabilityResults.results.some(r => r.error)}
-                {@const errorResult = nameAvailabilityResults.results.find(r => r.error)}
+              {:else if nameAvailabilityResults.results.some((r) => r.error)}
+                {@const errorResult = nameAvailabilityResults.results.find((r) => r.error)}
                 <div
                   class="mt-2 p-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded text-sm text-yellow-700 dark:text-yellow-400"
                 >
-                  <strong>Unable to verify:</strong> Could not check name availability ({errorResult?.error || 'Authentication failed'}).
-                  You may proceed, but please verify the name is not already taken.
+                  <strong>Unable to verify:</strong> Could not check name availability ({errorResult?.error ||
+                    "Authentication failed"}). You may proceed, but please verify the name is not
+                  already taken.
                 </div>
               {:else if nameAvailabilityResults.availableProviders.length > 0}
                 <div

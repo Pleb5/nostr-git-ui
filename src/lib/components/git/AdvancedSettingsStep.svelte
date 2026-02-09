@@ -2,7 +2,7 @@
   import { commonHashtags } from "../../stores/hashtags";
   import { PeoplePicker } from "@nostr-git/ui";
   import { Plus, Trash2, X, Hash, Globe, Users } from "@lucide/svelte";
-  
+
   interface Props {
     gitignoreTemplate: string;
     licenseTemplate: string;
@@ -24,8 +24,20 @@
     onTagsChange: (tags: string[]) => void;
     onWebUrlsChange: (urls: string[]) => void;
     onCloneUrlsChange: (urls: string[]) => void;
-    getProfile?: (pubkey: string) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
-    searchProfiles?: (query: string) => Promise<Array<{ pubkey: string; name?: string; picture?: string; nip05?: string; display_name?: string }>>;
+    getProfile?: (
+      pubkey: string
+    ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
+    searchProfiles?: (
+      query: string
+    ) => Promise<
+      Array<{
+        pubkey: string;
+        name?: string;
+        picture?: string;
+        nip05?: string;
+        display_name?: string;
+      }>
+    >;
     searchRelays?: (query: string) => Promise<string[]>;
   }
 
@@ -54,13 +66,13 @@
     searchProfiles,
     searchRelays,
   }: Props = $props();
-  
+
   // Autocomplete state for relays
   let relaySearchQuery = $state("");
   let relaySearchResults = $state<string[]>([]);
   let showRelayAutocomplete = $state(false);
   let relayInputElement: HTMLInputElement | undefined = $state();
-  
+
   // Autocomplete state for hashtags
   let hashtagSearchQuery = $state("");
   let hashtagSearchResults = $state<string[]>([]);
@@ -81,13 +93,13 @@
     { value: "mit", label: "MIT License" },
     { value: "apache-2.0", label: "Apache License 2.0" },
   ];
-  
+
   // Handle relay search with debounce
   let relaySearchTimeout: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const query = relaySearchQuery;
     if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
-    
+
     if (query && searchRelays) {
       relaySearchTimeout = setTimeout(async () => {
         try {
@@ -95,7 +107,7 @@
           relaySearchResults = results;
           showRelayAutocomplete = results.length > 0;
         } catch (e) {
-          console.error('Failed to search relays', e);
+          console.error("Failed to search relays", e);
           relaySearchResults = [];
         }
       }, 300);
@@ -103,21 +115,21 @@
       relaySearchResults = [];
       showRelayAutocomplete = false;
     }
-    
+
     return () => {
       if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
     };
   });
-  
+
   // Normalize hashtag: strip #, lowercase, trim
   function normalizeHashtag(tag: string): string {
-    return tag.toLowerCase().replace(/^#/, '').trim();
+    return tag.toLowerCase().replace(/^#/, "").trim();
   }
 
   // Check if a tag already exists (case-insensitive)
   function tagExists(tag: string): boolean {
     const normalized = normalizeHashtag(tag);
-    return tags.some(t => normalizeHashtag(t) === normalized);
+    return tags.some((t) => normalizeHashtag(t) === normalized);
   }
 
   // Get normalized query (helper for derived computations)
@@ -139,7 +151,7 @@
   // Handle hashtag search (client-side filtering)
   $effect(() => {
     const query = hashtagSearchQuery.trim();
-    
+
     if (query) {
       const normalized = normalizeHashtag(query);
       hashtagSearchResults = commonHashtags.search(normalized, 10);
@@ -169,7 +181,7 @@
 
   function handleHashtagKeydown(e: KeyboardEvent) {
     // Handle Enter when autocomplete is closed
-    if (!showHashtagAutocomplete && e.key === 'Enter' && hashtagSearchQuery.trim()) {
+    if (!showHashtagAutocomplete && e.key === "Enter" && hashtagSearchQuery.trim()) {
       e.preventDefault();
       addHashtag(hashtagSearchQuery);
       return;
@@ -181,15 +193,15 @@
     const canCreate = canCreateCustomTag();
 
     switch (e.key) {
-      case 'ArrowDown':
+      case "ArrowDown":
         e.preventDefault();
         highlightedHashtagIndex = Math.min(highlightedHashtagIndex + 1, totalOptions - 1);
         break;
-      case 'ArrowUp':
+      case "ArrowUp":
         e.preventDefault();
         highlightedHashtagIndex = Math.max(highlightedHashtagIndex - 1, -1);
         break;
-      case 'Enter':
+      case "Enter":
         e.preventDefault();
         if (highlightedHashtagIndex >= 0 && highlightedHashtagIndex < hashtagSearchResults.length) {
           // Select from suggestions
@@ -202,7 +214,7 @@
           addHashtag(hashtagSearchQuery);
         }
         break;
-      case 'Escape':
+      case "Escape":
         e.preventDefault();
         resetHashtagInput();
         break;
@@ -241,7 +253,7 @@
   }
 </script>
 
-<div class="space-y-6 max-h-[40vh] md:max-h-[50vh]">
+<div class="space-y-6">
   <div class="space-y-4">
     <h2 class="text-xl font-semibold text-gray-100">Advanced Settings</h2>
     <p class="text-sm text-gray-300">Configure additional options for your repository.</p>
@@ -376,7 +388,7 @@
             <Hash class="w-4 h-4 inline mr-1" />
             Tags/Topics
           </legend>
-          
+
           <!-- Selected tags -->
           {#if tags.length > 0}
             <div class="flex flex-wrap gap-2 mb-2">
@@ -384,13 +396,18 @@
                 <div class="flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-2 text-sm">
                   <Hash class="w-3 h-3 text-gray-400" />
                   <span class="text-white text-sm">{tag}</span>
-                  <button 
-                    onclick={() => onTagsChange(tags.filter(t => t !== tag))} 
-                    class="text-gray-400 hover:text-gray-200 transition-colors" 
+                  <button
+                    onclick={() => onTagsChange(tags.filter((t) => t !== tag))}
+                    class="text-gray-400 hover:text-gray-200 transition-colors"
                     aria-label="Remove tag"
                   >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M6 18L18 6M6 6l12 12"
+                      ></path>
                     </svg>
                   </button>
                 </div>
@@ -422,11 +439,12 @@
               placeholder="Search or type to add tags (press Enter)"
             />
             {#if showHashtagAutocomplete}
-              <div 
+              <div
                 id="hashtag-suggestions-listbox"
                 role="listbox"
                 aria-label="Hashtag suggestions"
-                class="absolute z-[50] w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                class="absolute z-[50] w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+              >
                 {#each hashtagSearchResults as tag, index}
                   {@const isAlreadyAdded = tagExists(tag)}
                   <button
@@ -445,7 +463,7 @@
                         addHashtag(tag);
                       }
                     }}
-                    class="w-full text-left px-3 py-2 text-sm flex items-center gap-2 
+                    class="w-full text-left px-3 py-2 text-sm flex items-center gap-2
                            {index === highlightedHashtagIndex ? 'bg-gray-700' : 'hover:bg-gray-700'}
                            {isAlreadyAdded ? 'opacity-50 cursor-not-allowed' : ''}"
                   >
@@ -471,10 +489,13 @@
                       addHashtag(hashtagSearchQuery);
                     }}
                     class="w-full text-left px-3 py-2 text-sm flex items-center gap-2 border-t border-gray-700
-                           {highlightedHashtagIndex === hashtagSearchResults.length ? 'bg-gray-700' : 'hover:bg-gray-700'}"
+                           {highlightedHashtagIndex === hashtagSearchResults.length
+                      ? 'bg-gray-700'
+                      : 'hover:bg-gray-700'}"
                   >
                     <Plus class="w-3 h-3 text-blue-400" />
-                    <span class="text-blue-400 font-medium">Create tag: {getNormalizedQuery()}</span>
+                    <span class="text-blue-400 font-medium">Create tag: {getNormalizedQuery()}</span
+                    >
                   </button>
                 {/if}
               </div>
@@ -495,15 +516,15 @@
             maxSelections={50}
             showAvatars={true}
             compact={false}
-            {getProfile}
-            {searchProfiles}
+            getProfile={getProfile}
+            searchProfiles={searchProfiles}
             add={(pubkey: string) => {
               if (!maintainers.includes(pubkey)) {
                 onMaintainersChange([...maintainers, pubkey]);
               }
             }}
             remove={(pubkey: string) => {
-              onMaintainersChange(maintainers.filter(p => p !== pubkey));
+              onMaintainersChange(maintainers.filter((p) => p !== pubkey));
             }}
           />
           <p class="mt-1 text-sm text-gray-400">Maintainer public keys (npub or hex)</p>
@@ -536,7 +557,7 @@
                 </button>
               </div>
             {/each}
-            
+
             <!-- Autocomplete input for adding relays -->
             {#if searchRelays}
               <div class="relative">
@@ -544,11 +565,14 @@
                   bind:this={relayInputElement}
                   type="text"
                   bind:value={relaySearchQuery}
-                  onfocus={() => showRelayAutocomplete = relaySearchResults.length > 0}
+                  onfocus={() => (showRelayAutocomplete = relaySearchResults.length > 0)}
                   onblur={(e) => {
                     // Delay closing to allow click events on suggestions to fire first
                     setTimeout(() => {
-                      if (!e.relatedTarget || !(e.relatedTarget as HTMLElement).closest('#relay-suggestions-listbox')) {
+                      if (
+                        !e.relatedTarget ||
+                        !(e.relatedTarget as HTMLElement).closest("#relay-suggestions-listbox")
+                      ) {
                         showRelayAutocomplete = false;
                       }
                     }, 200);
@@ -558,10 +582,13 @@
                   placeholder="Search for relays..."
                 />
                 {#if showRelayAutocomplete && relaySearchResults.length > 0}
-                  <div 
+                  <div
                     id="relay-suggestions-listbox"
-                    class="fixed z-50 mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto" 
-                    style="width: {relayInputElement?.getBoundingClientRect().width || '100%'}px; left: {relayInputElement?.getBoundingClientRect().left || 0}px; top: {(relayInputElement?.getBoundingClientRect().bottom || 0) + 4}px;">
+                    class="fixed z-50 mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                    style="width: {relayInputElement?.getBoundingClientRect().width ||
+                      '100%'}px; left: {relayInputElement?.getBoundingClientRect().left ||
+                      0}px; top: {(relayInputElement?.getBoundingClientRect().bottom || 0) + 4}px;"
+                  >
                     {#each relaySearchResults as relayUrl}
                       <button
                         type="button"
