@@ -1,5 +1,6 @@
 <script lang="ts">
   import { FileCode, Folder, Share, Download, Copy, Info } from "@lucide/svelte";
+  import { tick } from "svelte";
   import { useRegistry } from "../../useRegistry.js";
   const { Button, Spinner } = useRegistry();
   import { toast } from "../../stores/toast.js";
@@ -26,6 +27,7 @@
     repo,
     publish,
     editable,
+    autoOpenPath,
   }: {
     file: FileEntry;
     getFileContent: (path: string) => Promise<string>;
@@ -33,6 +35,7 @@
     repo?: Repo;
     publish?: (permalink: PermalinkEvent) => Promise<void>;
     editable?: boolean;
+    autoOpenPath?: string;
   } = $props();
 
   const effectiveEditable = $derived.by(() =>
@@ -51,6 +54,7 @@
   const name = $derived(file.name);
   const type = $derived((file.type ?? "file") as string);
   const path = $derived(file.path);
+  const shouldAutoOpen = $derived(!!autoOpenPath && autoOpenPath === path);
   const instanceId = Math.random().toString(36).substring(7);
   let content = $state("");
   let isExpanded = $state(false);
@@ -75,6 +79,9 @@
   let touchStartY = $state(0);
   let touchMoved = $state(false);
   let touchIdentifier = $state<number | null>(null);
+
+  let hasAutoOpened = $state(false);
+  let lastAppliedHash = $state<string | null>(null);
 
   let hasLoadedOnce = false;
   let fileViewElement: HTMLElement | null = $state(null);
@@ -115,6 +122,50 @@
       content = "";
       setDirectory(path);
     }
+  });
+
+  $effect(() => {
+    if (!shouldAutoOpen || hasAutoOpened || type !== "file") return;
+    isExpanded = true;
+    hasAutoOpened = true;
+  });
+
+  function parseLineHash(hash: string): { start: number; end: number } | null {
+    const match = hash.match(/^#L(\d+)(?:-L(\d+))?$/);
+    if (!match) return null;
+    const start = Number.parseInt(match[1], 10);
+    const end = match[2] ? Number.parseInt(match[2], 10) : start;
+    if (Number.isNaN(start) || Number.isNaN(end)) return null;
+    return { start, end };
+  }
+
+  function scrollLineIntoView(lineNumber: number) {
+    if (!editorHost) return;
+    const lines = Array.from(editorHost.querySelectorAll(".cm-line")) as HTMLElement[];
+    const idx = lineNumber - 1;
+    const lineEl = lines[idx];
+    if (!lineEl) return;
+    lineEl.scrollIntoView({ block: "center" });
+  }
+
+  async function applyHashSelection() {
+    if (!shouldAutoOpen || !isExpanded || !editorHost || !content) return;
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (!hash || hash === lastAppliedHash) return;
+    const parsed = parseLineHash(hash);
+    if (!parsed) return;
+    lastAppliedHash = hash;
+    await tick();
+    selectedStart = parsed.start;
+    selectedEnd = parsed.end;
+    selectLinesInEditor(parsed.start, parsed.end);
+    scrollLineIntoView(parsed.start);
+  }
+
+  $effect(() => {
+    if (!shouldAutoOpen || !isExpanded || !editorHost || !content) return;
+    void applyHashSelection();
   });
 
   // Update URL hash from current selection when user selects lines
@@ -217,6 +268,13 @@
     };
     window.addEventListener("click", handler);
     return () => window.removeEventListener("click", handler);
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => void applyHashSelection();
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
   });
 
   // Watch for text selection changes in the editor

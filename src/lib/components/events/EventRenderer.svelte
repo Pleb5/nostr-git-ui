@@ -9,6 +9,7 @@
   import GitIssueComponent from "./GitIssueComponent.svelte";
   import GitPatchComponent from "./GitPatchComponent.svelte";
   import GitCommentComponent from "./GitCommentComponent.svelte";
+  import GitPermalinkComponent from "./GitPermalinkComponent.svelte";
   import GitStatusComponent from "./GitStatusComponent.svelte";
   import UnknownEventComponent from "./UnknownEventComponent.svelte";
 
@@ -20,9 +21,10 @@
     event: NostrEvent;
     useFeedStyle?: boolean; // Toggle between old and new style
     compact?: boolean; // Skip FeedItem wrapper (for when already in a container)
+    relay?: string;
   }
 
-  let { event, useFeedStyle = true, compact = false }: Props = $props();
+  let { event, useFeedStyle = true, compact = false, relay }: Props = $props();
 
   let componentType = $state<string>("unknown");
   let isKnownEvent = $state(false);
@@ -40,7 +42,7 @@
       case 1621:
         return "git-issue";
       case 1623:
-        return "git-comment";
+        return "git-permalink";
       case 1630:
       case 1631:
       case 1632:
@@ -90,6 +92,8 @@
     <GitPatchComponent event={event} />
   {:else if componentType === "git-comment"}
     <GitCommentFeed event={event} />
+  {:else if componentType === "git-permalink"}
+    <GitPermalinkComponent event={event} relay={relay} />
   {:else if componentType === "git-status"}
     {#if isStatusEvent(event as unknown as Nip34Event)}
       <GitStatusFeed event={event as StatusEvent} />
@@ -117,6 +121,8 @@
     <GitPatchComponent event={event} />
   {:else if componentType === "git-comment"}
     <GitCommentComponent event={event} />
+  {:else if componentType === "git-permalink"}
+    <GitPermalinkComponent event={event} relay={relay} />
   {:else if componentType === "git-status"}
     <GitStatusComponent event={event} />
   {:else if isKnownEvent}

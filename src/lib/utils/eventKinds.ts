@@ -9,7 +9,7 @@ export const KNOWN_GIT_EVENT_KINDS = [
   30618, // Git repository state
   1617, // Git patch
   1621, // Git issue
-  1623, // Git comment
+  1623, // Git permalink
   1630, // Issue status change
   1631, // Patch status change
   1632, // Repository status change
@@ -102,7 +102,7 @@ export function getEventKindDescription(kind: number): string {
     case 1621:
       return "Git Issue";
     case 1623:
-      return "Git Comment";
+      return "Git Permalink";
     case 1630:
       return "Issue Status Change";
     case 1631:

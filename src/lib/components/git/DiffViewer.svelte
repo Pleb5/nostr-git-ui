@@ -3,6 +3,7 @@
   import { useRegistry } from "../../useRegistry";
   const { Avatar, AvatarFallback, AvatarImage, Button, Textarea } = useRegistry();
   import { formatDistanceToNow } from "date-fns";
+  import { tick } from "svelte";
   import parseDiff from "parse-diff";
   import { ChevronDown, ChevronUp } from "@lucide/svelte";
   import { createCommentEvent, getTagValue } from "@nostr-git/core/events";
@@ -176,6 +177,7 @@
   let permalinkMenuX = $state(0);
   let permalinkMenuY = $state(0);
   let diffContainer: HTMLElement | null = $state(null);
+  let diffAnchors = $state<Record<string, string>>({});
 
   const pushErrorToast = (title: string, err: unknown, fallback?: string) => {
     const { message, theme } = toUserMessage(err, fallback ?? title);
@@ -210,6 +212,42 @@
   });
 
   $effect(() => {
+    const paths = Array.from(
+      new Set(parsed.map((file) => file.to || file.from || "").filter(Boolean))
+    );
+    if (paths.length === 0) {
+      diffAnchors = {};
+      return;
+    }
+    let cancelled = false;
+    Promise.all(paths.map(async (path) => [path, await githubPermalinkDiffId(path)] as const))
+      .then((entries) => {
+        if (!cancelled) diffAnchors = Object.fromEntries(entries);
+      })
+      .catch(() => {
+        if (!cancelled) diffAnchors = {};
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const getDiffHashFromLocation = () => {
+    if (typeof window === "undefined") return null;
+    const match = window.location.hash.match(/^#diff-([a-f0-9]+)/i);
+    return match ? match[1] : null;
+  };
+
+  const scrollToDiffHash = async () => {
+    if (!diffContainer) return;
+    const hash = getDiffHashFromLocation();
+    if (!hash) return;
+    await tick();
+    const el = document.getElementById(`diff-${hash}`);
+    if (el) el.scrollIntoView({ block: "start" });
+  };
+
+  $effect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       const inMenu = target.closest?.(".permalink-menu-popup");
@@ -217,6 +255,19 @@
     };
     window.addEventListener("click", handler);
     return () => window.removeEventListener("click", handler);
+  });
+
+  $effect(() => {
+    const anchors = diffAnchors;
+    if (!diffContainer || Object.keys(anchors).length === 0) return;
+    void scrollToDiffHash();
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => void scrollToDiffHash();
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
   });
 
   $effect(() => {
@@ -656,8 +707,9 @@
   {/if}
   {#each parsed as file, fileIdx (getFileLabel(file))}
     {@const fileId = getFileLabel(file)}
+    {@const filePath = file.to || file.from || "unknown"}
     {@const isExpanded = expandedFiles.has(fileId)}
-    <div class="mb-4">
+    <div class="mb-4" id={diffAnchors[filePath] ? `diff-${diffAnchors[filePath]}` : undefined}>
       <button
         type="button"
         class="font-bold mb-1 flex items-center w-full text-left hover:bg-muted/50 p-1 rounded"
@@ -691,7 +743,7 @@
                 <div class="text-xs text-muted-foreground mb-1">{chunk.content}</div>
                 {#each chunk.changes as change, i}
                   {@const ln = i + 1}
-                  {@const currentFilePath = file.to || file.from || "unknown"}
+                  {@const currentFilePath = filePath}
                   {@const lineComments = getCommentsForLine(change, currentFilePath)}
                   {@const hasComments = lineComments.length > 0}
                   {@const isAdd = change.type === "add"}
@@ -708,6 +760,9 @@
                     : isNormal
                       ? (change.ln2 ?? null)
                       : null}
+                  {@const leftSelected = isLineWithinSelection("L", currentFilePath, leftLine)}
+                  {@const rightSelected = isLineWithinSelection("R", currentFilePath, rightLine)}
+                  {@const isSelected = leftSelected || rightSelected}
                   {@const defaultSide = rightLine ? "R" : "L"}
                   {@const defaultLine = defaultSide === "R" ? rightLine : leftLine}
                   {@const bgClass = isAdd
@@ -718,7 +773,9 @@
 
                   <div class="w-full">
                     <div
-                      class={`flex group pl-2 pt-1 ${bgClass} w-full`}
+                      class={`flex group pl-2 pt-1 ${bgClass} w-full ${
+                        isSelected ? "diff-line-selected" : ""
+                      }`}
                       style="min-width: max-content;"
                     >
                       <div class="flex shrink-0 text-foreground select-none">
@@ -933,5 +990,39 @@
   :global(.hljs) {
     background: transparent !important;
     color: inherit !important;
+  }
+
+  :global(.hljs-keyword),
+  :global(.hljs-selector-tag),
+  :global(.hljs-literal),
+  :global(.hljs-title),
+  :global(.hljs-section),
+  :global(.hljs-type) {
+    color: hsl(var(--primary));
+  }
+
+  :global(.hljs-string),
+  :global(.hljs-attr),
+  :global(.hljs-attribute),
+  :global(.hljs-template-tag),
+  :global(.hljs-template-variable) {
+    color: hsl(var(--accent-foreground));
+  }
+
+  :global(.hljs-number),
+  :global(.hljs-symbol),
+  :global(.hljs-bullet) {
+    color: hsl(var(--secondary-foreground));
+  }
+
+  :global(.hljs-comment),
+  :global(.hljs-quote) {
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
+  }
+
+  :global(.diff-line-selected) {
+    outline: 1px solid hsl(var(--ring));
+    outline-offset: -1px;
   }
 </style>

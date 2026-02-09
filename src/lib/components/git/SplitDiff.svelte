@@ -532,7 +532,14 @@
           {@const language = getFileLanguage(filepath || "")}
           {@const defaultSide = line.newLineNum ? "R" : "L"}
           {@const defaultLine = defaultSide === "R" ? line.newLineNum : line.oldLineNum}
-          <div class="flex {getLineClass(line.type)}">
+          {@const leftSelected = isLineWithinSelection("L", filepath || "unknown", line.oldLineNum)}
+          {@const rightSelected = isLineWithinSelection(
+            "R",
+            filepath || "unknown",
+            line.newLineNum
+          )}
+          {@const isSelected = leftSelected || rightSelected}
+          <div class={`flex ${getLineClass(line.type)} ${isSelected ? "diff-line-selected" : ""}`}>
             <!-- Line Numbers -->
             <div class="flex shrink-0">
               <!-- Old Line Number -->
@@ -704,5 +711,39 @@
   :global(.hljs) {
     background: transparent !important;
     color: inherit !important;
+  }
+
+  :global(.hljs-keyword),
+  :global(.hljs-selector-tag),
+  :global(.hljs-literal),
+  :global(.hljs-title),
+  :global(.hljs-section),
+  :global(.hljs-type) {
+    color: hsl(var(--primary));
+  }
+
+  :global(.hljs-string),
+  :global(.hljs-attr),
+  :global(.hljs-attribute),
+  :global(.hljs-template-tag),
+  :global(.hljs-template-variable) {
+    color: hsl(var(--accent-foreground));
+  }
+
+  :global(.hljs-number),
+  :global(.hljs-symbol),
+  :global(.hljs-bullet) {
+    color: hsl(var(--secondary-foreground));
+  }
+
+  :global(.hljs-comment),
+  :global(.hljs-quote) {
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
+  }
+
+  :global(.diff-line-selected) {
+    outline: 1px solid hsl(var(--ring));
+    outline-offset: -1px;
   }
 </style>
