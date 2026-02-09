@@ -17,11 +17,11 @@
   import type { ForkResult } from "../../hooks/useForkRepo.svelte";
   import { toast } from "../../stores/toast";
   import { validateGraspServerUrl } from "@nostr-git/core/events";
-  import { 
+  import {
     getGitServiceApi,
     getProviderCapabilities,
-    getProviderFromService, 
-    buildProviderUrl 
+    getProviderFromService,
+    buildProviderUrl,
   } from "@nostr-git/core/git";
   import { tryTokensForHost, getTokensForHost } from "../../utils/tokenHelpers.js";
   // Load user's GRASP servers directly (so chips are reactive even if prop is static)
@@ -36,32 +36,41 @@
     navigateToForkedRepo?: (result: ForkResult) => void;
   }
 
-  const { repo, pubkey, onPublishEvent, graspServerUrls = [], useForkRepoImpl, navigateToForkedRepo }: Props = $props();
+  const {
+    repo,
+    pubkey,
+    onPublishEvent,
+    graspServerUrls = [],
+    useForkRepoImpl,
+    navigateToForkedRepo,
+  }: Props = $props();
 
   // Initialize the useForkRepo hook (allow DI override)
   const forkImpl = $derived(useForkRepoImpl ?? useForkRepo);
-  const forkState = $derived(forkImpl({
-    userPubkey: pubkey, // Pass Nostr pubkey for maintainers
-    onProgress: (steps) => {
-      // Progress is handled internally by the hook
-      console.log("🔄 Fork progress:", steps);
-    },
-    onForkCompleted: (result) => {
-      console.log("🎉 Fork completed:", result);
-      completedResult = result;
-      // Show success notification
-      toast.push({
-        message: "Repository forked successfully!",
-        variant: "default",
-      });
-      // Navigate to the forked repo after a short delay if callback is provided
-      // This gives users time to see the success message
-      if (navigateToForkedRepo && result.announcementEvent) {
-        navigateToForkedRepo(result);
-      }
-    },
-    onPublishEvent: onPublishEvent,
-  }));
+  const forkState = $derived(
+    forkImpl({
+      userPubkey: pubkey, // Pass Nostr pubkey for maintainers
+      onProgress: (steps) => {
+        // Progress is handled internally by the hook
+        console.log("🔄 Fork progress:", steps);
+      },
+      onForkCompleted: (result) => {
+        console.log("🎉 Fork completed:", result);
+        completedResult = result;
+        // Show success notification
+        toast.push({
+          message: "Repository forked successfully!",
+          variant: "default",
+        });
+        // Navigate to the forked repo after a short delay if callback is provided
+        // This gives users time to see the success message
+        if (navigateToForkedRepo && result.announcementEvent) {
+          navigateToForkedRepo(result);
+        }
+      },
+      onPublishEvent: onPublishEvent,
+    })
+  );
 
   // Access reactive state through getters
   const progress = $derived(forkState.progress);
@@ -107,7 +116,9 @@
     }
 
     // Fallback: try generic pattern for any hostname
-    const genericMatch = url.match(/(?:https?:\/\/|git@)([^\/:]+)[\/:]([^\/]+)\/([^\/.]+)(?:\.git)?/);
+    const genericMatch = url.match(
+      /(?:https?:\/\/|git@)([^\/:]+)[\/:]([^\/]+)\/([^\/.]+)(?:\.git)?/
+    );
     if (genericMatch) {
       return {
         hostname: genericMatch[1],
@@ -146,15 +157,19 @@
   let forkName = $derived.by(() => `${originalRepo.name}-fork`);
   let selectedService = $derived.by(() => getDefaultService(parsedUrl.hostname));
   let isCheckingExistingFork = $state(false);
-  let existingForkInfo = $state<{
-    exists: boolean;
-    url?: string;
-    message?: string;
-    service?: string;
-    error?: string;
-    isOwnRepo?: boolean; // True if user is trying to fork their own repo
-    forkName?: string; // Name of existing fork
-  } | null | undefined>(undefined);
+  let existingForkInfo = $state<
+    | {
+        exists: boolean;
+        url?: string;
+        message?: string;
+        service?: string;
+        error?: string;
+        isOwnRepo?: boolean; // True if user is trying to fork their own repo
+        forkName?: string; // Name of existing fork
+      }
+    | null
+    | undefined
+  >(undefined);
   // GRASP-specific state
   let relayUrl = $state("");
   let relayUrlError = $state<string | undefined>();
@@ -169,7 +184,7 @@
 
   // Local reactive list of GRASP servers. Seed from prop, keep updated from profile and prop changes.
   let graspServerUrlsLocal = $state<string[]>([]);
-  
+
   // Initialize from prop
   $effect(() => {
     if (graspServerUrls && graspServerUrls.length > 0 && graspServerUrlsLocal.length === 0) {
@@ -197,16 +212,22 @@
   // Load commits on mount
   $effect(() => {
     if (repo) {
-      loadingCommits = true;
+      const targetBranch = repo.selectedBranch || repo.mainBranch || "";
       const existingCommits = repo.commits;
       if (existingCommits && existingCommits.length > 0) {
         availableCommits = existingCommits;
         loadingCommits = false;
       } else {
+        loadingCommits = true;
         repo
-          .getCommitHistory({ depth: 100 })
-          .then((commits) => {
-            availableCommits = commits || repo.commits || [];
+          .getCommitHistory({ depth: 100, branch: targetBranch || undefined })
+          .then((result) => {
+            const commits = Array.isArray(result)
+              ? result
+              : Array.isArray(result?.commits)
+                ? result.commits
+                : [];
+            availableCommits = commits.length > 0 ? commits : repo.commits || [];
             loadingCommits = false;
           })
           .catch((error) => {
@@ -248,7 +269,7 @@
   tokens.subscribe((t) => {
     tokenList = t;
   });
-  
+
   // Wait for tokens to be initialized
   async function waitForTokens(): Promise<Token[]> {
     return await tokens.waitForInitialization();
@@ -403,7 +424,7 @@
       // Get tokens and check if any are available
       const allTokens = await waitForTokens();
       const matchingTokens = getTokensForHost(allTokens, selectedService);
-      
+
       if (matchingTokens.length === 0) {
         existingForkInfo = {
           exists: false,
@@ -418,89 +439,85 @@
 
       // Use token retry logic to try all tokens until one succeeds
       // The operation will set existingForkInfo internally if conflicts are found
-      await tryTokensForHost(
-        allTokens,
-        selectedService,
-        async (token: string, host: string) => {
-          const api = getGitServiceApi(provider as any, token);
+      await tryTokensForHost(allTokens, selectedService, async (token: string, host: string) => {
+        const api = getGitServiceApi(provider as any, token);
 
-          // Get current user first (authentication check - will throw if token is invalid)
-          const userData = await api.getCurrentUser();
-          const username = userData.login;
+        // Get current user first (authentication check - will throw if token is invalid)
+        const userData = await api.getCurrentUser();
+        const username = userData.login;
 
-          // Use GitServiceApi's checkExistingFork if available
-          if (
-            restrictions.supportsForkChecking &&
-            "checkExistingFork" in api &&
-            typeof api.checkExistingFork === "function"
-          ) {
-            try {
-              // Check if user is trying to fork their own repository
-              if (
-                !restrictions.allowOwnRepoFork &&
-                originalRepo.owner.toLowerCase() === username.toLowerCase()
-              ) {
-                const ownRepo = await api.getRepo(originalRepo.owner, originalRepo.name);
-                // Set result and return success (stops token retry)
-                existingForkInfo = {
-                  exists: true,
-                  service: selectedService,
-                  isOwnRepo: true,
-                  message: "You cannot fork your own repository",
-                  url: ownRepo.htmlUrl,
-                };
-                lastCheckedKey = checkKey;
-                return true;
-              }
-
-              // Check for existing fork
-              const existingFork = await api.checkExistingFork(originalRepo.owner, originalRepo.name);
-
-              if (existingFork) {
-                existingForkInfo = {
-                  exists: true,
-                  service: selectedService,
-                  isOwnRepo: false,
-                  forkName: existingFork.name,
-                  message: "You already have a fork of this repository",
-                  url: existingFork.htmlUrl,
-                };
-                lastCheckedKey = checkKey;
-                return true;
-              }
-            } catch (error: any) {
-              console.error("Error checking for existing fork:", error);
-              // Continue to check if the specific fork name exists (don't throw yet)
-              // If checkExistingFork fails, we still want to check if forkName exists
-            }
-          }
-
-          // Also check if a repo with the desired fork name already exists
+        // Use GitServiceApi's checkExistingFork if available
+        if (
+          restrictions.supportsForkChecking &&
+          "checkExistingFork" in api &&
+          typeof api.checkExistingFork === "function"
+        ) {
           try {
-            const existingRepo = await api.getRepo(username, forkName);
-
-            // Repo with this name exists
-            const serviceLabel =
-              availableServices.find((s) => s.host === selectedService)?.label || selectedService;
-            existingForkInfo = {
-              exists: true,
-              service: selectedService,
-              message: `A repository named '${forkName}' already exists in your ${serviceLabel} account`,
-              url: existingRepo.htmlUrl,
-            };
-            lastCheckedKey = checkKey;
-            return true;
-          } catch (error: any) {
-            // Repo doesn't exist (good!) - this is success
-            if (error.message?.includes("404") || error.message?.includes("Not Found")) {
-              // No conflict found - return success (stops token retry)
+            // Check if user is trying to fork their own repository
+            if (
+              !restrictions.allowOwnRepoFork &&
+              originalRepo.owner.toLowerCase() === username.toLowerCase()
+            ) {
+              const ownRepo = await api.getRepo(originalRepo.owner, originalRepo.name);
+              // Set result and return success (stops token retry)
+              existingForkInfo = {
+                exists: true,
+                service: selectedService,
+                isOwnRepo: true,
+                message: "You cannot fork your own repository",
+                url: ownRepo.htmlUrl,
+              };
+              lastCheckedKey = checkKey;
               return true;
             }
-            // Some other error occurred - throw to trigger token retry
-            throw error;
+
+            // Check for existing fork
+            const existingFork = await api.checkExistingFork(originalRepo.owner, originalRepo.name);
+
+            if (existingFork) {
+              existingForkInfo = {
+                exists: true,
+                service: selectedService,
+                isOwnRepo: false,
+                forkName: existingFork.name,
+                message: "You already have a fork of this repository",
+                url: existingFork.htmlUrl,
+              };
+              lastCheckedKey = checkKey;
+              return true;
+            }
+          } catch (error: any) {
+            console.error("Error checking for existing fork:", error);
+            // Continue to check if the specific fork name exists (don't throw yet)
+            // If checkExistingFork fails, we still want to check if forkName exists
           }
         }
-      );
+
+        // Also check if a repo with the desired fork name already exists
+        try {
+          const existingRepo = await api.getRepo(username, forkName);
+
+          // Repo with this name exists
+          const serviceLabel =
+            availableServices.find((s) => s.host === selectedService)?.label || selectedService;
+          existingForkInfo = {
+            exists: true,
+            service: selectedService,
+            message: `A repository named '${forkName}' already exists in your ${serviceLabel} account`,
+            url: existingRepo.htmlUrl,
+          };
+          lastCheckedKey = checkKey;
+          return true;
+        } catch (error: any) {
+          // Repo doesn't exist (good!) - this is success
+          if (error.message?.includes("404") || error.message?.includes("Not Found")) {
+            // No conflict found - return success (stops token retry)
+            return true;
+          }
+          // Some other error occurred - throw to trigger token retry
+          throw error;
+        }
+      });
 
       // If we reach here and no existingForkInfo was set, no conflicts were found
       if (!existingForkInfo) {
@@ -1037,7 +1054,7 @@
                   <span>Checking if fork already exists...</span>
                 </div>
               </div>
-            {:else if existingForkInfo && typeof existingForkInfo.exists !== 'undefined'}
+            {:else if existingForkInfo && typeof existingForkInfo.exists !== "undefined"}
               <div class="bg-gray-800 border border-gray-600 rounded-lg p-3">
                 <div class="flex items-start space-x-2 text-sm">
                   {#if existingForkInfo.exists}
@@ -1052,8 +1069,7 @@
                           selectedService}
                         <div class="text-gray-300 text-sm space-y-2">
                           <p>
-                            {providerLabel} does not allow forking your own repository. Instead, you
-                            can:
+                            {providerLabel} does not allow forking your own repository. Instead, you can:
                           </p>
                           <ul class="list-disc list-inside space-y-1 ml-2">
                             <li>Create a new branch for changes</li>
@@ -1104,8 +1120,14 @@
                             {/if}
                           </ul>
                           {#if existingForkInfo.url}
-                            {@const settingsUrl = buildProviderUrl(existingForkInfo.url, restrictions.settingsUrlPattern)}
-                            {@const forkSettingsUrl = buildProviderUrl(existingForkInfo.url, restrictions.forkSettingsUrlPattern)}
+                            {@const settingsUrl = buildProviderUrl(
+                              existingForkInfo.url,
+                              restrictions.settingsUrlPattern
+                            )}
+                            {@const forkSettingsUrl = buildProviderUrl(
+                              existingForkInfo.url,
+                              restrictions.forkSettingsUrlPattern
+                            )}
                             <div class="flex items-center gap-2 mt-2 flex-wrap">
                               <a
                                 href={existingForkInfo.url}

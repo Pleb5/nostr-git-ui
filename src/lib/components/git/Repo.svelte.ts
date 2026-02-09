@@ -11,7 +11,13 @@ import type {
 } from "@nostr-git/core/events";
 import type { MergeAnalysisResult } from "@nostr-git/core/git";
 import type { Readable } from "svelte/store";
-import { createPermissionDeniedError, RetriableError, UserActionableError, FatalError, GitErrorCode } from "@nostr-git/core/errors";
+import {
+  createPermissionDeniedError,
+  RetriableError,
+  UserActionableError,
+  FatalError,
+  GitErrorCode,
+} from "@nostr-git/core/errors";
 
 import {
   parseRepoAnnouncementEvent,
@@ -40,8 +46,6 @@ import {
 } from "@nostr-git/core/git";
 import { VendorReadRouter } from "./VendorReadRouter";
 
-
-
 export type PushFanoutMode = "best-effort" | "all-or-nothing";
 
 export interface PushFanoutResult {
@@ -65,7 +69,9 @@ export class Repo {
   patches = $state<PatchEvent[]>([]);
   hashtags = $state<string[]>([]);
   tokens = $state<Token[]>([]);
-  refs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> = $state([]);
+  refs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> = $state(
+    []
+  );
   earliestUniqueCommit: string = $state("");
   createdAt: string = $state("");
   clone: string[] = $state([]);
@@ -73,7 +79,7 @@ export class Repo {
   address: string = $state("");
   viewerPubkey: string | null = $state(null);
   editable: boolean = $state(false);
-  
+
   // User identity for git commit operations (author name and email)
   authorName: string = $state("");
   authorEmail: string = $state("");
@@ -82,10 +88,10 @@ export class Repo {
   #repo: RepoAnnouncement | undefined = $state(undefined);
   #repoStateEvent: RepoStateEvent | undefined = $state(undefined);
   #state: RepoState | undefined = $state(undefined);
-  
+
   // Clone URL error tracking - surfaces 404s and other errors to the UI
   #cloneUrlErrors: Array<{ url: string; error: string; status?: number }> = $state([]);
-  
+
   // Reactive selected branch so UI can respond to changes
   #selectedBranchState: string | undefined = $state(undefined);
   #branchSwitching: boolean = $state(false);
@@ -111,7 +117,6 @@ export class Repo {
   branchManager!: BranchManager;
   fileManager!: FileManager;
   vendorReadRouter!: VendorReadRouter;
-
 
   // Private caches used across helpers
   #mergedRefsCache:
@@ -233,17 +238,14 @@ export class Repo {
       });
     } else {
       // Initialize WorkerManager with optional worker config from consuming app
-      this.workerManager = new WorkerManager(
-        (progressEvent: WorkerProgressEvent) => {
-          console.log(`Clone progress for ${progressEvent.repoId}: ${progressEvent.phase}`);
-          this.cloneProgress = {
-            isCloning: true,
-            phase: progressEvent.phase,
-            progress: progressEvent.progress,
-          };
-        },
-        workerConfig
-      );
+      this.workerManager = new WorkerManager((progressEvent: WorkerProgressEvent) => {
+        console.log(`Clone progress for ${progressEvent.repoId}: ${progressEvent.phase}`);
+        this.cloneProgress = {
+          isCloning: true,
+          phase: progressEvent.phase,
+          progress: progressEvent.progress,
+        };
+      }, workerConfig);
     }
 
     // Keep worker auth config synced with token store updates
@@ -304,7 +306,7 @@ export class Repo {
       getTokens: () => tokens.waitForInitialization(),
       preferVendorReads: true,
     });
-    
+
     // Wire up error callback to surface clone URL errors (404s, auth errors, etc.) to the UI
     this.vendorReadRouter.setCloneUrlErrorCallback((url, error, status) => {
       this.recordCloneUrlError(url, error, status);
@@ -362,9 +364,9 @@ export class Repo {
           initialRepoEvent = event;
         }
 
-        // Only load branches if WorkerManager is ready
-        if (this.workerManager.isReady && !this.#state) {
-          this.#loadBranchesFromRepo(event);
+        // Load branches if WorkerManager is ready and refs aren't populated yet
+        if (this.workerManager.isReady && this.refs.length === 0 && !this.#refsLoading) {
+          void this.#loadBranchesFromRepo(event);
         }
 
         this.clone = this.#repo!.clone!;
@@ -378,7 +380,10 @@ export class Repo {
     });
 
     repoStateEvent.subscribe((event) => {
-      console.log(`[Repo] repoStateEvent subscription fired:`, event ? `has event with ${event.tags?.length || 0} tags` : 'undefined');
+      console.log(
+        `[Repo] repoStateEvent subscription fired:`,
+        event ? `has event with ${event.tags?.length || 0} tags` : "undefined"
+      );
       if (event) {
         this.#repoStateEvent = event; // Set the reactive state
         this.#state = parseRepoStateEvent(event);
@@ -410,6 +415,9 @@ export class Repo {
             return (a.name || "").localeCompare(b.name || "");
           });
           console.log(`⚡ Instantly loaded ${this.refs.length} refs from RepoStateEvent`);
+          this.#maybeSelectBranchFromRefs(this.refs, parsedState?.head);
+        } else {
+          this.#seedRefsFromHead(parsedState?.head);
         }
 
         // Process the Repository State event in BranchManager (verified against worker when possible)
@@ -431,16 +439,27 @@ export class Repo {
     repoStateEvents?.subscribe((events) => {
       this.#repoStateEventsArr = events;
       this.#mergedRefsCache = undefined; // invalidate
-      
+
       // IMMEDIATELY extract refs from merged RepoStateEvents for instant UI display
       if (events && events.length > 0) {
         const merged = this.mergeRepoStateByMaintainers(events);
         if (merged.size > 0) {
-          const immediateRefs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> = [];
+          const immediateRefs: Array<{
+            name: string;
+            type: "heads" | "tags";
+            fullRef: string;
+            commitId: string;
+          }> = [];
           for (const [key, ref] of merged.entries()) {
             const name = key.split(":")[1];
-            if (name && ref.type) { // Filter out invalid refs
-              immediateRefs.push({ name, type: ref.type, fullRef: ref.fullRef, commitId: ref.commitId });
+            if (name && ref.type) {
+              // Filter out invalid refs
+              immediateRefs.push({
+                name,
+                type: ref.type,
+                fullRef: ref.fullRef,
+                commitId: ref.commitId,
+              });
             }
           }
           // Sort refs: heads first, then tags (with null-safe comparison)
@@ -449,6 +468,9 @@ export class Repo {
             return (a.name || "").localeCompare(b.name || "");
           });
           console.log(`⚡ Instantly loaded ${this.refs.length} refs from merged RepoStateEvents`);
+          this.#maybeSelectBranchFromRefs(this.refs);
+        } else {
+          this.#seedRefsFromHead(this.#state?.head);
         }
       }
     });
@@ -512,10 +534,14 @@ export class Repo {
           const cloneUrls = [...(this.#repo?.clone || [])];
           const branch = this.branchManager.getMainBranch();
           const hasVendorApi = this.vendorReadRouter?.hasVendorSupport(cloneUrls) ?? false;
-          
+
           if (repoId && cloneUrls.length > 0 && !hasVendorApi) {
             console.log(`[Repo init] No vendor API, syncing with remote...`);
-            this.syncStatus = await this.workerManager.syncWithRemote({ repoId, cloneUrls, branch });
+            this.syncStatus = await this.workerManager.syncWithRemote({
+              repoId,
+              cloneUrls,
+              branch,
+            });
           } else if (hasVendorApi) {
             console.log(`[Repo init] Vendor API available, skipping git sync for fast UI response`);
           }
@@ -531,8 +557,14 @@ export class Repo {
               this.branchManager.setRepoEvent(this.repoEvent);
             }
             await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
-            this.refs = this.branchManager.getAllRefs();
+            const loadedRefs = this.branchManager.getAllRefs();
+            if (loadedRefs.length > 0) {
+              this.refs = loadedRefs;
+            } else {
+              this.#seedRefsFromHead(this.#state?.head);
+            }
             console.log(`✅ Loaded ${this.refs.length} refs from vendor/git fallback`);
+            this.#maybeSelectBranchFromRefs(this.refs, this.#state?.head);
           } catch (error) {
             console.error("Failed to load branches:", error);
             this.refs = [];
@@ -577,7 +609,7 @@ export class Repo {
    * Wait for repository initialization to complete.
    * This includes worker initialization, token loading, and initial clone/sync.
    * Use this before attempting operations that require the repo to be ready.
-   * 
+   *
    * @example
    * ```typescript
    * await repoClass.waitForReady();
@@ -707,9 +739,7 @@ export class Repo {
   // Status resolution (1630–1633)
   // -------------------------
   /** Resolve final status for a root id (issue or patch). */
-  public resolveStatusFor(
-    rootId: string
-  ): {
+  public resolveStatusFor(rootId: string): {
     state: "open" | "draft" | "closed" | "merged" | "resolved";
     by: string;
     at: number;
@@ -898,7 +928,10 @@ export class Repo {
 
       // Validate repoId is not empty string
       if (!repoId || repoId.trim() === "" || !cloneUrls.length) {
-        console.debug("[Repo] #loadCommitsFromRepo skipped: missing repoId or clone URLs", { repoId, cloneUrls: cloneUrls.length });
+        console.debug("[Repo] #loadCommitsFromRepo skipped: missing repoId or clone URLs", {
+          repoId,
+          cloneUrls: cloneUrls.length,
+        });
         return;
       }
 
@@ -942,7 +975,7 @@ export class Repo {
       console.debug("[Repo] #loadCommits skipped: missing repoEvent, mainBranch, or key", {
         hasRepoEvent: !!this.repoEvent,
         mainBranch: this.mainBranch,
-        key: this.key
+        key: this.key,
       });
       return;
     }
@@ -951,32 +984,44 @@ export class Repo {
     const branchToLoad = this.selectedBranch || this.mainBranch;
 
     // Delegate to CommitManager
-    await this.commitManager.loadCommits(
-      this.key,
-      branchToLoad,
-      this.mainBranch
-    );
+    await this.commitManager.loadCommits(this.key, branchToLoad, this.mainBranch);
   }
 
   async #loadBranchesFromRepo(repoEvent: RepoAnnouncementEvent) {
-    // Set repoEvent for vendor API fallback when no RepoStateEvent is available
-    this.branchManager.setRepoEvent(repoEvent);
+    if (this.#refsLoading) return;
+    this.#refsLoading = true;
+    try {
+      // Set repoEvent for vendor API fallback when no RepoStateEvent is available
+      this.branchManager.setRepoEvent(repoEvent);
 
-    // Process repository state event for NIP-34 references if available
-    if (this.#repoStateEvent) {
-      // Prefer verified processing when we have the repoEvent
-      await this.branchManager.processRepoStateEventVerified(this.#repoStateEvent, repoEvent);
-    }
+      // Process repository state event for NIP-34 references if available
+      if (this.#repoStateEvent) {
+        // Prefer verified processing when we have the repoEvent
+        await this.branchManager.processRepoStateEventVerified(this.#repoStateEvent, repoEvent);
+      }
 
-    // Delegate to BranchManager
-    await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
+      // Delegate to BranchManager
+      await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
 
-    // Sync selected branch state from BranchManager to reactive state
-    // This ensures the UI reflects the auto-selected main branch
-    const selectedFromManager = this.branchManager.getSelectedBranch();
-    if (selectedFromManager && !this.#selectedBranchState) {
-      this.#selectedBranchState = selectedFromManager;
-      console.log(`[Repo] Auto-selected branch from BranchManager: ${selectedFromManager}`);
+      const loadedRefs = this.branchManager.getAllRefs();
+      if (loadedRefs.length > 0) {
+        this.refs = loadedRefs;
+      } else {
+        this.#seedRefsFromHead(this.#state?.head);
+      }
+      this.#maybeSelectBranchFromRefs(this.refs, this.#state?.head);
+
+      // Sync selected branch state from BranchManager to reactive state
+      // This ensures the UI reflects the auto-selected main branch
+      const selectedFromManager = this.branchManager.getSelectedBranch();
+      if (selectedFromManager && !this.#selectedBranchState) {
+        this.#selectedBranchState = selectedFromManager;
+        console.log(`[Repo] Auto-selected branch from BranchManager: ${selectedFromManager}`);
+      }
+    } catch (error) {
+      console.error("Failed to load branches:", error);
+    } finally {
+      this.#refsLoading = false;
     }
   }
 
@@ -992,7 +1037,7 @@ export class Repo {
     // Derive branches from reactive refs for instant UI updates
     // Filter refs to only include heads (branches), not tags
     if (this.refs.length > 0) {
-      return this.refs.filter(r => r.type === "heads");
+      return this.refs.filter((r) => r.type === "heads");
     }
     // Fallback to branchManager if refs not yet loaded
     return this.branchManager.getBranches();
@@ -1011,7 +1056,7 @@ export class Repo {
   // Record a clone URL error (called by VendorReadRouter or other components)
   recordCloneUrlError(url: string, error: string, status?: number): void {
     // Avoid duplicates
-    const existing = this.#cloneUrlErrors.find(e => e.url === url);
+    const existing = this.#cloneUrlErrors.find((e) => e.url === url);
     if (existing) {
       existing.error = error;
       existing.status = status;
@@ -1054,7 +1099,9 @@ export class Repo {
   private syncCommitsState() {
     const newCommits = this.commitManager.getCommits();
     const currentBranch = this.commitManager.getCurrentBranch();
-    console.log(`[Repo.syncCommitsState] Syncing ${newCommits.length} commits, currentBranch=${currentBranch}, selectedBranch=${this.selectedBranch}, isSwitching=${this.#branchSwitching}`);
+    console.log(
+      `[Repo.syncCommitsState] Syncing ${newCommits.length} commits, currentBranch=${currentBranch}, selectedBranch=${this.selectedBranch}, isSwitching=${this.#branchSwitching}`
+    );
 
     // IMPORTANT: Create a new array reference to ensure Svelte reactivity triggers
     // This is critical for Svelte 5's fine-grained reactivity to detect the change
@@ -1062,7 +1109,58 @@ export class Repo {
     this.#totalCommitsState = this.commitManager.getTotalCommits();
     this.#hasMoreCommitsState = this.commitManager.getHasMoreCommits();
 
-    console.log(`[Repo.syncCommitsState] Updated #commitsState with ${this.#commitsState.length} commits`);
+    console.log(
+      `[Repo.syncCommitsState] Updated #commitsState with ${this.#commitsState.length} commits`
+    );
+  }
+
+  #getHeadBranchName(headHint?: string): string | null {
+    const raw = String(headHint || "").trim();
+    if (!raw) return null;
+    const normalized = raw.replace(/^ref:\s*/i, "");
+    const match = normalized.match(/^refs\/heads\/(.+)$/);
+    return match ? match[1] : normalized;
+  }
+
+  #seedRefsFromHead(headHint?: string) {
+    if (this.refs.length > 0) return;
+    const headName = this.#getHeadBranchName(headHint);
+    if (!headName) return;
+    this.refs = [
+      {
+        name: headName,
+        type: "heads",
+        fullRef: `refs/heads/${headName}`,
+        commitId: "",
+      },
+    ];
+    if (!this.#selectedBranchState) {
+      this.#selectedBranchState = headName;
+    }
+    this.branchManager.setSelectedBranch(headName);
+  }
+
+  #maybeSelectBranchFromRefs(
+    refs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }>,
+    headHint?: string
+  ) {
+    if (this.selectedBranch) return;
+    const heads = refs.filter((ref) => ref.type === "heads");
+    if (heads.length === 0) return;
+
+    let chosen: string | undefined;
+    const headName = this.#getHeadBranchName(headHint);
+    if (headName && heads.some((ref) => ref.name === headName)) {
+      chosen = headName;
+    }
+
+    if (!chosen) {
+      chosen = heads[0]?.name;
+    }
+
+    if (!chosen) return;
+    this.#selectedBranchState = chosen;
+    this.branchManager.setSelectedBranch(chosen);
   }
 
   /**
@@ -1104,7 +1202,10 @@ export class Repo {
       const hasProcessedState = this.branchManager?.getAllNIP34References().size > 0;
       if (!hasProcessedState) {
         if (this.#repo) {
-          await this.branchManager.processRepoStateEventVerified(this.#repoStateEvent, this.repoEvent!);
+          await this.branchManager.processRepoStateEventVerified(
+            this.#repoStateEvent,
+            this.repoEvent!
+          );
         } else {
           this.branchManager?.processRepoStateEvent(this.#repoStateEvent);
         }
@@ -1191,10 +1292,10 @@ export class Repo {
     return this.#branchChangeTrigger;
   }
 
-  async setSelectedBranch(branchName: string) {    
+  async setSelectedBranch(branchName: string) {
     // Set switching flag to prevent premature loads
     this.#branchSwitching = true;
-    
+
     // Update in BranchManager first
     this.branchManager.setSelectedBranch(branchName);
 
@@ -1261,13 +1362,17 @@ export class Repo {
           await this.workerManager.ensureFullClone({ repoId: this.key, branch: shortBranch });
         }
       } else if (hasVendorApi) {
-        console.log(`[setSelectedBranch] Vendor API available, skipping git sync for fast UI response`);
+        console.log(
+          `[setSelectedBranch] Vendor API available, skipping git sync for fast UI response`
+        );
       }
 
       // 3) Clear caches only if branch content actually changed
       if (shouldClearCache) {
         console.log("Clearing file cache due to branch update");
-        try { await this.fileManager.clearCache(this.key); } catch {}
+        try {
+          await this.fileManager.clearCache(this.key);
+        } catch {}
       } else {
         console.log("Preserving file cache - branch unchanged");
       }
@@ -1280,14 +1385,21 @@ export class Repo {
       const mainBranchName = this.branchManager.getMainBranch();
       this.commitManager.setCurrentBranch(shortBranch, mainBranchName);
 
-      console.log(`[setSelectedBranch] Loading commits for ref: ${shortBranch} (isTag: ${isTag}), mainBranch: ${mainBranchName}`);
+      console.log(
+        `[setSelectedBranch] Loading commits for ref: ${shortBranch} (isTag: ${isTag}), mainBranch: ${mainBranchName}`
+      );
 
       const result = await this.commitManager.loadCommits(
         this.repoId,
-        shortBranch,  // The selected branch or tag
+        shortBranch, // The selected branch or tag
         mainBranchName
       );
-      console.log(`[setSelectedBranch] Commits loaded:`, result.success, `count:`, this.commitManager.getCommits().length);
+      console.log(
+        `[setSelectedBranch] Commits loaded:`,
+        result.success,
+        `count:`,
+        this.commitManager.getCommits().length
+      );
       // Note: syncCommitsState is called AFTER branchSwitching is cleared (in finally block)
       // to ensure UI components can properly pick up the new commits
 
@@ -1308,14 +1420,17 @@ export class Repo {
 
       // 5) Verify worker status (debug visibility)
       try {
-        const status = await this.workerManager.getStatus({ repoId: this.key, branch: shortBranch });
+        const status = await this.workerManager.getStatus({
+          repoId: this.key,
+          branch: shortBranch,
+        });
         console.log("Worker status after branch switch:", status);
       } catch {}
     } catch (e) {
       console.error("Failed to switch branch in worker or refresh commits:", e);
       toast.push({
         message: `Failed to switch branch: ${e instanceof Error ? e.message : String(e)}`,
-        theme: "error"
+        theme: "error",
       });
     } finally {
       // Clear switching flag FIRST, then sync commits
@@ -1378,13 +1493,21 @@ export class Repo {
       }
 
       // Validate repoId is not empty string
-      if (!this.repoEvent || !effectiveMainBranch || !effectiveRepoId || effectiveRepoId.trim() === "") {
+      if (
+        !this.repoEvent ||
+        !effectiveMainBranch ||
+        !effectiveRepoId ||
+        effectiveRepoId.trim() === ""
+      ) {
         console.debug("[Repo] loadPage skipped: missing repoEvent, mainBranch, or repoId", {
           hasRepoEvent: !!this.repoEvent,
           effectiveMainBranch,
           effectiveRepoId,
         });
-        return { success: false, error: "Repository event, main branch, and repository ID are required" };
+        return {
+          success: false,
+          error: "Repository event, main branch, and repository ID are required",
+        };
       }
 
       // Use the CommitManager's loadPage method which sets the page and calls loadCommits
@@ -1398,7 +1521,9 @@ export class Repo {
         // Get the branch fresh at call time to avoid stale closure capture
         const storedBranch = this.commitManager.getCurrentBranch();
         const currentBranchToLoad = storedBranch || this.selectedBranch || effectiveMainBranch;
-        console.log(`[Repo.loadPage] monkey-patched loadCommits called with branch=${currentBranchToLoad} (storedBranch=${storedBranch}, selectedBranch=${this.selectedBranch})`);
+        console.log(
+          `[Repo.loadPage] monkey-patched loadCommits called with branch=${currentBranchToLoad} (storedBranch=${storedBranch}, selectedBranch=${this.selectedBranch})`
+        );
         return await originalLoadCommits(
           effectiveRepoId!, // Use the effective repository ID
           currentBranchToLoad, // Use current branch at call time, not stale captured value
@@ -1534,7 +1659,9 @@ export class Repo {
     if (this.vendorReadRouter && this.repoEvent) {
       try {
         const cloneUrls = this.cloneUrls;
-        console.log(`[Repo.getCommitHistory] Trying VendorReadRouter.listCommits for branch=${targetBranch}`);
+        console.log(
+          `[Repo.getCommitHistory] Trying VendorReadRouter.listCommits for branch=${targetBranch}`
+        );
 
         const vendorResult = await this.vendorReadRouter.listCommits({
           workerManager: this.workerManager,
@@ -1554,21 +1681,30 @@ export class Repo {
             author: {
               name: c.author.name,
               email: c.author.email,
-              timestamp: c.author.date ? Math.floor(new Date(c.author.date).getTime() / 1000) : undefined,
+              timestamp: c.author.date
+                ? Math.floor(new Date(c.author.date).getTime() / 1000)
+                : undefined,
             },
             committer: {
               name: c.committer.name,
               email: c.committer.email,
-              timestamp: c.committer.date ? Math.floor(new Date(c.committer.date).getTime() / 1000) : undefined,
+              timestamp: c.committer.date
+                ? Math.floor(new Date(c.committer.date).getTime() / 1000)
+                : undefined,
             },
             parent: c.parents?.map((p: any) => p.sha) || [],
           },
         }));
 
-        console.log(`[Repo.getCommitHistory] VendorReadRouter returned ${commits.length} commits, fromVendor=${vendorResult.fromVendor}`);
+        console.log(
+          `[Repo.getCommitHistory] VendorReadRouter returned ${commits.length} commits, fromVendor=${vendorResult.fromVendor}`
+        );
         return { success: true, commits };
       } catch (vendorError) {
-        console.warn(`[Repo.getCommitHistory] VendorReadRouter.listCommits failed, falling back to git:`, vendorError);
+        console.warn(
+          `[Repo.getCommitHistory] VendorReadRouter.listCommits failed, falling back to git:`,
+          vendorError
+        );
         // Fall through to git worker below
       }
     }
@@ -1623,10 +1759,7 @@ export class Repo {
     if (this.repoEvent) {
       try {
         console.log("Resetting local git repository to match remote...");
-        const resetResult = await this.workerManager.resetRepoToRemote(
-          this.key,
-          this.mainBranch
-        );
+        const resetResult = await this.workerManager.resetRepoToRemote(this.key, this.mainBranch);
 
         if (resetResult.success) {
           console.log(`Git reset successful: ${resetResult.message}`);
@@ -1865,7 +1998,10 @@ export class Repo {
             provider,
             host,
             success: false,
-            error: new UserActionableError(`Cannot push to remote: unable to determine host for ${remoteUrl}`, GitErrorCode.INVALID_INPUT),
+            error: new UserActionableError(
+              `Cannot push to remote: unable to determine host for ${remoteUrl}`,
+              GitErrorCode.INVALID_INPUT
+            ),
           });
           continue;
         }
@@ -1946,9 +2082,10 @@ export class Repo {
 
   async getHeadCommitId(branchName?: string): Promise<string> {
     try {
-      const short = (branchName || this.selectedBranch || this.mainBranch || "").split("/").pop() || "";
+      const short =
+        (branchName || this.selectedBranch || this.mainBranch || "").split("/").pop() || "";
       const refs = await this.getAllRefsWithFallback();
-      const hit = refs.find(r => r.type === "heads" && r.name === short);
+      const hit = refs.find((r) => r.type === "heads" && r.name === short);
       return hit?.commitId || "";
     } catch {
       return "";
