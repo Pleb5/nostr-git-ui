@@ -75,10 +75,9 @@
     : (parseGitPatchFromEvent(event as PatchEvent) as any);
 
   const { id, title, description, baseBranch, commitCount, createdAt } = parsed;
-  const displayTitle = (title && typeof title === "string" && title.trim().length > 0)
-    ? title.trim()
-    : "Untitled";
-  
+  const displayTitle =
+    title && typeof title === "string" && title.trim().length > 0 ? title.trim() : "Untitled";
+
   // Create relay URL for EventActions
   const relayUrl = $derived.by(() => {
     if (relays && relays.length > 0) {
@@ -89,63 +88,78 @@
     }
     return "wss://relay.damus.io/";
   });
-  
+
+  const commentRelays = $derived.by(() => {
+    if (relays && relays.length > 0) {
+      return relays;
+    }
+    if (repo?.relays && repo.relays.length > 0) {
+      return repo.relays;
+    }
+    return [];
+  });
+
+  const repoAddress = $derived.by(() => getTagValue(event as any, "a") || repo?.address || "");
+
   // Helper functions for label normalization (matching centralized logic)
   function toNaturalLabel(label: string): string {
-    if (typeof label !== "string") return ""
-    const trimmed = label.trim()
-    if (!trimmed) return ""
-    const idx = trimmed.lastIndexOf("/")
+    if (typeof label !== "string") return "";
+    const trimmed = label.trim();
+    if (!trimmed) return "";
+    const idx = trimmed.lastIndexOf("/");
     if (idx >= 0 && idx < trimmed.length - 1) {
-      return trimmed.slice(idx + 1)
+      return trimmed.slice(idx + 1);
     }
-    return trimmed.replace(/^#/, "")
+    return trimmed.replace(/^#/, "");
   }
 
   function toStringSet(value: unknown): Set<string> {
-    if (!value) return new Set<string>()
+    if (!value) return new Set<string>();
     if (value instanceof Set) {
-      return new Set(Array.from(value).filter(v => typeof v === "string") as string[])
+      return new Set(Array.from(value).filter((v) => typeof v === "string") as string[]);
     }
     if (Array.isArray(value)) {
-      return new Set(value.filter(v => typeof v === "string") as string[])
+      return new Set(value.filter((v) => typeof v === "string") as string[]);
     }
     if (typeof value === "string") {
-      return new Set([value])
+      return new Set([value]);
     }
-    return new Set<string>()
+    return new Set<string>();
   }
 
-  function normalizeEffectiveLabels(eff?: any | null): { flat: Set<string>; byNamespace: Record<string, Set<string>> } {
-    const flat = toStringSet(eff?.flat)
-    const byNamespace: Record<string, Set<string>> = {}
-    
+  function normalizeEffectiveLabels(eff?: any | null): {
+    flat: Set<string>;
+    byNamespace: Record<string, Set<string>>;
+  } {
+    const flat = toStringSet(eff?.flat);
+    const byNamespace: Record<string, Set<string>> = {};
+
     if (eff && typeof eff.byNamespace === "object") {
       for (const ns of Object.keys(eff.byNamespace)) {
-        byNamespace[ns] = toStringSet(eff.byNamespace[ns])
+        byNamespace[ns] = toStringSet(eff.byNamespace[ns]);
       }
     }
-    
-    return { flat, byNamespace }
+
+    return { flat, byNamespace };
   }
 
   function toNaturalArray(values?: Iterable<string> | null): string[] {
-    if (!values) return []
-    const out = new Set<string>()
+    if (!values) return [];
+    const out = new Set<string>();
     for (const val of values) {
       if (typeof val === "string") {
-        out.add(toNaturalLabel(val))
+        out.add(toNaturalLabel(val));
       }
     }
-    return Array.from(out)
+    return Array.from(out);
   }
 
   function groupLabels(view: { flat: Set<string>; byNamespace: Record<string, Set<string>> }): {
-    Status: string[]
-    Type: string[]
-    Area: string[]
-    Tags: string[]
-    Other: string[]
+    Status: string[];
+    Type: string[];
+    Area: string[];
+    Tags: string[];
+    Other: string[];
   } {
     const groupSets = {
       Status: new Set<string>(),
@@ -153,20 +167,20 @@
       Area: new Set<string>(),
       Tags: new Set<string>(),
       Other: new Set<string>(),
-    }
+    };
 
     const namespaceToGroup = (ns: string): keyof typeof groupSets => {
-      if (ns === "org.nostr.git.status") return "Status"
-      if (ns === "org.nostr.git.type") return "Type"
-      if (ns === "org.nostr.git.area") return "Area"
-      if (ns === "#t") return "Tags"
-      return "Other"
-    }
+      if (ns === "org.nostr.git.status") return "Status";
+      if (ns === "org.nostr.git.type") return "Type";
+      if (ns === "org.nostr.git.area") return "Area";
+      if (ns === "#t") return "Tags";
+      return "Other";
+    };
 
     for (const ns of Object.keys(view.byNamespace)) {
-      const group = namespaceToGroup(ns)
+      const group = namespaceToGroup(ns);
       for (const val of view.byNamespace[ns]) {
-        groupSets[group].add(toNaturalLabel(val))
+        groupSets[group].add(toNaturalLabel(val));
       }
     }
 
@@ -176,7 +190,7 @@
       Area: Array.from(groupSets.Area),
       Tags: Array.from(groupSets.Tags),
       Other: Array.from(groupSets.Other),
-    }
+    };
   }
 
   const displayLabels = $derived.by(() => {
@@ -276,31 +290,36 @@
   <!-- meta row -->
   {#snippet slotMeta()}
     {#if repo && statusEvents}
-        <Status
-          repo={repo}
-          rootId={id}
-          rootKind={event.kind}
-          rootAuthor={event.pubkey}
-          statusEvents={statusEvents}
-          actorPubkey={actorPubkey}
-          compact={true} />
-      {:else if statusIcon}
-        {@const { icon: Icon, color } = statusIcon}
-        <Icon class={`h-6 w-6 ${color}`} />
+      <Status
+        repo={repo}
+        rootId={id}
+        rootKind={event.kind}
+        rootAuthor={event.pubkey}
+        statusEvents={statusEvents}
+        actorPubkey={actorPubkey}
+        compact={true}
+      />
+    {:else if statusIcon}
+      {@const { icon: Icon, color } = statusIcon}
+      <Icon class={`h-6 w-6 ${color}`} />
     {/if}
     <span class="whitespace-nowrap">Opened <TimeAgo date={createdAt} /></span>
-    <span class="ml-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+    <span
+      class="ml-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+    >
       {isPullRequest ? "Pull Request" : "Patch"}
     </span>
     <div class="flex items-center gap-1">
-        <span class="whitespace-nowrap">• By </span>
-        <NostrAvatar pubkey={event.pubkey} title={displayTitle || 'Issue author'} />
-        <ProfileLink pubkey={event.pubkey} />
+      <span class="whitespace-nowrap">• By </span>
+      <NostrAvatar pubkey={event.pubkey} title={displayTitle || "Issue author"} />
+      <ProfileLink pubkey={event.pubkey} />
     </div>
     {#if baseBranch}
       <div class="flex items-center gap-1">
         <span class="whitespace-nowrap">• Base: </span>
-        <span class="max-w-[120px] inline-block truncate align-bottom" title={baseBranch}>{baseBranch}</span>
+        <span class="max-w-[120px] inline-block truncate align-bottom" title={baseBranch}
+          >{baseBranch}</span
+        >
       </div>
     {/if}
     {#if commitCount > 0}
@@ -310,14 +329,19 @@
       <span class="whitespace-nowrap">• {comments?.length ?? 0} comments</span>
     {/if}
     {#if reviewersCount > 0}
-      <span class="whitespace-nowrap">• {reviewersCount} reviewer{reviewersCount === 1 ? "" : "s"}</span>
+      <span class="whitespace-nowrap"
+        >• {reviewersCount} reviewer{reviewersCount === 1 ? "" : "s"}</span
+      >
     {/if}
     {#if parsed.commitHash}
       <div class="flex items-center gap-1 whitespace-nowrap">
         <span>•</span>
         <GitCommit class="h-3 w-3" />
         <code class="text-xs font-mono">{parsed.commitHash.substring(0, 7)}</code>
-        <button class="hover:text-foreground transition-colors" onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}>
+        <button
+          class="hover:text-foreground transition-colors"
+          onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+        >
           <Copy class="h-3 w-3" />
         </button>
       </div>
@@ -340,8 +364,13 @@
           <div class="flex items-center justify-between">
             <span class="text-muted-foreground">Commit:</span>
             <div class="flex items-center gap-1">
-              <code class="bg-background px-1 rounded font-mono">{parsed.commitHash.substring(0, 8)}</code>
-              <button class="hover:text-foreground transition-colors" onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}>
+              <code class="bg-background px-1 rounded font-mono"
+                >{parsed.commitHash.substring(0, 8)}</code
+              >
+              <button
+                class="hover:text-foreground transition-colors"
+                onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+              >
                 <Copy class="h-3 w-3" />
               </button>
             </div>
@@ -408,7 +437,9 @@
   {#snippet slotTags()}
     {#if displayLabels && displayLabels.length}
       {#each displayLabels as label}
-        <span class="rounded bg-muted px-2 py-0.5 text-xs">{label}</span>
+        <span class="rounded bg-muted px-2 py-0.5 text-xs max-w-full break-words shrink-0">
+          {label}
+        </span>
       {/each}
     {/if}
   {/snippet}
@@ -440,6 +471,8 @@
       comments={comments}
       currentCommenter={currentCommenter}
       onCommentCreated={onCommentCreated}
+      relays={commentRelays}
+      repoAddress={repoAddress}
     />
   </Card>
 {/if}

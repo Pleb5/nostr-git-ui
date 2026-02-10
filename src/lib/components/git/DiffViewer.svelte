@@ -247,6 +247,15 @@
     if (el) el.scrollIntoView({ block: "start" });
   };
 
+  const scrollToCommentHash = async () => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash || "";
+    if (!hash.startsWith("#comment-")) return;
+    await tick();
+    const el = document.getElementById(hash.slice(1));
+    if (el) el.scrollIntoView({ block: "center" });
+  };
+
   $effect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -264,8 +273,16 @@
   });
 
   $effect(() => {
+    comments?.length;
+    void scrollToCommentHash();
+  });
+
+  $effect(() => {
     if (typeof window === "undefined") return;
-    const handler = () => void scrollToDiffHash();
+    const handler = () => {
+      void scrollToDiffHash();
+      void scrollToCommentHash();
+    };
     window.addEventListener("hashchange", handler);
     return () => window.removeEventListener("hashchange", handler);
   });
@@ -666,6 +683,11 @@
 
       // No extra tags needed - file/line info is in content
       const extraTags: CommentTag[] = [];
+      const rootRepoAddress =
+        repo?.address || ((rootEvent as any)?.tags ? getTagValue(rootEvent as any, "a") : "");
+      if (rootRepoAddress) {
+        extraTags.push(["repo", rootRepoAddress] as unknown as CommentTag);
+      }
 
       // Create NIP-22 comment event
       const commentEvent = createCommentEvent({
@@ -877,7 +899,7 @@
                         class="bg-secondary/30 border-l-4 border-primary ml-10 pl-4 py-2 space-y-3"
                       >
                         {#each lineComments as c}
-                          <div class="flex gap-2">
+                          <div id={`comment-${c.id}`} data-event={c.id} class="flex gap-2">
                             <Avatar class="h-8 w-8">
                               <AvatarImage src={c.author.avatar} alt={c.author.name} />
                               <AvatarFallback

@@ -75,6 +75,18 @@
     return "wss://relay.damus.io/";
   });
 
+  const commentRelays = $derived.by(() => {
+    if (relays && relays.length > 0) {
+      return relays;
+    }
+    if (repo?.relays && repo.relays.length > 0) {
+      return repo.relays;
+    }
+    return [];
+  });
+
+  const repoAddress = $derived.by(() => getTagValue(event as any, "a") || repo?.address || "");
+
   const parsed = parseIssueEvent(event);
 
   const { id, subject: title, content: description, labels, createdAt } = parsed;
@@ -93,7 +105,7 @@
     }
     return createdAt;
   });
-  
+
   // Helper functions for label normalization (matching centralized logic)
   function toNaturalLabel(label: string): string {
     if (typeof label !== "string") return "";
@@ -293,7 +305,8 @@
           statusEvents={statusEvents}
           actorPubkey={actorPubkey}
           compact={true}
-          isMirrored={isMirrored} />
+          isMirrored={isMirrored}
+        />
       {:else if statusIcon}
         {@const { icon: IconCmp, color } = statusIcon}
         <IconCmp class={`h-6 w-6 mt-1 ${color}`} />
@@ -349,7 +362,9 @@
     {#snippet slotTags()}
       {#if displayLabels && displayLabels.length}
         {#each displayLabels as label}
-          <span class="rounded bg-muted px-2 py-0.5 text-xs">{label}</span>
+          <span class="rounded bg-muted px-2 py-0.5 text-xs max-w-full break-words shrink-0">
+            {label}
+          </span>
         {/each}
       {/if}
     {/snippet}
@@ -382,6 +397,8 @@
       comments={commentsOnThisIssue}
       currentCommenter={currentCommenter}
       onCommentCreated={onCommentCreated}
+      relays={commentRelays}
+      repoAddress={repoAddress}
     />
   </Card>
 {/if}
