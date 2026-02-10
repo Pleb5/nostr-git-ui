@@ -27,8 +27,8 @@
     AudioViewer,
     BinaryViewer,
   } from "./viewers/index.js";
-  import { lineNumbers } from "@codemirror/view";
-  import type { EditorView } from "@codemirror/view";
+  import { lineNumbers, EditorView } from "@codemirror/view";
+  import { EditorSelection, EditorState } from "@codemirror/state";
   import { nip19 } from "nostr-tools";
 
   const {
@@ -93,21 +93,26 @@
   let cmExtensions: any[] = $state([]);
   let showPermalinkMenu = $state(false);
   let editorHost: HTMLElement | null = $state(null);
+  let editorView: EditorView | null = $state(null);
   // Gutter context menu state (positioned near click)
   let showGutterMenu = $state(false);
   let gutterMenuX = $state(0);
   let gutterMenuY = $state(0);
-  let touchTimer: number | null = $state(null);
+  let touchIdentifier = $state<number | null>(null);
+  let lastInputWasTouch = $state(false);
+  let isPointerSelecting = $state(false);
+  let pointerStartLine: number | null = $state(null);
+  let pointerId: number | null = $state(null);
+  let touchLongPressTimer: number | null = $state(null);
   let touchStartX = $state(0);
   let touchStartY = $state(0);
-  let touchLastX = $state(0);
-  let touchLastY = $state(0);
-  let touchMoved = $state(false);
-  let touchIdentifier = $state<number | null>(null);
-  let touchLongPress = $state(false);
-  let lastInputWasTouch = $state(false);
-  let pendingTouchMenu = $state(false);
-  let touchMenuTimer: number | null = $state(null);
+  let touchStartLine: number | null = $state(null);
+  let isTouchSelecting = $state(false);
+  let selectionScrollParent: HTMLElement | null = $state(null);
+  let autoScrollFrame: number | null = null;
+  let autoScrollClientY = 0;
+  let autoScrollClientX = 0;
+  let autoScrollActive = false;
 
   let hasAutoOpened = $state(false);
   let lastAppliedHash = $state<string | null>(null);
@@ -115,7 +120,13 @@
   let hasLoadedOnce = false;
   let fileViewElement: HTMLElement | null = $state(null);
   let lastFilePath = $state(path);
-  let editorView: EditorView | null = $state(null);
+  const LONG_PRESS_MS = 300;
+  const TOUCH_MOVE_THRESHOLD = 8;
+  const AUTO_SCROLL_THRESHOLD = 36;
+  const AUTO_SCROLL_STEP = 24;
+  const MENU_WIDTH = 176;
+  const MENU_PADDING = 8;
+  const viewerExtensions = [EditorView.editable.of(false), EditorState.readOnly.of(true)];
 
   $effect(() => {
     if (path === lastFilePath) return;
@@ -252,6 +263,17 @@
     lineEl.scrollIntoView({ block: "center" });
   }
 
+  $effect(() => {
+    const host = editorHost;
+    if (!host) return;
+    void content;
+    const scroller = host.querySelector(".cm-scroller") as HTMLElement | null;
+    selectionScrollParent =
+      scroller && scroller.scrollHeight > scroller.clientHeight
+        ? scroller
+        : findSelectionScrollParent(host);
+  });
+
   async function applyHashSelection() {
     if (!shouldAutoOpen || !isExpanded || !editorHost || !content) return;
     if (typeof window === "undefined") return;
@@ -261,9 +283,7 @@
     if (!parsed) return;
     lastAppliedHash = hash;
     await tick();
-    selectedStart = parsed.start;
-    selectedEnd = parsed.end;
-    selectLinesInEditor(parsed.start, parsed.end);
+    setLineSelection(parsed.start, parsed.end);
     scrollLineIntoView(parsed.start);
   }
 
@@ -324,23 +344,230 @@
     };
   }
 
-  function getLinesFromEditorSelection(): { start: number; end: number } | null {
-    if (!editorView) return null;
-    const selection = editorView.state.selection.main;
-    if (!selection || selection.empty) return null;
-    const startLine = editorView.state.doc.lineAt(selection.from).number;
-    const endLine = editorView.state.doc.lineAt(selection.to).number;
-    return {
-      start: Math.min(startLine, endLine),
-      end: Math.max(startLine, endLine),
-    };
-  }
-
   function refreshSelectionFromEditor(): boolean {
-    const lines = getLinesFromEditorSelection() || getLinesFromSelection();
+    if (!editorHost) return false;
+    if (editorView) {
+      const selection = editorView.state.selection.main;
+      if (!selection || selection.empty) return false;
+      const startLine = editorView.state.doc.lineAt(selection.from).number;
+      const endLine = editorView.state.doc.lineAt(selection.to).number;
+      selectedStart = Math.min(startLine, endLine);
+      selectedEnd = Math.max(startLine, endLine);
+      return true;
+    }
+    const lines = getLinesFromSelection();
     if (!lines) return false;
     selectedStart = lines.start;
     selectedEnd = lines.end;
+    return true;
+  }
+
+  function getLineNumberFromPoint(clientX: number, clientY: number): number | null {
+    if (editorView) {
+      const rect = editorView.dom.getBoundingClientRect();
+      const clampedX = Math.min(rect.right - 1, Math.max(rect.left + 1, clientX));
+      const clampedY = Math.min(rect.bottom - 1, Math.max(rect.top + 1, clientY));
+      const pos = editorView.posAtCoords({ x: clampedX, y: clampedY });
+      if (pos != null) {
+        return editorView.state.doc.lineAt(pos).number;
+      }
+    }
+    if (!editorHost) return null;
+    const content = editorHost.querySelector(".cm-content") as HTMLElement | null;
+    const contentRect = content?.getBoundingClientRect();
+    const probeX = contentRect
+      ? Math.min(contentRect.right - 4, Math.max(contentRect.left + 4, clientX))
+      : clientX;
+    const target = document.elementFromPoint(probeX, clientY) as HTMLElement | null;
+    const lineEl = target?.closest?.(".cm-line") as HTMLElement | null;
+    const lines = Array.from(editorHost.querySelectorAll(".cm-line")) as HTMLElement[];
+    if (lineEl) {
+      const idx = lines.indexOf(lineEl);
+      if (idx !== -1) return idx + 1;
+    }
+    if (lines.length === 0) return null;
+    const rect = editorHost.getBoundingClientRect();
+    if (clientY < rect.top) return 1;
+    if (clientY > rect.bottom) return lines.length;
+    return null;
+  }
+
+  function setLineSelection(startLine: number, endLine: number) {
+    const start = Math.min(startLine, endLine);
+    const end = Math.max(startLine, endLine);
+    selectedStart = start;
+    selectedEnd = end;
+    if (editorView) {
+      const maxLine = editorView.state.doc.lines;
+      const safeStart = Math.max(1, Math.min(start, maxLine));
+      const safeEnd = Math.max(1, Math.min(end, maxLine));
+      const startPos = editorView.state.doc.line(safeStart).from;
+      const endPos = editorView.state.doc.line(safeEnd).to;
+      editorView.dispatch({ selection: EditorSelection.single(startPos, endPos) });
+      return;
+    }
+    selectLinesInEditor(start, end);
+  }
+
+  function clamp(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function getContentRect(): DOMRect | null {
+    if (!editorHost) return null;
+    const content = editorHost.querySelector(".cm-content") as HTMLElement | null;
+    return content?.getBoundingClientRect() ?? editorHost.getBoundingClientRect();
+  }
+
+  function getSelectionMenuAnchor(): { x: number; y: number } | null {
+    if (typeof window === "undefined") return null;
+    const contentRect = getContentRect();
+    const hostRect = editorHost?.getBoundingClientRect();
+    if (!contentRect || !hostRect) return null;
+    const minX = contentRect.left + MENU_PADDING;
+    const maxX = Math.max(minX, contentRect.right - MENU_WIDTH - MENU_PADDING);
+
+    if (editorView) {
+      const selection = editorView.state.selection.main;
+      if (selection && !selection.empty) {
+        const anchor = editorView.coordsAtPos(selection.anchor);
+        const head = editorView.coordsAtPos(selection.head);
+        if (anchor && head) {
+          const x = clamp(Math.min(anchor.left, head.left), minX, maxX);
+          const y = Math.max(anchor.bottom, head.bottom) + 4;
+          return { x, y };
+        }
+      }
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (range.collapsed) return null;
+    if (
+      editorHost &&
+      (!editorHost.contains(range.startContainer) || !editorHost.contains(range.endContainer))
+    ) {
+      return null;
+    }
+    const rects = Array.from(range.getClientRects());
+    if (rects.length > 0) {
+      const first = rects[0];
+      const last = rects[rects.length - 1];
+      return { x: clamp(first.left, minX, maxX), y: last.bottom + 4 };
+    }
+    const rect = range.getBoundingClientRect();
+    return { x: clamp(rect.left, minX, maxX), y: rect.bottom + 4 };
+  }
+
+  function autoScrollForSelection(clientY: number) {
+    const threshold = AUTO_SCROLL_THRESHOLD;
+    const maxStep = AUTO_SCROLL_STEP;
+    const scroller = editorHost?.querySelector(".cm-scroller") as HTMLElement | null;
+    const scrollParent =
+      scroller && scroller.scrollHeight > scroller.clientHeight
+        ? scroller
+        : selectionScrollParent &&
+            selectionScrollParent.scrollHeight > selectionScrollParent.clientHeight
+          ? selectionScrollParent
+          : editorHost
+            ? findSelectionScrollParent(editorHost)
+            : null;
+
+    if (scrollParent) {
+      if (scrollParent !== selectionScrollParent) {
+        selectionScrollParent = scrollParent;
+      }
+      const rect = scrollParent.getBoundingClientRect();
+      if (clientY < rect.top + threshold) {
+        const delta = Math.min(maxStep, rect.top + threshold - clientY);
+        scrollParent.scrollTop -= delta;
+      } else if (clientY > rect.bottom - threshold) {
+        const delta = Math.min(maxStep, clientY - (rect.bottom - threshold));
+        scrollParent.scrollTop += delta;
+      }
+      return;
+    }
+
+    if (clientY < threshold) {
+      window.scrollBy({ top: -maxStep });
+    } else if (clientY > window.innerHeight - threshold) {
+      window.scrollBy({ top: maxStep });
+    }
+  }
+
+  function startAutoScroll() {
+    if (autoScrollFrame !== null) return;
+    const tick = () => {
+      if (!autoScrollActive) {
+        autoScrollFrame = null;
+        return;
+      }
+      autoScrollForSelection(autoScrollClientY);
+      if (isPointerSelecting || isTouchSelecting) {
+        const anchorLine = isPointerSelecting ? pointerStartLine : touchStartLine;
+        if (anchorLine !== null) {
+          const line = getLineNumberFromPoint(autoScrollClientX, autoScrollClientY);
+          if (line) {
+            setLineSelection(anchorLine, line);
+          }
+        }
+      }
+      autoScrollFrame = window.requestAnimationFrame(tick);
+    };
+    autoScrollFrame = window.requestAnimationFrame(tick);
+  }
+
+  function updateAutoScroll(clientX: number, clientY: number) {
+    autoScrollClientX = clientX;
+    autoScrollClientY = clientY;
+    if (!autoScrollActive) {
+      autoScrollActive = true;
+      startAutoScroll();
+    }
+  }
+
+  function stopAutoScroll() {
+    autoScrollActive = false;
+    if (autoScrollFrame !== null) {
+      window.cancelAnimationFrame(autoScrollFrame);
+      autoScrollFrame = null;
+    }
+  }
+
+  function findSelectionScrollParent(element: HTMLElement | null): HTMLElement | null {
+    if (!element || typeof window === "undefined") return null;
+    let current: HTMLElement | null = element.parentElement;
+    while (current) {
+      const style = window.getComputedStyle(current);
+      const overflowY = style.overflowY;
+      if (
+        (overflowY === "auto" || overflowY === "scroll") &&
+        current.scrollHeight > current.clientHeight
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function openSelectionMenuAt(clientX: number, clientY: number) {
+    if (!editorHost) return;
+    const rect = editorHost.getBoundingClientRect();
+    const contentRect = getContentRect() ?? rect;
+    const minX = contentRect.left - rect.left + MENU_PADDING;
+    const maxX = Math.max(minX, contentRect.right - rect.left - MENU_WIDTH - MENU_PADDING);
+    gutterMenuX = clamp(clientX - rect.left, minX, maxX);
+    gutterMenuY = Math.max(MENU_PADDING, clientY - rect.top);
+    showPermalinkMenu = false;
+    showGutterMenu = true;
+  }
+
+  function openSelectionMenuFromDomSelection(): boolean {
+    const anchor = getSelectionMenuAnchor();
+    if (!anchor) return false;
+    openSelectionMenuAt(anchor.x, anchor.y);
     return true;
   }
 
@@ -421,24 +648,7 @@
       if (!editor.contains(startNode) || !editor.contains(endNode)) return;
 
       // Get the selected lines
-      const lines = getLinesFromEditorSelection() || getLinesFromSelection();
-      if (lines) {
-        selectedStart = lines.start;
-        selectedEnd = lines.end;
-        syncHashFromSelection();
-        if (pendingTouchMenu && touchLongPress) {
-          const rangeRect = range.getBoundingClientRect();
-          if (touchMenuTimer) {
-            window.clearTimeout(touchMenuTimer);
-            touchMenuTimer = null;
-          }
-          touchMenuTimer = window.setTimeout(() => {
-            if (!pendingTouchMenu || !touchLongPress) return;
-            openSelectionMenuAt(rangeRect.left + rangeRect.width / 2, rangeRect.bottom + 4);
-            pendingTouchMenu = false;
-          }, 160);
-        }
-      }
+      refreshSelectionFromEditor();
     };
 
     document.addEventListener("selectionchange", handleSelectionChange);
@@ -449,30 +659,11 @@
   $effect(() => {
     if (!editorHost) return;
 
-    const clearTouchTimer = () => {
-      if (touchTimer) {
-        window.clearTimeout(touchTimer);
-        touchTimer = null;
+    const clearTouchLongPress = () => {
+      if (touchLongPressTimer) {
+        window.clearTimeout(touchLongPressTimer);
+        touchLongPressTimer = null;
       }
-    };
-
-    const clearTouchMenuTimer = () => {
-      if (touchMenuTimer) {
-        window.clearTimeout(touchMenuTimer);
-        touchMenuTimer = null;
-      }
-    };
-
-    const openSelectionMenuAt = (clientX: number, clientY: number) => {
-      const rect = editorHost!.getBoundingClientRect();
-      gutterMenuX = Math.max(8, clientX - rect.left + editorHost!.scrollLeft);
-      gutterMenuY = Math.max(8, clientY - rect.top + editorHost!.scrollTop);
-      showPermalinkMenu = false;
-      showGutterMenu = true;
-      touchIdentifier = null;
-      touchLongPress = false;
-      pendingTouchMenu = false;
-      clearTouchTimer();
     };
 
     const handleContentContextMenu = (e: MouseEvent) => {
@@ -490,12 +681,69 @@
     };
 
     const handlePointerDown = (e: PointerEvent) => {
-      lastInputWasTouch = e.pointerType === "touch";
+      if (e.pointerType === "touch") return;
+      lastInputWasTouch = false;
+      if (e.button !== 0) return;
+      const el = e.target as HTMLElement;
+      if (!el.closest?.(".cm-content")) return;
+      const line = getLineNumberFromPoint(e.clientX, e.clientY);
+      if (!line) return;
+      pointerId = e.pointerId;
+      pointerStartLine = line;
+      isPointerSelecting = true;
+      setLineSelection(line, line);
+      editorHost?.setPointerCapture?.(e.pointerId);
+      updateAutoScroll(e.clientX, e.clientY);
+      e.preventDefault();
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
+      if (!isPointerSelecting || pointerId !== e.pointerId) return;
+      if (pointerStartLine === null) return;
+      const line = getLineNumberFromPoint(e.clientX, e.clientY);
+      if (!line) return;
+      setLineSelection(pointerStartLine, line);
+      updateAutoScroll(e.clientX, e.clientY);
+      e.preventDefault();
+    };
+
+    const finishPointerSelection = (clientX: number, clientY: number) => {
+      if (!isPointerSelecting) return;
+      isPointerSelecting = false;
+      stopAutoScroll();
+      if (pointerId !== null) {
+        editorHost?.releasePointerCapture?.(pointerId);
+      }
+      pointerId = null;
+      pointerStartLine = null;
+      if (!refreshSelectionFromEditor()) return;
+      syncHashFromSelection();
+      if (!openSelectionMenuFromDomSelection()) {
+        openSelectionMenuAt(clientX, clientY);
+      }
+    };
+
+    const handlePointerUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
+      if (e.button !== 0) return;
+      finishPointerSelection(e.clientX, e.clientY);
+    };
+
+    const handlePointerCancel = () => {
+      isPointerSelecting = false;
+      if (pointerId !== null) {
+        editorHost?.releasePointerCapture?.(pointerId);
+      }
+      pointerId = null;
+      pointerStartLine = null;
+      stopAutoScroll();
     };
 
     const handleTouchStart = (e: TouchEvent) => {
       const el = e.target as HTMLElement;
       if (!el.closest?.(".cm-content")) return;
+      if (touchIdentifier !== null) return;
 
       const touch = e.changedTouches[0];
       if (!touch) return;
@@ -504,16 +752,18 @@
       touchIdentifier = touch.identifier;
       touchStartX = touch.clientX;
       touchStartY = touch.clientY;
-      touchLastX = touch.clientX;
-      touchLastY = touch.clientY;
-      touchMoved = false;
-      touchLongPress = false;
-
-      clearTouchTimer();
-      touchTimer = window.setTimeout(() => {
-        touchLongPress = true;
-        pendingTouchMenu = true;
-      }, 300);
+      isTouchSelecting = false;
+      touchStartLine = null;
+      clearTouchLongPress();
+      touchLongPressTimer = window.setTimeout(() => {
+        if (touchIdentifier === null) return;
+        const line = getLineNumberFromPoint(touchStartX, touchStartY);
+        if (!line) return;
+        isTouchSelecting = true;
+        touchStartLine = line;
+        setLineSelection(line, line);
+        updateAutoScroll(touchStartX, touchStartY);
+      }, LONG_PRESS_MS);
     };
 
     const handleTouchMove = (e: TouchEvent) => {
@@ -521,51 +771,88 @@
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
 
-      touchLastX = touch.clientX;
-      touchLastY = touch.clientY;
-
       const dx = touch.clientX - touchStartX;
       const dy = touch.clientY - touchStartY;
-      if (Math.hypot(dx, dy) > 6) {
-        touchMoved = true;
-        clearTouchTimer();
-        pendingTouchMenu = false;
+      if (!isTouchSelecting && Math.hypot(dx, dy) > TOUCH_MOVE_THRESHOLD) {
+        clearTouchLongPress();
+        touchIdentifier = null;
+        touchStartLine = null;
+        stopAutoScroll();
+        return;
       }
+
+      if (!isTouchSelecting || touchStartLine === null) return;
+      e.preventDefault();
+      const line = getLineNumberFromPoint(touch.clientX, touch.clientY);
+      if (line) {
+        setLineSelection(touchStartLine, line);
+      }
+      updateAutoScroll(touch.clientX, touch.clientY);
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (touchIdentifier === null) return;
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
-
-      clearTouchTimer();
-      clearTouchMenuTimer();
+      clearTouchLongPress();
+      const shouldOpenMenu = isTouchSelecting;
       touchIdentifier = null;
+      isTouchSelecting = false;
+      touchStartLine = null;
+      stopAutoScroll();
 
-      if (!touchLongPress) return;
+      if (!shouldOpenMenu) return;
+
+      window.setTimeout(() => {
+        if (showGutterMenu) return;
+        if (!refreshSelectionFromEditor()) return;
+        syncHashFromSelection();
+        if (!openSelectionMenuFromDomSelection()) {
+          openSelectionMenuAt(touch.clientX, touch.clientY);
+        }
+        stopAutoScroll();
+      }, 0);
+    };
+
+    const handleTouchCancel = () => {
+      if (touchIdentifier === null) return;
+      clearTouchLongPress();
+      touchIdentifier = null;
+      isTouchSelecting = false;
+      touchStartLine = null;
+      stopAutoScroll();
     };
 
     editorHost.addEventListener("contextmenu", handleContentContextMenu, { capture: true } as any);
     editorHost.addEventListener("pointerdown", handlePointerDown, { capture: true } as any);
+    editorHost.addEventListener("pointermove", handlePointerMove, { capture: true } as any);
+    editorHost.addEventListener("pointerup", handlePointerUp, { capture: true } as any);
+    editorHost.addEventListener("pointercancel", handlePointerCancel, { capture: true } as any);
     editorHost.addEventListener("touchstart", handleTouchStart, {
       capture: true,
       passive: true,
     } as any);
     editorHost.addEventListener("touchmove", handleTouchMove, {
       capture: true,
-      passive: true,
+      passive: false,
     } as any);
     editorHost.addEventListener("touchend", handleTouchEnd, { capture: true } as any);
-    editorHost.addEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+    editorHost.addEventListener("touchcancel", handleTouchCancel, { capture: true } as any);
     return () => {
       editorHost?.removeEventListener("contextmenu", handleContentContextMenu, {
         capture: true,
       } as any);
       editorHost?.removeEventListener("pointerdown", handlePointerDown, { capture: true } as any);
+      editorHost?.removeEventListener("pointermove", handlePointerMove, { capture: true } as any);
+      editorHost?.removeEventListener("pointerup", handlePointerUp, { capture: true } as any);
+      editorHost?.removeEventListener("pointercancel", handlePointerCancel, {
+        capture: true,
+      } as any);
       editorHost?.removeEventListener("touchstart", handleTouchStart, { capture: true } as any);
       editorHost?.removeEventListener("touchmove", handleTouchMove, { capture: true } as any);
       editorHost?.removeEventListener("touchend", handleTouchEnd, { capture: true } as any);
-      editorHost?.removeEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+      editorHost?.removeEventListener("touchcancel", handleTouchCancel, { capture: true } as any);
+      stopAutoScroll();
     };
   });
 
@@ -1123,7 +1410,10 @@
             >
               <CodeMirror
                 bind:value={content}
-                extensions={cmExtensions.length ? cmExtensions : [lineNumbers()]}
+                extensions={[
+                  ...viewerExtensions,
+                  ...(cmExtensions.length ? cmExtensions : [lineNumbers()]),
+                ]}
                 onready={handleEditorReady}
               />
               {#if showGutterMenu}
@@ -1197,6 +1487,8 @@
 
   :global(.file-view .cm-content) {
     caret-color: hsl(var(--foreground)) !important;
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   @media (min-width: 768px) {
