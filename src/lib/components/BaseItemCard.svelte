@@ -107,7 +107,7 @@
       </div>
 
       <!-- Tags / labels -->
-      <div class="inline-flex gap-1">
+      <div class="flex flex-nowrap gap-1 min-w-0 overflow-x-auto">
         {@render slotTags?.()}
       </div>
 
