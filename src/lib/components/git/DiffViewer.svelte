@@ -232,19 +232,86 @@
     };
   });
 
-  const getDiffHashFromLocation = () => {
+  const getDiffAnchorFromLocation = () => {
     if (typeof window === "undefined") return null;
-    const match = window.location.hash.match(/^#diff-([a-f0-9]+)/i);
-    return match ? match[1] : null;
+    const hash = window.location.hash || "";
+    if (!hash.startsWith("#diff-")) return null;
+    return hash.slice(1);
+  };
+
+  const parseDiffLineAnchor = (anchor: string) => {
+    const match = anchor.match(/^diff-([a-f0-9]+)([LR])(\d+)(?:-[LR](\d+))?/i);
+    if (!match) return null;
+    const start = Number.parseInt(match[3], 10);
+    const end = match[4] ? Number.parseInt(match[4], 10) : null;
+    if (Number.isNaN(start)) return null;
+    return {
+      hash: match[1],
+      side: match[2] as "L" | "R",
+      start,
+      end: end && !Number.isNaN(end) ? end : null,
+    };
+  };
+
+  const findFilePathByHash = (hash: string) => {
+    for (const [filePath, value] of Object.entries(diffAnchors)) {
+      if (value === hash) return filePath;
+    }
+    return null;
+  };
+
+  const scrollElementIntoView = (el: HTMLElement, align: "start" | "center" = "center") => {
+    const scrollParent = diffContainer?.closest(".scroll-container") as HTMLElement | null;
+    if (!scrollParent) {
+      el.scrollIntoView({ block: align });
+      return;
+    }
+    const parentRect = scrollParent.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const offset = elRect.top - parentRect.top + scrollParent.scrollTop;
+    const target = align === "center" ? offset - scrollParent.clientHeight / 2 : offset;
+    scrollParent.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  };
+
+  const ensureFileExpandedByPath = (filePath: string) => {
+    const file = parsed.find((entry) => (entry.to || entry.from || "") === filePath);
+    if (!file) return;
+    const fileId = getFileLabel(file);
+    if (expandedFiles.has(fileId)) return;
+    const next = new Set(expandedFiles);
+    next.add(fileId);
+    expandedFiles = next;
   };
 
   const scrollToDiffHash = async () => {
     if (!diffContainer) return;
-    const hash = getDiffHashFromLocation();
-    if (!hash) return;
+    const anchor = getDiffAnchorFromLocation();
+    if (!anchor) return;
+    const lineAnchor = parseDiffLineAnchor(anchor);
+    if (lineAnchor) {
+      const filePath = findFilePathByHash(lineAnchor.hash);
+      if (filePath) ensureFileExpandedByPath(filePath);
+      await tick();
+      const lineEl = document.getElementById(
+        `diff-${lineAnchor.hash}${lineAnchor.side}${lineAnchor.start}`
+      );
+      if (lineEl) {
+        scrollElementIntoView(lineEl as HTMLElement, "center");
+        if (filePath) {
+          selectedSide = lineAnchor.side;
+          selectedFilePath = filePath;
+          selectedStartLine = lineAnchor.start;
+          selectedEndLine = lineAnchor.end;
+        }
+        return;
+      }
+    }
     await tick();
-    const el = document.getElementById(`diff-${hash}`);
-    if (el) el.scrollIntoView({ block: "start" });
+    const hashMatch = anchor.match(/^diff-([a-f0-9]+)/i);
+    const fileHash = hashMatch ? hashMatch[1] : null;
+    if (!fileHash) return;
+    const el = document.getElementById(`diff-${fileHash}`);
+    if (el) scrollElementIntoView(el as HTMLElement, "start");
   };
 
   const scrollToCommentHash = async () => {
@@ -806,6 +873,9 @@
                             <span
                               class="block cursor-pointer"
                               style="touch-action: none;"
+                              id={diffAnchors[currentFilePath] && leftLine
+                                ? `diff-${diffAnchors[currentFilePath]}L${leftLine}`
+                                : undefined}
                               data-diff-line
                               data-side="L"
                               data-file-path={currentFilePath}
@@ -834,6 +904,9 @@
                             <span
                               class="block cursor-pointer"
                               style="touch-action: none;"
+                              id={diffAnchors[currentFilePath] && rightLine
+                                ? `diff-${diffAnchors[currentFilePath]}R${rightLine}`
+                                : undefined}
                               data-diff-line
                               data-side="R"
                               data-file-path={currentFilePath}

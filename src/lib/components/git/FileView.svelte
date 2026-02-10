@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { FileCode, Folder, Share, Download, Copy, Info } from "@lucide/svelte";
+  import {
+    FileCode,
+    Folder,
+    Share,
+    Download,
+    Copy,
+    Info,
+    MoreVertical,
+    ChevronLeft,
+  } from "@lucide/svelte";
   import { tick } from "svelte";
   import { useRegistry } from "../../useRegistry.js";
   const { Button, Spinner } = useRegistry();
@@ -19,6 +28,8 @@
     BinaryViewer,
   } from "./viewers/index.js";
   import { lineNumbers } from "@codemirror/view";
+  import type { EditorView } from "@codemirror/view";
+  import { nip19 } from "nostr-tools";
 
   const {
     file,
@@ -28,6 +39,11 @@
     publish,
     editable,
     autoOpenPath,
+    displayMode = "inline",
+    onSelectFile,
+    onClose,
+    showActions = true,
+    isActive = false,
   }: {
     file: FileEntry;
     getFileContent: (path: string) => Promise<string>;
@@ -36,6 +52,11 @@
     publish?: (permalink: PermalinkEvent) => Promise<void>;
     editable?: boolean;
     autoOpenPath?: string;
+    displayMode?: "inline" | "list" | "viewer";
+    onSelectFile?: (file: FileEntry) => void;
+    onClose?: () => void;
+    showActions?: boolean;
+    isActive?: boolean;
   } = $props();
 
   const effectiveEditable = $derived.by(() =>
@@ -54,12 +75,16 @@
   const name = $derived(file.name);
   const type = $derived((file.type ?? "file") as string);
   const path = $derived(file.path);
+  const isList = $derived(displayMode === "list");
+  const isViewer = $derived(displayMode === "viewer");
+  const isInline = $derived(displayMode === "inline");
   const shouldAutoOpen = $derived(!!autoOpenPath && autoOpenPath === path);
   const instanceId = Math.random().toString(36).substring(7);
   let content = $state("");
-  let isExpanded = $state(false);
+  let isExpanded = $state(isViewer);
   let isMetadataPanelOpen = $state(false);
   let isLoading = $state(false);
+  let showFileMenu = $state(false);
 
   let fileTypeInfo = $state<FileTypeInfo | null>(null);
   let metadata = $state<Record<string, string>>({});
@@ -85,6 +110,76 @@
 
   let hasLoadedOnce = false;
   let fileViewElement: HTMLElement | null = $state(null);
+  let lastFilePath = $state(path);
+  let editorView: EditorView | null = $state(null);
+
+  $effect(() => {
+    if (path === lastFilePath) return;
+    lastFilePath = path;
+    content = "";
+    fileTypeInfo = null;
+    metadata = {};
+    selectedStart = null;
+    selectedEnd = null;
+    cmExtensions = [];
+    showPermalinkMenu = false;
+    showGutterMenu = false;
+    showFileMenu = false;
+    lastAppliedHash = null;
+    hasLoadedOnce = false;
+  });
+
+  $effect(() => {
+    if (isViewer && !isExpanded) {
+      isExpanded = true;
+    }
+  });
+
+  function handleEditorReady(view: EditorView) {
+    editorView = view;
+  }
+
+  const containerClass = $derived.by(() => {
+    if (isList) return "file-view border-b border-border last:border-b-0";
+    if (isViewer) return "file-view rounded-lg border border-border";
+    return "file-view mb-2 rounded-lg border border-border";
+  });
+
+  const headerClass = $derived.by(() => {
+    const base =
+      "flex items-center justify-between gap-3 px-3 py-2 text-sm sm:text-[0.95rem] transition-colors";
+    const interactive = isViewer ? "cursor-default" : "cursor-pointer hover:bg-secondary/30";
+    const active = isActive ? "bg-secondary/40" : "";
+    return `${base} ${interactive} ${active}`.trim();
+  });
+
+  function handleRowActivate() {
+    if (isViewer) return;
+    if (type === "directory") {
+      if (isList) {
+        setDirectory(path);
+        return;
+      }
+    }
+    if (type === "file" && isList) {
+      onSelectFile?.(file);
+      return;
+    }
+    isExpanded = !isExpanded;
+  }
+
+  function handleClose(event?: MouseEvent) {
+    event?.stopPropagation();
+    onClose?.();
+  }
+
+  function toggleFileMenu(event?: MouseEvent) {
+    event?.stopPropagation();
+    showPermalinkMenu = false;
+    showGutterMenu = false;
+    refreshSelectionFromEditor();
+    showFileMenu = !showFileMenu;
+  }
 
   $effect(() => {
     if (isExpanded && type === "file") {
@@ -96,7 +191,7 @@
         hasLoadedOnce = true;
 
         // Scroll to the top of this file view
-        if (fileViewElement) {
+        if (fileViewElement && !isViewer) {
           fileViewElement.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       }
@@ -126,6 +221,11 @@
 
   $effect(() => {
     if (!shouldAutoOpen || hasAutoOpened || type !== "file") return;
+    if (isList) {
+      onSelectFile?.(file);
+      hasAutoOpened = true;
+      return;
+    }
     isExpanded = true;
     hasAutoOpened = true;
   });
@@ -220,6 +320,26 @@
     };
   }
 
+  function getLinesFromEditorSelection(): { start: number; end: number } | null {
+    if (!editorView) return null;
+    const selection = editorView.state.selection.main;
+    if (!selection || selection.empty) return null;
+    const startLine = editorView.state.doc.lineAt(selection.from).number;
+    const endLine = editorView.state.doc.lineAt(selection.to).number;
+    return {
+      start: Math.min(startLine, endLine),
+      end: Math.max(startLine, endLine),
+    };
+  }
+
+  function refreshSelectionFromEditor(): boolean {
+    const lines = getLinesFromEditorSelection() || getLinesFromSelection();
+    if (!lines) return false;
+    selectedStart = lines.start;
+    selectedEnd = lines.end;
+    return true;
+  }
+
   // Select lines in the CodeMirror editor
   function selectLinesInEditor(startLine: number, endLine: number) {
     if (!editorHost) return;
@@ -258,12 +378,14 @@
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Check if click is inside any menu popup
-      const inMenu = target.closest?.(".permalink-menu-popup");
+      const inMenu =
+        target.closest?.(".permalink-menu-popup") || target.closest?.(".file-actions-menu");
 
       // Close menus if clicking outside
       if (!inMenu) {
         showPermalinkMenu = false;
         showGutterMenu = false;
+        showFileMenu = false;
       }
     };
     window.addEventListener("click", handler);
@@ -295,8 +417,8 @@
       if (!editor.contains(startNode) || !editor.contains(endNode)) return;
 
       // Get the selected lines
-      const lines = getLinesFromSelection();
-      if (lines && lines.start !== lines.end) {
+      const lines = getLinesFromEditorSelection() || getLinesFromSelection();
+      if (lines) {
         selectedStart = lines.start;
         selectedEnd = lines.end;
         syncHashFromSelection();
@@ -354,8 +476,13 @@
       if (e.type === "contextmenu") {
         e.preventDefault();
 
-        // If no selection exists, select the clicked line
-        if (!selectedStart) {
+        const selection = getLinesFromEditorSelection() || getLinesFromSelection();
+        if (selection) {
+          selectedStart = selection.start;
+          selectedEnd = selection.end;
+          syncHashFromSelection();
+        } else if (!selectedStart) {
+          // If no selection exists, select the clicked line
           selectedStart = n;
           selectedEnd = null;
           syncHashFromSelection();
@@ -499,18 +626,17 @@
       const el = e.target as HTMLElement;
       if (!el.closest?.(".cm-content")) return;
 
-      const lines = getLinesFromSelection();
-      if (lines && lines.start !== lines.end) {
-        e.preventDefault();
-        selectedStart = lines.start;
-        selectedEnd = lines.end;
-        syncHashFromSelection();
-        const rect = editorHost!.getBoundingClientRect();
-        gutterMenuX = Math.max(8, e.clientX - rect.left + editorHost!.scrollLeft);
-        gutterMenuY = Math.max(8, e.clientY - rect.top + editorHost!.scrollTop);
-        showPermalinkMenu = false;
-        showGutterMenu = true;
-      }
+      const lines = getLinesFromEditorSelection() || getLinesFromSelection();
+      if (!lines) return;
+      e.preventDefault();
+      selectedStart = lines.start;
+      selectedEnd = lines.end;
+      syncHashFromSelection();
+      const rect = editorHost!.getBoundingClientRect();
+      gutterMenuX = Math.max(8, e.clientX - rect.left + editorHost!.scrollLeft);
+      gutterMenuY = Math.max(8, e.clientY - rect.top + editorHost!.scrollTop);
+      showPermalinkMenu = false;
+      showGutterMenu = true;
     };
 
     editorHost.addEventListener("click", handleClickOrContext, { capture: true } as any);
@@ -596,10 +722,67 @@
     }
   }
 
+  function parseRepoAddress(address: string) {
+    const parts = address.split(":");
+    if (parts.length < 3) return null;
+    const [kindStr, pubkey, ...identifierParts] = parts;
+    const kind = Number.parseInt(kindStr, 10);
+    const identifier = identifierParts.join(":");
+    if (!kind || !pubkey || !identifier) return null;
+    return { kind, pubkey, identifier };
+  }
+
+  function deriveRelayFromLocation() {
+    if (typeof window === "undefined") return null;
+    const match = window.location.pathname.match(/\/spaces\/([^/]+)\//);
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  function deriveBasePath() {
+    if (typeof window === "undefined") return "";
+    const repoAddress = repo?.address || "";
+    let repoNaddr = "";
+    if (repoAddress) {
+      const parsed = parseRepoAddress(repoAddress);
+      if (parsed) {
+        try {
+          repoNaddr = nip19.naddrEncode({
+            kind: parsed.kind,
+            pubkey: parsed.pubkey,
+            identifier: parsed.identifier,
+            relays: [],
+          });
+        } catch {
+          repoNaddr = "";
+        }
+      }
+    }
+    const relayValue = deriveRelayFromLocation();
+    if (repoNaddr && relayValue) {
+      return `/spaces/${encodeURIComponent(relayValue)}/git/${repoNaddr}`;
+    }
+    const match = window.location.pathname.match(/\/spaces\/[^/]+\/git\/[^/]+/);
+    return match ? match[0] : "";
+  }
+
   function shareLink(event?: MouseEvent) {
     event?.stopPropagation();
     const hash = selectedStart ? `#L${selectedStart}${selectedEnd ? `-L${selectedEnd}` : ""}` : "";
-    const shareUrl = `${location.origin}/git/repo/${path}${hash}`;
+    const basePath = deriveBasePath();
+    if (!basePath || !path) {
+      toast.push({
+        title: "Link unavailable",
+        description: "Could not build a permalink for this file.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const shareUrl = `${location.origin}${basePath}/code?path=${encodeURIComponent(path)}${hash}`;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareUrl);
       toast.push({
@@ -635,6 +818,8 @@
   function togglePermalinkMenu(event?: MouseEvent) {
     event?.stopPropagation();
     showGutterMenu = false;
+    showFileMenu = false;
+    refreshSelectionFromEditor();
     showPermalinkMenu = !showPermalinkMenu;
   }
 
@@ -780,6 +965,7 @@
 
   async function createPermalink(event?: MouseEvent) {
     event?.stopPropagation();
+    refreshSelectionFromEditor();
     showPermalinkMenu = false;
     showGutterMenu = false;
 
@@ -818,6 +1004,7 @@
 
   function copyLinkToLines(event?: MouseEvent) {
     event?.stopPropagation();
+    refreshSelectionFromEditor();
     showPermalinkMenu = false;
     showGutterMenu = false;
     shareLink();
@@ -848,40 +1035,44 @@
   }
 </script>
 
-<div
-  class="border"
-  style="border-color: hsl(var(--border)); rounded-lg mb-2"
-  bind:this={fileViewElement}
->
+<div class={containerClass} bind:this={fileViewElement}>
   <div
-    role="button"
-    tabindex="0"
-    class="flex items-center justify-between p-2 hover:bg-secondary/30 cursor-pointer w-full text-left"
-    onclick={() => (isExpanded = !isExpanded)}
+    role={isViewer ? "group" : "button"}
+    tabindex={isViewer ? undefined : 0}
+    class={headerClass}
+    onclick={handleRowActivate}
     onkeydown={(e) => {
+      if (isViewer) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        isExpanded = !isExpanded;
+        handleRowActivate();
       }
     }}
-    aria-expanded={type === "file" ? isExpanded : undefined}
+    aria-expanded={isInline && type === "file" ? isExpanded : undefined}
   >
-    <div class="flex items-center">
+    <div class="flex items-center gap-2 min-w-0 flex-1">
+      {#if isViewer && onClose}
+        <Button variant="ghost" size="sm" class="h-8 w-8 p-0" title="Back" onclick={handleClose}>
+          <ChevronLeft class="h-4 w-4" />
+        </Button>
+      {/if}
       {#if type === "directory"}
-        <Folder class="h-4 w-4 mr-2" style="color: hsl(var(--muted-foreground));" />
+        <Folder class="h-4 w-4 flex-shrink-0" style="color: hsl(var(--muted-foreground));" />
       {:else}
         {@const IconComponent = getFileIcon()}
-        <IconComponent class="h-4 w-4 mr-2" style="color: hsl(var(--muted-foreground));" />
+        <IconComponent class="h-4 w-4 flex-shrink-0" style="color: hsl(var(--muted-foreground));" />
       {/if}
-      <span>{name}</span>
+      <span class="truncate" title={name}>{name}</span>
       {#if fileTypeInfo && type === "file"}
-        <span class="ml-2 px-2 py-0.5 text-xs bg-muted/50 text-muted-foreground rounded">
+        <span
+          class="ml-2 hidden sm:inline-flex px-2 py-0.5 text-xs bg-muted/50 text-muted-foreground rounded"
+        >
           {fileTypeInfo.category}
         </span>
       {/if}
     </div>
-    {#if type === "file"}
-      <div class="flex items-center gap-2">
+    {#if type === "file" && showActions}
+      <div class="hidden sm:flex items-center gap-2">
         <Button variant="ghost" size="sm" class="h-8 w-8 p-0" onclick={showMetadata}>
           <Info class="h-4 w-4" />
         </Button>
@@ -925,38 +1116,108 @@
           </Button>
         {/if}
       </div>
+      <div class="relative sm:hidden">
+        <Button
+          variant="ghost"
+          size="sm"
+          class="h-8 w-8 p-0"
+          onclick={toggleFileMenu}
+          title="File actions"
+        >
+          <MoreVertical class="h-4 w-4" />
+        </Button>
+        {#if showFileMenu}
+          <div
+            class="file-actions-menu absolute right-0 mt-1 z-10 w-48 rounded border bg-popover text-popover-foreground shadow-md"
+            style="border-color: hsl(var(--border));"
+          >
+            <button
+              class="w-full text-left px-3 py-2 text-sm hover:bg-secondary/50"
+              onclick={(event) => {
+                event.stopPropagation();
+                showMetadata(event);
+                showFileMenu = false;
+              }}
+            >
+              File info
+            </button>
+            <button
+              class="w-full text-left px-3 py-2 text-sm hover:bg-secondary/50"
+              onclick={(event) => {
+                event.stopPropagation();
+                copyLinkToLines(event);
+                showFileMenu = false;
+              }}
+            >
+              Copy link
+            </button>
+            <button
+              class="w-full text-left px-3 py-2 text-sm hover:bg-secondary/50"
+              onclick={(event) => {
+                event.stopPropagation();
+                createPermalink(event);
+                showFileMenu = false;
+              }}
+            >
+              Create permalink
+            </button>
+            <button
+              class="w-full text-left px-3 py-2 text-sm hover:bg-secondary/50"
+              onclick={(event) => {
+                event.stopPropagation();
+                downloadFile(event);
+                showFileMenu = false;
+              }}
+            >
+              Download
+            </button>
+            {#if fileTypeInfo?.canEdit !== false}
+              <button
+                class="w-full text-left px-3 py-2 text-sm hover:bg-secondary/50"
+                onclick={(event) => {
+                  event.stopPropagation();
+                  copyContent(event);
+                  showFileMenu = false;
+                }}
+              >
+                Copy contents
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 
-  {#if isExpanded && type === "file"}
+  {#if isExpanded && type === "file" && !isList}
     <div class="border-t" style="border-color: hsl(var(--border));">
       {#if isLoading}
-        <div class="p-4">
+        <div class="p-3 sm:p-4">
           <Spinner>Fetching content...</Spinner>
         </div>
       {:else if content}
         {#if fileTypeInfo?.category === "image"}
-          <div class="p-4">
+          <div class="p-3 sm:p-4">
             <ImageViewer content={content} filename={name} mimeType={fileTypeInfo.mimeType} />
           </div>
         {:else if fileTypeInfo?.category === "pdf"}
-          <div class="p-4">
+          <div class="p-3 sm:p-4">
             <PDFViewer content={content} filename={name} />
           </div>
         {:else if fileTypeInfo?.category === "video"}
-          <div class="p-4">
+          <div class="p-3 sm:p-4">
             <VideoViewer content={content} filename={name} mimeType={fileTypeInfo.mimeType} />
           </div>
         {:else if fileTypeInfo?.category === "audio"}
-          <div class="p-4">
+          <div class="p-3 sm:p-4">
             <AudioViewer content={content} filename={name} mimeType={fileTypeInfo.mimeType} />
           </div>
         {:else if fileTypeInfo?.category === "binary" || fileTypeInfo?.category === "archive"}
-          <div class="p-4">
+          <div class="p-3 sm:p-4">
             <BinaryViewer content={content} filename={name} />
           </div>
         {:else}
-          <div class="p-4 border-t" style="border-color: hsl(var(--border));">
+          <div class="p-3 sm:p-4 border-t" style="border-color: hsl(var(--border));">
             <div
               class="relative bg-background text-foreground rounded border"
               style="border-color: hsl(var(--border));"
@@ -967,6 +1228,7 @@
               <CodeMirror
                 bind:value={content}
                 extensions={cmExtensions.length ? cmExtensions : [lineNumbers()]}
+                onready={handleEditorReady}
               />
               {#if showGutterMenu}
                 <div
@@ -993,7 +1255,7 @@
           </div>
         {/if}
       {:else}
-        <div class="p-4">
+        <div class="p-3 sm:p-4">
           <div class="text-center text-muted-foreground py-8">No content available</div>
         </div>
       {/if}
@@ -1011,26 +1273,39 @@
 
 <style>
   /* Ensure CodeMirror has proper contrast */
-  :global(.cm-editor) {
+  :global(.file-view .cm-editor) {
     background-color: hsl(var(--background)) !important;
     color: hsl(var(--foreground)) !important;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    max-width: 100%;
   }
 
-  :global(.cm-gutters) {
+  :global(.file-view .cm-scroller) {
+    overflow-x: auto;
+  }
+
+  :global(.file-view .cm-gutters) {
     background-color: hsl(var(--muted)) !important;
     color: hsl(var(--muted-foreground)) !important;
     border-right: 1px solid hsl(var(--border)) !important;
   }
 
-  :global(.cm-activeLineGutter) {
+  :global(.file-view .cm-activeLineGutter) {
     background-color: hsl(var(--accent)) !important;
   }
 
-  :global(.cm-line) {
+  :global(.file-view .cm-line) {
     color: hsl(var(--foreground)) !important;
   }
 
-  :global(.cm-content) {
+  :global(.file-view .cm-content) {
     caret-color: hsl(var(--foreground)) !important;
+  }
+
+  @media (min-width: 768px) {
+    :global(.file-view .cm-editor) {
+      font-size: 0.9rem;
+    }
   }
 </style>

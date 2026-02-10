@@ -22,6 +22,7 @@
   import sql from "highlight.js/lib/languages/sql";
   import plaintext from "highlight.js/lib/languages/plaintext";
   import { toast } from "../../stores/toast.js";
+  import { tick } from "svelte";
   import { toUserMessage } from "../../utils/gitErrorUi.js";
   import { GIT_PERMALINK, type PermalinkEvent } from "@nostr-git/core/types";
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
@@ -84,6 +85,7 @@
   let permalinkMenuX = $state(0);
   let permalinkMenuY = $state(0);
   let diffContainer: HTMLElement | null = $state(null);
+  let diffAnchor = $state("");
 
   const pushErrorToast = (title: string, err: unknown, fallback?: string) => {
     const { message, theme } = toUserMessage(err, fallback ?? title);
@@ -102,6 +104,95 @@
     };
     window.addEventListener("click", handler);
     return () => window.removeEventListener("click", handler);
+  });
+
+  $effect(() => {
+    const path = filepath;
+    if (!path) {
+      diffAnchor = "";
+      return;
+    }
+    let cancelled = false;
+    githubPermalinkDiffId(path)
+      .then((hash) => {
+        if (!cancelled) diffAnchor = hash;
+      })
+      .catch(() => {
+        if (!cancelled) diffAnchor = "";
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const getDiffAnchorFromLocation = () => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash || "";
+    if (!hash.startsWith("#diff-")) return null;
+    return hash.slice(1);
+  };
+
+  const parseDiffLineAnchor = (anchor: string) => {
+    const match = anchor.match(/^diff-([a-f0-9]+)([LR])(\d+)(?:-[LR](\d+))?/i);
+    if (!match) return null;
+    const start = Number.parseInt(match[3], 10);
+    const end = match[4] ? Number.parseInt(match[4], 10) : null;
+    if (Number.isNaN(start)) return null;
+    return {
+      hash: match[1],
+      side: match[2] as "L" | "R",
+      start,
+      end: end && !Number.isNaN(end) ? end : null,
+    };
+  };
+
+  const scrollElementIntoView = (el: HTMLElement, align: "start" | "center" = "center") => {
+    const scrollParent = diffContainer?.closest(".scroll-container") as HTMLElement | null;
+    if (!scrollParent) {
+      el.scrollIntoView({ block: align });
+      return;
+    }
+    const parentRect = scrollParent.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const offset = elRect.top - parentRect.top + scrollParent.scrollTop;
+    const target = align === "center" ? offset - scrollParent.clientHeight / 2 : offset;
+    scrollParent.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  };
+
+  const scrollToDiffAnchor = async () => {
+    if (!diffContainer || !diffAnchor) return;
+    const anchor = getDiffAnchorFromLocation();
+    if (!anchor) return;
+    const lineAnchor = parseDiffLineAnchor(anchor);
+    if (lineAnchor && lineAnchor.hash === diffAnchor) {
+      await tick();
+      const lineEl = document.getElementById(
+        `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.start}`
+      );
+      if (lineEl) {
+        scrollElementIntoView(lineEl as HTMLElement, "center");
+        selectedSide = lineAnchor.side;
+        selectedFilePath = filepath || null;
+        selectedStartLine = lineAnchor.start;
+        selectedEndLine = lineAnchor.end;
+        return;
+      }
+    }
+    await tick();
+    const el = document.getElementById(`diff-${diffAnchor}`);
+    if (el) scrollElementIntoView(el as HTMLElement, "start");
+  };
+
+  $effect(() => {
+    if (!diffAnchor) return;
+    void scrollToDiffAnchor();
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => void scrollToDiffAnchor();
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
   });
 
   $effect(() => {
@@ -501,7 +592,11 @@
 {#if hunks.length === 0}
   <div class="p-4 text-center text-muted-foreground">No changes to display</div>
 {:else}
-  <div class="min-w-fit rounded-md border border-border relative" bind:this={diffContainer}>
+  <div
+    class="min-w-fit rounded-md border border-border relative"
+    bind:this={diffContainer}
+    id={diffAnchor ? `diff-${diffAnchor}` : undefined}
+  >
     {#each hunks as hunk, hunkIndex}
       {@const lines = calculateLineNumbers(hunk)}
 
@@ -551,6 +646,9 @@
                 <span
                   class="block cursor-pointer"
                   style="touch-action: none;"
+                  id={diffAnchor && line.oldLineNum
+                    ? `diff-${diffAnchor}L${line.oldLineNum}`
+                    : undefined}
                   data-diff-line
                   data-side="L"
                   data-file-path={filepath || "unknown"}
@@ -584,6 +682,9 @@
                 <span
                   class="block cursor-pointer"
                   style="touch-action: none;"
+                  id={diffAnchor && line.newLineNum
+                    ? `diff-${diffAnchor}R${line.newLineNum}`
+                    : undefined}
                   data-diff-line
                   data-side="R"
                   data-file-path={filepath || "unknown"}
