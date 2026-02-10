@@ -1491,6 +1491,20 @@
     user-select: text;
   }
 
+  :global(.file-view .cm-selectionBackground) {
+    background-color: hsl(var(--accent) / 0.35) !important;
+  }
+
+  :global(.file-view .cm-content ::selection) {
+    background-color: hsl(var(--accent) / 0.35);
+    color: hsl(var(--foreground));
+  }
+
+  :global(.file-view .cm-content ::-moz-selection) {
+    background-color: hsl(var(--accent) / 0.35);
+    color: hsl(var(--foreground));
+  }
+
   @media (min-width: 768px) {
     :global(.file-view .cm-editor) {
       font-size: 0.9rem;
