@@ -97,13 +97,17 @@
   let showGutterMenu = $state(false);
   let gutterMenuX = $state(0);
   let gutterMenuY = $state(0);
-  let isDraggingSelect = $state(false);
-  let isTouchSelecting = $state(false);
   let touchTimer: number | null = $state(null);
   let touchStartX = $state(0);
   let touchStartY = $state(0);
+  let touchLastX = $state(0);
+  let touchLastY = $state(0);
   let touchMoved = $state(false);
   let touchIdentifier = $state<number | null>(null);
+  let touchLongPress = $state(false);
+  let lastInputWasTouch = $state(false);
+  let pendingTouchMenu = $state(false);
+  let touchMenuTimer: number | null = $state(null);
 
   let hasAutoOpened = $state(false);
   let lastAppliedHash = $state<string | null>(null);
@@ -422,6 +426,18 @@
         selectedStart = lines.start;
         selectedEnd = lines.end;
         syncHashFromSelection();
+        if (pendingTouchMenu && touchLongPress) {
+          const rangeRect = range.getBoundingClientRect();
+          if (touchMenuTimer) {
+            window.clearTimeout(touchMenuTimer);
+            touchMenuTimer = null;
+          }
+          touchMenuTimer = window.setTimeout(() => {
+            if (!pendingTouchMenu || !touchLongPress) return;
+            openSelectionMenuAt(rangeRect.left + rangeRect.width / 2, rangeRect.bottom + 4);
+            pendingTouchMenu = false;
+          }, 160);
+        }
       }
     };
 
@@ -429,109 +445,9 @@
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
   });
 
-  // Capture gutter interactions from CodeMirror reliably
+  // Capture selection interactions for CodeMirror content (no gutter actions)
   $effect(() => {
     if (!editorHost) return;
-    const getLineFromGutter = (el: HTMLElement | null) => {
-      const text = el?.textContent || "";
-      const n = parseInt(text.trim(), 10);
-      return isNaN(n) ? null : n;
-    };
-
-    const handleClickOrContext = (e: MouseEvent) => {
-      const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
-      if (!gutterEl) return;
-
-      const n = getLineFromGutter(gutterEl);
-      if (n == null) return;
-
-      // On left-click: just update selection, don't open menu
-      if (e.type === "click") {
-        console.log(
-          `[${instanceId}:${path}] click line ${n}, shift=${(e as MouseEvent).shiftKey}, current start=${selectedStart}`
-        );
-        if ((e as MouseEvent).shiftKey && selectedStart) {
-          // Extend selection: keep start, set end
-          selectedEnd = n;
-          console.log(
-            `[${instanceId}:${path}] after shift-click: start=${selectedStart}, end=${selectedEnd}`
-          );
-
-          // Select the text in the editor
-          selectLinesInEditor(selectedStart, selectedEnd);
-        } else {
-          // New selection: set start, clear end
-          selectedStart = n;
-          selectedEnd = null;
-          console.log(
-            `[${instanceId}:${path}] after click: start=${selectedStart}, end=${selectedEnd}`
-          );
-        }
-        syncHashFromSelection();
-        return;
-      }
-
-      // On right-click: open menu with current selection (or set to clicked line)
-      if (e.type === "contextmenu") {
-        e.preventDefault();
-
-        const selection = getLinesFromEditorSelection() || getLinesFromSelection();
-        if (selection) {
-          selectedStart = selection.start;
-          selectedEnd = selection.end;
-          syncHashFromSelection();
-        } else if (!selectedStart) {
-          // If no selection exists, select the clicked line
-          selectedStart = n;
-          selectedEnd = null;
-          syncHashFromSelection();
-        }
-
-        // Open menu at mouse position
-        const rect = editorHost!.getBoundingClientRect();
-        gutterMenuX = Math.max(8, e.clientX - rect.left + editorHost!.scrollLeft);
-        gutterMenuY = Math.max(8, e.clientY - rect.top + editorHost!.scrollTop);
-        showPermalinkMenu = false;
-        showGutterMenu = true;
-      }
-    };
-
-    const handleMouseDown = (e: MouseEvent) => {
-      const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
-      // Allow starting selection from gutter or content
-      if (!gutterEl && !el.closest?.(".cm-content")) return;
-      const n = gutterEl ? getLineFromGutter(gutterEl) : null;
-      if (n == null && gutterEl) return; // Gutter click but no line number
-      if (n != null) {
-        // Mark that we're potentially starting a drag, but don't change selection yet
-        // The click handler will handle selection for simple clicks
-        isDraggingSelect = true;
-        showGutterMenu = false;
-        if (gutterEl) e.preventDefault();
-      }
-    };
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingSelect) return;
-      const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
-      const n = getLineFromGutter(gutterEl);
-      if (n != null) {
-        selectedEnd = n;
-      }
-      // Update hash during drag so user sees the range
-      if (selectedStart && selectedEnd) {
-        syncHashFromSelection();
-      }
-    };
-    const handleMouseUp = (e: MouseEvent) => {
-      if (isDraggingSelect) {
-        isDraggingSelect = false;
-        syncHashFromSelection();
-        // Don't open menu on mouseup - wait for contextmenu
-      }
-    };
 
     const clearTouchTimer = () => {
       if (touchTimer) {
@@ -540,136 +456,116 @@
       }
     };
 
-    const openGutterMenuAt = (clientX: number, clientY: number) => {
+    const clearTouchMenuTimer = () => {
+      if (touchMenuTimer) {
+        window.clearTimeout(touchMenuTimer);
+        touchMenuTimer = null;
+      }
+    };
+
+    const openSelectionMenuAt = (clientX: number, clientY: number) => {
       const rect = editorHost!.getBoundingClientRect();
       gutterMenuX = Math.max(8, clientX - rect.left + editorHost!.scrollLeft);
       gutterMenuY = Math.max(8, clientY - rect.top + editorHost!.scrollTop);
       showPermalinkMenu = false;
       showGutterMenu = true;
-      isTouchSelecting = false;
       touchIdentifier = null;
+      touchLongPress = false;
+      pendingTouchMenu = false;
       clearTouchTimer();
+    };
+
+    const handleContentContextMenu = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (!el.closest?.(".cm-content")) return;
+      if (lastInputWasTouch) {
+        e.preventDefault();
+        return;
+      }
+
+      if (!refreshSelectionFromEditor()) return;
+      e.preventDefault();
+      syncHashFromSelection();
+      openSelectionMenuAt(e.clientX, e.clientY);
+    };
+
+    const handlePointerDown = (e: PointerEvent) => {
+      lastInputWasTouch = e.pointerType === "touch";
     };
 
     const handleTouchStart = (e: TouchEvent) => {
       const el = e.target as HTMLElement;
-      const gutterEl = el?.closest?.(".cm-gutterElement") as HTMLElement | null;
-      if (!gutterEl) return;
-
-      const n = getLineFromGutter(gutterEl);
-      if (n == null) return;
+      if (!el.closest?.(".cm-content")) return;
 
       const touch = e.changedTouches[0];
       if (!touch) return;
 
+      lastInputWasTouch = true;
       touchIdentifier = touch.identifier;
       touchStartX = touch.clientX;
       touchStartY = touch.clientY;
+      touchLastX = touch.clientX;
+      touchLastY = touch.clientY;
       touchMoved = false;
-
-      selectedStart = n;
-      selectedEnd = null;
-      isTouchSelecting = true;
-      showGutterMenu = false;
-      showPermalinkMenu = false;
-      syncHashFromSelection();
+      touchLongPress = false;
 
       clearTouchTimer();
       touchTimer = window.setTimeout(() => {
-        if (!touchMoved) {
-          openGutterMenuAt(touchStartX, touchStartY);
-        }
-      }, 500);
+        touchLongPress = true;
+        pendingTouchMenu = true;
+      }, 300);
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (!isTouchSelecting) return;
+      if (touchIdentifier === null) return;
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
 
-      e.preventDefault();
+      touchLastX = touch.clientX;
+      touchLastY = touch.clientY;
 
       const dx = touch.clientX - touchStartX;
       const dy = touch.clientY - touchStartY;
       if (Math.hypot(dx, dy) > 6) {
         touchMoved = true;
         clearTouchTimer();
+        pendingTouchMenu = false;
       }
-
-      const target = document.elementFromPoint(touch.clientX, touch.clientY) as HTMLElement | null;
-      const gutterEl = target?.closest?.(".cm-gutterElement") as HTMLElement | null;
-      const n = getLineFromGutter(gutterEl);
-      if (n == null || !selectedStart) return;
-
-      if (n !== selectedStart && !touchMoved) {
-        touchMoved = true;
-        clearTouchTimer();
-      }
-
-      selectedEnd = n;
-      selectLinesInEditor(selectedStart, selectedEnd);
-      syncHashFromSelection();
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
-      if (!isTouchSelecting) return;
+      if (touchIdentifier === null) return;
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
 
       clearTouchTimer();
-      isTouchSelecting = false;
+      clearTouchMenuTimer();
       touchIdentifier = null;
+
+      if (!touchLongPress) return;
     };
 
-    const handleContentContextMenu = (e: MouseEvent) => {
-      // Check if this is a right-click on selected text in content
-      const el = e.target as HTMLElement;
-      if (!el.closest?.(".cm-content")) return;
-
-      const lines = getLinesFromEditorSelection() || getLinesFromSelection();
-      if (!lines) return;
-      e.preventDefault();
-      selectedStart = lines.start;
-      selectedEnd = lines.end;
-      syncHashFromSelection();
-      const rect = editorHost!.getBoundingClientRect();
-      gutterMenuX = Math.max(8, e.clientX - rect.left + editorHost!.scrollLeft);
-      gutterMenuY = Math.max(8, e.clientY - rect.top + editorHost!.scrollTop);
-      showPermalinkMenu = false;
-      showGutterMenu = true;
-    };
-
-    editorHost.addEventListener("click", handleClickOrContext, { capture: true } as any);
-    editorHost.addEventListener("contextmenu", handleClickOrContext, { capture: true } as any);
     editorHost.addEventListener("contextmenu", handleContentContextMenu, { capture: true } as any);
-    editorHost.addEventListener("mousedown", handleMouseDown, { capture: true } as any);
+    editorHost.addEventListener("pointerdown", handlePointerDown, { capture: true } as any);
     editorHost.addEventListener("touchstart", handleTouchStart, {
       capture: true,
       passive: true,
     } as any);
     editorHost.addEventListener("touchmove", handleTouchMove, {
       capture: true,
-      passive: false,
+      passive: true,
     } as any);
     editorHost.addEventListener("touchend", handleTouchEnd, { capture: true } as any);
     editorHost.addEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
-    window.addEventListener("mousemove", handleMouseMove, { capture: true } as any);
-    window.addEventListener("mouseup", handleMouseUp, { capture: true } as any);
     return () => {
-      editorHost?.removeEventListener("click", handleClickOrContext, { capture: true } as any);
-      editorHost?.removeEventListener("contextmenu", handleClickOrContext, {
-        capture: true,
-      } as any);
       editorHost?.removeEventListener("contextmenu", handleContentContextMenu, {
         capture: true,
       } as any);
-      editorHost?.removeEventListener("mousedown", handleMouseDown, { capture: true } as any);
+      editorHost?.removeEventListener("pointerdown", handlePointerDown, { capture: true } as any);
       editorHost?.removeEventListener("touchstart", handleTouchStart, { capture: true } as any);
       editorHost?.removeEventListener("touchmove", handleTouchMove, { capture: true } as any);
       editorHost?.removeEventListener("touchend", handleTouchEnd, { capture: true } as any);
       editorHost?.removeEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
-      window.removeEventListener("mousemove", handleMouseMove, { capture: true } as any);
-      window.removeEventListener("mouseup", handleMouseUp, { capture: true } as any);
     };
   });
 

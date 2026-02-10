@@ -70,17 +70,19 @@
   hljs.registerLanguage("plaintext", plaintext);
 
   let selectedFilePath = $state<string | null>(null);
-  let selectedSide = $state<"L" | "R" | null>(null);
-  let selectedStartLine = $state<number | null>(null);
-  let selectedEndLine = $state<number | null>(null);
-  let isDragging = $state(false);
-  let dragSide = $state<"L" | "R" | null>(null);
-  let dragFilePath = $state<string | null>(null);
+  let selectedStartIndex = $state<number | null>(null);
+  let selectedEndIndex = $state<number | null>(null);
   let touchTimer: number | null = $state(null);
   let touchStartX = $state(0);
   let touchStartY = $state(0);
+  let touchLastX = $state(0);
+  let touchLastY = $state(0);
   let touchMoved = $state(false);
   let touchIdentifier = $state<number | null>(null);
+  let touchLongPress = $state(false);
+  let lastInputWasTouch = $state(false);
+  let pendingTouchMenu = $state(false);
+  let touchMenuTimer: number | null = $state(null);
   let showPermalinkMenu = $state(false);
   let permalinkMenuX = $state(0);
   let permalinkMenuY = $state(0);
@@ -123,6 +125,15 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  const hunkOffsets = $derived.by(() => {
+    let offset = 0;
+    return hunks.map((hunk) => {
+      const start = offset;
+      offset += hunk.patches.length;
+      return start;
+    });
   });
 
   const getDiffAnchorFromLocation = () => {
@@ -168,13 +179,26 @@
       await tick();
       const lineEl = document.getElementById(
         `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.start}`
-      );
+      ) as HTMLElement | null;
       if (lineEl) {
-        scrollElementIntoView(lineEl as HTMLElement, "center");
-        selectedSide = lineAnchor.side;
-        selectedFilePath = filepath || null;
-        selectedStartLine = lineAnchor.start;
-        selectedEndLine = lineAnchor.end;
+        scrollElementIntoView(lineEl, "center");
+        const startIndex = Number(lineEl.dataset.diffIndex || "");
+        const startPath = lineEl.dataset.filePath || filepath || null;
+        let endIndex = startIndex;
+        if (lineAnchor.end) {
+          const endEl = document.getElementById(
+            `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.end}`
+          ) as HTMLElement | null;
+          const parsedEnd = Number(endEl?.dataset.diffIndex || "");
+          if (Number.isFinite(parsedEnd)) {
+            endIndex = parsedEnd;
+          }
+        }
+        if (startPath && Number.isFinite(startIndex)) {
+          selectedFilePath = startPath;
+          selectedStartIndex = Math.min(startIndex, endIndex);
+          selectedEndIndex = Math.max(startIndex, endIndex);
+        }
         return;
       }
     }
@@ -196,15 +220,123 @@
   });
 
   $effect(() => {
-    const stop = () => {
-      if (!isDragging) return;
-      isDragging = false;
-      dragSide = null;
-      dragFilePath = null;
-      touchIdentifier = null;
+    const container = diffContainer;
+    if (!container || typeof window === "undefined") return;
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      const startNode = range.startContainer;
+      const endNode = range.endContainer;
+      if (!container.contains(startNode) || !container.contains(endNode)) return;
+      setSelectionFromDom();
+      if (pendingTouchMenu && touchLongPress) {
+        const rect = range.getBoundingClientRect();
+        if (touchMenuTimer) {
+          window.clearTimeout(touchMenuTimer);
+          touchMenuTimer = null;
+        }
+        touchMenuTimer = window.setTimeout(() => {
+          if (!pendingTouchMenu || !touchLongPress) return;
+          openPermalinkMenuAt(rect.left + rect.width / 2, rect.bottom + 4);
+          pendingTouchMenu = false;
+        }, 160);
+      }
     };
-    window.addEventListener("mouseup", stop);
-    return () => window.removeEventListener("mouseup", stop);
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  });
+
+  $effect(() => {
+    const container = diffContainer;
+    if (!container) return;
+
+    const handleContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!container.contains(target)) return;
+      if (lastInputWasTouch) {
+        e.preventDefault();
+        return;
+      }
+      const selection = setSelectionFromDom();
+      if (!selection) return;
+      e.preventDefault();
+      openPermalinkMenuAt(e.clientX, e.clientY);
+    };
+
+    const handlePointerDown = (e: PointerEvent) => {
+      lastInputWasTouch = e.pointerType === "touch";
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      const target = e.target as HTMLElement;
+      if (!container.contains(target)) return;
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+      lastInputWasTouch = true;
+      touchIdentifier = touch.identifier;
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchLastX = touch.clientX;
+      touchLastY = touch.clientY;
+      touchMoved = false;
+      touchLongPress = false;
+      pendingTouchMenu = false;
+      clearTouchTimer();
+      touchTimer = window.setTimeout(() => {
+        touchLongPress = true;
+        pendingTouchMenu = true;
+      }, 300);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (touchIdentifier === null) return;
+      const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
+      if (!touch) return;
+      touchLastX = touch.clientX;
+      touchLastY = touch.clientY;
+      const dx = touch.clientX - touchStartX;
+      const dy = touch.clientY - touchStartY;
+      if (Math.hypot(dx, dy) > 6) {
+        touchMoved = true;
+        clearTouchTimer();
+        pendingTouchMenu = false;
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (touchIdentifier === null) return;
+      const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
+      if (!touch) return;
+      clearTouchTimer();
+      if (touchMenuTimer) {
+        window.clearTimeout(touchMenuTimer);
+        touchMenuTimer = null;
+      }
+      touchIdentifier = null;
+      if (!touchLongPress) return;
+    };
+
+    container.addEventListener("contextmenu", handleContextMenu, { capture: true } as any);
+    container.addEventListener("pointerdown", handlePointerDown, { capture: true } as any);
+    container.addEventListener("touchstart", handleTouchStart, {
+      capture: true,
+      passive: true,
+    } as any);
+    container.addEventListener("touchmove", handleTouchMove, {
+      capture: true,
+      passive: true,
+    } as any);
+    container.addEventListener("touchend", handleTouchEnd, { capture: true } as any);
+    container.addEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+    return () => {
+      container.removeEventListener("contextmenu", handleContextMenu, { capture: true } as any);
+      container.removeEventListener("pointerdown", handlePointerDown, { capture: true } as any);
+      container.removeEventListener("touchstart", handleTouchStart, { capture: true } as any);
+      container.removeEventListener("touchmove", handleTouchMove, { capture: true } as any);
+      container.removeEventListener("touchend", handleTouchEnd, { capture: true } as any);
+      container.removeEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+    };
   });
 
   // Calculate line numbers for display
@@ -322,55 +454,43 @@
     }
   };
 
-  type DiffSelection = { filePath: string; side: "L" | "R"; start: number; end: number };
+  type DiffSelection = { filePath: string; start: number; end: number };
 
-  function updateSelection(
-    side: "L" | "R",
-    lineNumber: number | null,
-    filePath: string,
-    shiftKey: boolean
-  ) {
-    if (!lineNumber) return;
-    if (shiftKey && selectedStartLine && selectedSide === side && selectedFilePath === filePath) {
-      selectedEndLine = lineNumber;
-      return;
-    }
-    selectedSide = side;
-    selectedFilePath = filePath;
-    selectedStartLine = lineNumber;
-    selectedEndLine = null;
+  function getLineElementFromNode(node: Node): HTMLElement | null {
+    if (node instanceof HTMLElement) return node.closest("[data-diff-index]");
+    if (node.parentElement) return node.parentElement.closest("[data-diff-index]");
+    return null;
   }
 
-  function startDrag(side: "L" | "R", lineNumber: number | null, filePath: string) {
-    if (!lineNumber) return;
-    isDragging = true;
-    dragSide = side;
-    dragFilePath = filePath;
-    selectedSide = side;
-    selectedFilePath = filePath;
-    selectedStartLine = lineNumber;
-    selectedEndLine = null;
+  function getSelectionRangeFromDom(): DiffSelection | null {
+    if (typeof window === "undefined") return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (range.collapsed) return null;
+    const startEl = getLineElementFromNode(range.startContainer);
+    const endEl = getLineElementFromNode(range.endContainer);
+    if (!startEl || !endEl) return null;
+    const startPath = startEl.dataset.filePath;
+    const endPath = endEl.dataset.filePath;
+    if (!startPath || startPath !== endPath) return null;
+    const startIndex = Number(startEl.dataset.diffIndex || "");
+    const endIndex = Number(endEl.dataset.diffIndex || "");
+    if (!Number.isFinite(startIndex) || !Number.isFinite(endIndex)) return null;
+    return {
+      filePath: startPath,
+      start: Math.min(startIndex, endIndex),
+      end: Math.max(startIndex, endIndex),
+    };
   }
 
-  function dragOver(side: "L" | "R", lineNumber: number | null, filePath: string) {
-    if (!isDragging || dragSide !== side || dragFilePath !== filePath) return;
-    if (!lineNumber) return;
-    selectedEndLine = lineNumber;
-  }
-
-  function handleLineMouseDown(
-    event: MouseEvent,
-    side: "L" | "R",
-    lineNumber: number | null,
-    filePath: string
-  ) {
-    if (event.button !== 0) return;
-    event.stopPropagation();
-    if (event.shiftKey) {
-      updateSelection(side, lineNumber, filePath, true);
-      return;
-    }
-    startDrag(side, lineNumber, filePath);
+  function setSelectionFromDom(): DiffSelection | null {
+    const selection = getSelectionRangeFromDom();
+    if (!selection) return null;
+    selectedFilePath = selection.filePath;
+    selectedStartIndex = selection.start;
+    selectedEndIndex = selection.end;
+    return selection;
   }
 
   function clearTouchTimer() {
@@ -382,99 +502,61 @@
 
   function openPermalinkMenuAt(clientX: number, clientY: number) {
     if (!diffContainer) return;
-    isDragging = false;
-    dragSide = null;
-    dragFilePath = null;
     const rect = diffContainer.getBoundingClientRect();
     permalinkMenuX = Math.max(8, clientX - rect.left + diffContainer.scrollLeft);
     permalinkMenuY = Math.max(8, clientY - rect.top + diffContainer.scrollTop);
     showPermalinkMenu = true;
   }
 
-  function handleLineTouchStart(
-    event: TouchEvent,
-    side: "L" | "R",
-    lineNumber: number | null,
-    filePath: string
-  ) {
-    if (!lineNumber) return;
-    const touch = event.changedTouches[0];
-    if (!touch) return;
-    touchIdentifier = touch.identifier;
-    touchStartX = touch.clientX;
-    touchStartY = touch.clientY;
-    touchMoved = false;
-    startDrag(side, lineNumber, filePath);
-    clearTouchTimer();
-    touchTimer = window.setTimeout(() => {
-      if (!touchMoved) {
-        openPermalinkMenuAt(touchStartX, touchStartY);
-      }
-    }, 500);
-  }
-
-  function handleLineTouchMove(event: TouchEvent) {
-    if (!isDragging) return;
-    event.preventDefault();
-    const touch = Array.from(event.changedTouches).find((t) => t.identifier === touchIdentifier);
-    if (!touch) return;
-    const dx = touch.clientX - touchStartX;
-    const dy = touch.clientY - touchStartY;
-    if (Math.hypot(dx, dy) > 6) {
-      touchMoved = true;
-      clearTouchTimer();
-    }
-    const el = document.elementFromPoint(touch.clientX, touch.clientY) as HTMLElement | null;
-    const target = el?.closest?.("[data-diff-line]") as HTMLElement | null;
-    if (!target) return;
-    const side = (target.dataset.side as "L" | "R" | undefined) || null;
-    const filePath = target.dataset.filePath || "";
-    const lineNumber = Number(target.dataset.lineNumber || "0");
-    if (!side || !lineNumber || !filePath) return;
-    dragOver(side, lineNumber, filePath);
-  }
-
-  function handleLineTouchEnd() {
-    clearTouchTimer();
-    isDragging = false;
-    dragSide = null;
-    dragFilePath = null;
-    touchIdentifier = null;
-  }
-
-  function openPermalinkMenu(event: MouseEvent) {
-    openPermalinkMenuAt(event.clientX, event.clientY);
-  }
-
   function getSelectionRange(): DiffSelection | null {
-    if (!selectedFilePath || !selectedSide || !selectedStartLine) return null;
-    const endValue = selectedEndLine ?? selectedStartLine;
-    const start = Math.min(selectedStartLine, endValue);
-    const end = Math.max(selectedStartLine, endValue);
-    return { filePath: selectedFilePath, side: selectedSide, start, end };
+    if (!selectedFilePath || selectedStartIndex === null) return null;
+    const endValue = selectedEndIndex ?? selectedStartIndex;
+    const start = Math.min(selectedStartIndex, endValue);
+    const end = Math.max(selectedStartIndex, endValue);
+    return { filePath: selectedFilePath, start, end };
   }
 
-  function isLineWithinSelection(side: "L" | "R", filePath: string, lineNumber: number | null) {
-    if (!lineNumber) return false;
+  function isLineWithinSelection(filePath: string, lineIndex: number) {
     const selection = getSelectionRange();
     if (!selection) return false;
-    if (selection.side !== side || selection.filePath !== filePath) return false;
-    return lineNumber >= selection.start && lineNumber <= selection.end;
+    if (selection.filePath !== filePath) return false;
+    return lineIndex >= selection.start && lineIndex <= selection.end;
   }
 
   function getSelectionContent(selection: DiffSelection): string {
     const lines: string[] = [];
+    let index = 0;
     for (const hunk of hunks) {
       const hunkLines = calculateLineNumbers(hunk);
       for (const line of hunkLines) {
-        const lineNumber = selection.side === "L" ? line.oldLineNum : line.newLineNum;
-        if (!lineNumber) continue;
-        if (lineNumber < selection.start || lineNumber > selection.end) continue;
-        const prefix = line.type === " " ? " " : line.type;
-        lines.push(`${prefix}${line.content}`);
+        if (index >= selection.start && index <= selection.end) {
+          const prefix = line.type === " " ? " " : line.type;
+          lines.push(`${prefix}${line.content}`);
+        }
+        index += 1;
       }
     }
     return lines.join("\n");
+  }
+
+  function getRightAnchorRange(selection: DiffSelection): { start: number; end: number } | null {
+    const rightLines: number[] = [];
+    let index = 0;
+    for (const hunk of hunks) {
+      const hunkLines = calculateLineNumbers(hunk);
+      for (const line of hunkLines) {
+        if (index >= selection.start && index <= selection.end) {
+          const lineNumber = line.newLineNum;
+          if (lineNumber) rightLines.push(lineNumber);
+        }
+        index += 1;
+      }
+    }
+    if (rightLines.length === 0) return null;
+    return {
+      start: Math.min(...rightLines),
+      end: Math.max(...rightLines),
+    };
   }
 
   function buildPermalinkEvent(): PermalinkEvent | null {
@@ -489,23 +571,20 @@
 
     const commitTag = commitSha || "";
     const parentCommitTag = parentSha || "";
-    const commitForLines = selection.side === "L" && parentCommitTag ? parentCommitTag : commitTag;
-    const parentForTags = selection.side === "L" && parentCommitTag ? commitTag : parentCommitTag;
 
-    if (commitForLines) {
-      tags.push(["commit", commitForLines]);
-      const ref = (repo.refs || []).find(
-        (r) => r.type === "heads" && r.commitId === commitForLines
-      );
-      if (ref?.name) tags.push([`refs/heads/${ref.name}`, commitForLines]);
+    if (commitTag) {
+      tags.push(["commit", commitTag]);
+      const ref = (repo.refs || []).find((r) => r.type === "heads" && r.commitId === commitTag);
+      if (ref?.name) tags.push([`refs/heads/${ref.name}`, commitTag]);
     }
-    if (parentForTags) tags.push(["parent-commit", parentForTags]);
+    if (parentCommitTag) tags.push(["parent-commit", parentCommitTag]);
 
     if (selection.filePath) tags.push(["file", selection.filePath]);
-    if (selection.start) {
-      if (selection.end !== selection.start)
-        tags.push(["lines", String(selection.start), String(selection.end)]);
-      else tags.push(["lines", String(selection.start)]);
+    const anchorRange = getRightAnchorRange(selection);
+    if (anchorRange) {
+      if (anchorRange.end !== anchorRange.start)
+        tags.push(["lines", String(anchorRange.start), String(anchorRange.end)]);
+      else tags.push(["lines", String(anchorRange.start)]);
     }
 
     const language = getFileLanguage(selection.filePath);
@@ -575,11 +654,10 @@
     }
     try {
       const hash = await githubPermalinkDiffId(selection.filePath);
+      const anchorRange = getRightAnchorRange(selection);
       const range =
-        selection.end && selection.end !== selection.start
-          ? `-${selection.side}${selection.end}`
-          : "";
-      const anchor = `#diff-${hash}${selection.side}${selection.start}${range}`;
+        anchorRange && anchorRange.end !== anchorRange.start ? `-R${anchorRange.end}` : "";
+      const anchor = anchorRange ? `#diff-${hash}R${anchorRange.start}${range}` : `#diff-${hash}`;
       const base = location.href.split("#")[0];
       await navigator.clipboard.writeText(`${base}${anchor}`);
       toast.push({ title: "Link copied", description: "Permalink copied to clipboard." });
@@ -625,16 +703,16 @@
       <div class="divide-y divide-border">
         {#each lines as line, lineIndex}
           {@const language = getFileLanguage(filepath || "")}
-          {@const defaultSide = line.newLineNum ? "R" : "L"}
-          {@const defaultLine = defaultSide === "R" ? line.newLineNum : line.oldLineNum}
-          {@const leftSelected = isLineWithinSelection("L", filepath || "unknown", line.oldLineNum)}
-          {@const rightSelected = isLineWithinSelection(
-            "R",
-            filepath || "unknown",
-            line.newLineNum
-          )}
-          {@const isSelected = leftSelected || rightSelected}
-          <div class={`flex ${getLineClass(line.type)} ${isSelected ? "diff-line-selected" : ""}`}>
+          {@const hunkOffset = hunkOffsets[hunkIndex] ?? 0}
+          {@const globalIndex = hunkOffset + lineIndex}
+          {@const isSelected = isLineWithinSelection(filepath || "unknown", globalIndex)}
+          <div
+            class={`flex ${getLineClass(line.type)} ${isSelected ? "diff-line-selected" : ""}`}
+            data-diff-index={globalIndex}
+            data-file-path={filepath || "unknown"}
+            data-line-left={line.oldLineNum ?? ""}
+            data-line-right={line.newLineNum ?? ""}
+          >
             <!-- Line Numbers -->
             <div class="flex shrink-0">
               <!-- Old Line Number -->
@@ -649,26 +727,6 @@
                   id={diffAnchor && line.oldLineNum
                     ? `diff-${diffAnchor}L${line.oldLineNum}`
                     : undefined}
-                  data-diff-line
-                  data-side="L"
-                  data-file-path={filepath || "unknown"}
-                  data-line-number={line.oldLineNum}
-                  onmousedown={(event) =>
-                    handleLineMouseDown(event, "L", line.oldLineNum, filepath || "unknown")}
-                  ontouchstart={(event) =>
-                    handleLineTouchStart(event, "L", line.oldLineNum, filepath || "unknown")}
-                  ontouchmove={handleLineTouchMove}
-                  ontouchend={handleLineTouchEnd}
-                  ontouchcancel={handleLineTouchEnd}
-                  onmouseenter={() => dragOver("L", line.oldLineNum, filepath || "unknown")}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (!isLineWithinSelection("L", filepath || "unknown", line.oldLineNum)) {
-                      updateSelection("L", line.oldLineNum, filepath || "unknown", event.shiftKey);
-                    }
-                    if (line.oldLineNum) openPermalinkMenu(event);
-                  }}
                 >
                   {line.oldLineNum || ""}
                 </span>
@@ -685,26 +743,6 @@
                   id={diffAnchor && line.newLineNum
                     ? `diff-${diffAnchor}R${line.newLineNum}`
                     : undefined}
-                  data-diff-line
-                  data-side="R"
-                  data-file-path={filepath || "unknown"}
-                  data-line-number={line.newLineNum}
-                  onmousedown={(event) =>
-                    handleLineMouseDown(event, "R", line.newLineNum, filepath || "unknown")}
-                  ontouchstart={(event) =>
-                    handleLineTouchStart(event, "R", line.newLineNum, filepath || "unknown")}
-                  ontouchmove={handleLineTouchMove}
-                  ontouchend={handleLineTouchEnd}
-                  ontouchcancel={handleLineTouchEnd}
-                  onmouseenter={() => dragOver("R", line.newLineNum, filepath || "unknown")}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (!isLineWithinSelection("R", filepath || "unknown", line.newLineNum)) {
-                      updateSelection("R", line.newLineNum, filepath || "unknown", event.shiftKey);
-                    }
-                    if (line.newLineNum) openPermalinkMenu(event);
-                  }}
                 >
                   {line.newLineNum || ""}
                 </span>
@@ -737,15 +775,10 @@
               <button
                 onclick={(event) => {
                   event.stopPropagation();
-                  if (!isLineWithinSelection(defaultSide, filepath || "unknown", defaultLine)) {
-                    updateSelection(
-                      defaultSide,
-                      defaultLine,
-                      filepath || "unknown",
-                      event.shiftKey
-                    );
-                  }
-                  if (defaultLine) openPermalinkMenu(event);
+                  selectedFilePath = filepath || "unknown";
+                  selectedStartIndex = globalIndex;
+                  selectedEndIndex = globalIndex;
+                  openPermalinkMenuAt(event.clientX, event.clientY);
                 }}
                 class="w-6 h-6 rounded-sm bg-background border border-border hover:bg-muted flex items-center justify-center"
                 title="Permalink"
@@ -764,16 +797,17 @@
     {/each}
     {#if showPermalinkMenu}
       {@const selection = getSelectionRange()}
+      {@const anchorRange = selection ? getRightAnchorRange(selection) : null}
       <div
         class="permalink-menu-popup absolute z-20 w-48 rounded border bg-popover text-popover-foreground shadow-md"
         style="left: {permalinkMenuX}px; top: {permalinkMenuY}px; border-color: hsl(var(--border));"
       >
         <button class="w-full text-left px-3 py-2 hover:bg-secondary/50" onclick={copyLinkToLines}>
-          Copy link to {selection
-            ? selection.start === selection.end
-              ? `line ${selection.start}`
-              : `lines ${selection.start}-${selection.end}`
-            : "line"}
+          Copy link to {anchorRange
+            ? anchorRange.start === anchorRange.end
+              ? `line ${anchorRange.start}`
+              : `lines ${anchorRange.start}-${anchorRange.end}`
+            : "file"}
         </button>
         <button class="w-full text-left px-3 py-2 hover:bg-secondary/50" onclick={createPermalink}>
           Create permalink
