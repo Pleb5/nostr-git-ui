@@ -143,6 +143,7 @@
     currentPubkey,
     repo,
     publish,
+    enablePermalinks = true,
   }: {
     diff: AnyFileChange[] | string | undefined;
     showLineNumbers?: boolean;
@@ -153,6 +154,7 @@
     currentPubkey?: string | null;
     repo?: Repo;
     publish?: (permalink: PermalinkEvent) => Promise<void>;
+    enablePermalinks?: boolean;
   } = $props();
 
   let selectedLine = $state<number | null>(null);
@@ -397,6 +399,7 @@
     const container = diffContainer;
     if (!container || typeof window === "undefined") return;
     const handleSelectionChange = () => {
+      if (!enablePermalinks) return;
       if (isTouchSelecting) return;
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
@@ -417,6 +420,7 @@
     const handleContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!container.contains(target)) return;
+      if (!enablePermalinks) return;
       if (lastInputWasTouch) {
         e.preventDefault();
         return;
@@ -434,6 +438,7 @@
     const handleTouchStart = (e: TouchEvent) => {
       const target = e.target as HTMLElement;
       if (!container.contains(target)) return;
+      if (!enablePermalinks) return;
       if (touchIdentifier !== null) return;
       const touch = e.changedTouches[0];
       if (!touch) return;
@@ -460,6 +465,7 @@
     };
 
     const handleTouchMove = (e: TouchEvent) => {
+      if (!enablePermalinks) return;
       if (touchIdentifier === null) return;
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
@@ -485,6 +491,7 @@
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
+      if (!enablePermalinks) return;
       if (touchIdentifier === null) return;
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
@@ -756,6 +763,7 @@
   }
 
   function openPermalinkMenuAt(clientX: number, clientY: number) {
+    if (!enablePermalinks) return;
     if (!diffContainer) return;
     const rect = diffContainer.getBoundingClientRect();
     const minX = diffContainer.scrollLeft + MENU_PADDING;
@@ -1158,19 +1166,21 @@
                       <div
                         class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                       >
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onclick={(event) => {
-                            event.stopPropagation();
-                            selectedFilePath = currentFilePath;
-                            selectedStartIndex = lineIndex;
-                            selectedEndIndex = lineIndex;
-                            openPermalinkMenuAt(event.clientX, event.clientY);
-                          }}
-                        >
-                          <Share class="h-4 w-4" />
-                        </Button>
+                        {#if enablePermalinks}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onclick={(event) => {
+                              event.stopPropagation();
+                              selectedFilePath = currentFilePath;
+                              selectedStartIndex = lineIndex;
+                              selectedEndIndex = lineIndex;
+                              openPermalinkMenuAt(event.clientX, event.clientY);
+                            }}
+                          >
+                            <Share class="h-4 w-4" />
+                          </Button>
+                        {/if}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -1275,7 +1285,7 @@
       {/if}
     </div>
   {/each}
-  {#if showPermalinkMenu}
+  {#if enablePermalinks && showPermalinkMenu}
     {@const selection = getSelectionRange()}
     {@const anchorRange = selection ? getRightAnchorRange(selection) : null}
     <div

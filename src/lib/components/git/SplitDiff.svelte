@@ -170,16 +170,7 @@
   };
 
   const scrollElementIntoView = (el: HTMLElement, align: "start" | "center" = "center") => {
-    const scrollParent = diffContainer?.closest(".scroll-container") as HTMLElement | null;
-    if (!scrollParent) {
-      el.scrollIntoView({ block: align });
-      return;
-    }
-    const parentRect = scrollParent.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const offset = elRect.top - parentRect.top + scrollParent.scrollTop;
-    const target = align === "center" ? offset - scrollParent.clientHeight / 2 : offset;
-    scrollParent.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    el.scrollIntoView({ block: align, behavior: "smooth" });
   };
 
   const scrollToDiffAnchor = async () => {
@@ -193,15 +184,17 @@
         `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.start}`
       ) as HTMLElement | null;
       if (lineEl) {
-        scrollElementIntoView(lineEl, "center");
-        const startIndex = Number(lineEl.dataset.diffIndex || "");
-        const startPath = lineEl.dataset.filePath || filepath || null;
+        const lineRow = lineEl.closest("[data-diff-index]") as HTMLElement | null;
+        scrollElementIntoView(lineRow || lineEl, "center");
+        const startIndex = Number(lineRow?.dataset.diffIndex || "");
+        const startPath = lineRow?.dataset.filePath || filepath || null;
         let endIndex = startIndex;
         if (lineAnchor.end) {
           const endEl = document.getElementById(
             `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.end}`
           ) as HTMLElement | null;
-          const parsedEnd = Number(endEl?.dataset.diffIndex || "");
+          const endRow = endEl?.closest("[data-diff-index]") as HTMLElement | null;
+          const parsedEnd = Number(endRow?.dataset.diffIndex || "");
           if (Number.isFinite(parsedEnd)) {
             endIndex = parsedEnd;
           }
@@ -220,7 +213,10 @@
   };
 
   $effect(() => {
-    if (!diffAnchor) return;
+    const anchor = diffAnchor;
+    const container = diffContainer;
+    hunks.length;
+    if (!anchor || !container) return;
     void scrollToDiffAnchor();
   });
 

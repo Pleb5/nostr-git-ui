@@ -29,9 +29,11 @@
     currentPubkey?: string | null;
     repo?: Repo;
     publish?: (permalink: PermalinkEvent) => Promise<void>;
+    enablePermalinks?: boolean;
     diffViewerProps?: {
       showLineNumbers?: boolean;
       expandAll?: boolean;
+      enablePermalinks?: boolean;
     };
   }
 
@@ -49,6 +51,7 @@
     currentPubkey,
     repo,
     publish,
+    enablePermalinks = false,
     diffViewerProps = {},
   }: Props = $props();
 
@@ -353,6 +356,7 @@
             <div class="diff-viewer-container">
               {#if DiffViewer}
                 <DiffViewer
+                  {...diffViewerProps}
                   diff={selectedPatch.diff}
                   comments={comments}
                   rootEvent={rootEvent}
@@ -360,7 +364,7 @@
                   currentPubkey={currentPubkey}
                   repo={repo}
                   publish={publish}
-                  {...diffViewerProps}
+                  enablePermalinks={enablePermalinks}
                 />
               {:else}
                 <div class="p-4 text-center text-muted-foreground">Loading diff viewer...</div>

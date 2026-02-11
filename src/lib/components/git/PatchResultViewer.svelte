@@ -134,7 +134,7 @@
     {#if result.diff}
       <div class="space-y-2">
         <h4 class="font-medium">Changes Preview</h4>
-        <DiffViewer diff={result.diff} showLineNumbers={true} />
+        <DiffViewer diff={result.diff} showLineNumbers={true} enablePermalinks={false} />
       </div>
     {/if}
 

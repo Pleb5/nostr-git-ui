@@ -126,9 +126,16 @@
     return `/spaces/${encodeURIComponent(relayValue)}/git/${repoNaddr}`;
   });
 
+  const diffAnchor = $derived.by(() => {
+    if (!diffHash) return "";
+    if (!lineStart) return `#diff-${diffHash}`;
+    const range = lineEnd && lineEnd !== lineStart ? `-R${lineEnd}` : "";
+    return `#diff-${diffHash}R${lineStart}${range}`;
+  });
+
   const targetHref = $derived.by(() => {
     if (!basePath) return "";
-    const diffAnchor = diffHash ? `#diff-${diffHash}` : "";
+    if (isDiff && filePath && !diffHash) return "";
     const lineAnchor = lineStart ? `#L${lineStart}${lineEnd ? `-L${lineEnd}` : ""}` : "";
     if (isDiff) {
       if (commit) return `${basePath}/commits/${commit}${diffAnchor}`;
