@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { NostrEvent } from "nostr-tools";
   import { nip19 } from "nostr-tools";
-  import { ArrowUpRight, Link } from "@lucide/svelte";
+  import { ArrowUpRight, FileCode, GitCommit } from "@lucide/svelte";
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import { useRegistry } from "../../useRegistry";
 
@@ -49,6 +49,14 @@
   });
 
   const isDiff = $derived(!!parentCommit);
+  const kindLabel = $derived(isDiff ? "Diff" : "Code");
+  const kindTitle = $derived(isDiff ? "Diff permalink" : "Code permalink");
+  const kindIconClass = $derived(isDiff ? "text-amber-500" : "text-blue-500");
+  const kindBadgeClass = $derived(
+    isDiff
+      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20"
+      : "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20"
+  );
   const lineLabel = $derived(
     lineStart
       ? lineEnd && lineEnd !== lineStart
@@ -136,7 +144,7 @@
   });
 
   const hasLink = $derived(!!targetHref);
-  const displayRepo = $derived(() => {
+  const displayRepo = $derived.by(() => {
     if (repoAddress) return repoAddress.split(":").slice(-1)[0] || repoAddress;
     if (repoUrl) {
       const last = repoUrl.split("/").pop() || repoUrl;
@@ -189,12 +197,22 @@
 
 <Card class="git-card hover:bg-accent/50 transition-colors">
   <div class="flex items-start gap-3">
-    <Link class="h-6 w-6 mt-1 text-blue-500" />
+    <svelte:component
+      this={isDiff ? GitCommit : FileCode}
+      class={`h-6 w-6 mt-1 ${kindIconClass}`}
+    />
 
     <div class="flex-1 min-w-0">
-      <div class="flex items-start justify-between gap-3">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div class="min-w-0">
-          <h3 class="text-base font-semibold leading-tight">Permalink</h3>
+          <div class="flex items-center gap-2">
+            <h3 class="text-base font-semibold leading-tight">{kindTitle}</h3>
+            <span
+              class={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${kindBadgeClass}`}
+            >
+              {kindLabel}
+            </span>
+          </div>
           <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             {#if displayRepo}
               <span class="font-mono">{displayRepo}</span>
@@ -210,12 +228,12 @@
             {/if}
           </div>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
           {#if hasLink}
             <Button
               variant="outline"
               size="sm"
-              class="shrink-0"
+              class="shrink-0 w-full sm:w-auto"
               href={targetHref}
               onclick={onOpen}
               aria-busy={isOpening}
@@ -230,7 +248,7 @@
           <Button
             variant="outline"
             size="sm"
-            class="shrink-0"
+            class="shrink-0 w-full sm:w-auto"
             onclick={copyContent}
             disabled={!event.content}
             aria-live="polite"
