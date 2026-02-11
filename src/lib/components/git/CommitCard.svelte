@@ -100,7 +100,12 @@
   const computedHref = $derived(href || undefined);
 </script>
 
-<BaseItemCard clickable={true} href={computedHref} variant="commit" {disablePrefetch}>
+<BaseItemCard
+  clickable={true}
+  href={computedHref}
+  variant="commit"
+  disablePrefetch={disablePrefetch}
+>
   <!-- title -->
   {#snippet slotTitle()}
     {commit.commit.message}
@@ -151,7 +156,9 @@
 
   <!-- footer actions: react/comment and parent -->
   {#snippet slotFooter()}
-    <div class="flex items-center justify-between w-full">
+    <div
+      class="flex w-full flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between"
+    >
       <div class="flex items-center gap-4">
         <Button
           variant="ghost"
@@ -178,12 +185,12 @@
         {#if getParentHref}
           <a
             href={getParentHref(commit.commit.parent[0])}
-            class="text-xs text-muted-foreground whitespace-nowrap hover:text-foreground hover:underline transition-colors"
+            class="text-xs text-muted-foreground whitespace-nowrap hover:text-foreground hover:underline transition-colors self-end sm:self-auto"
           >
             Parent: {truncateHash(commit.commit.parent[0])}
           </a>
         {:else}
-          <div class="text-xs text-muted-foreground whitespace-nowrap">
+          <div class="text-xs text-muted-foreground whitespace-nowrap self-end sm:self-auto">
             Parent: {truncateHash(commit.commit.parent[0])}
           </div>
         {/if}

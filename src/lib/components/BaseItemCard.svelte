@@ -58,9 +58,13 @@
         return "accent-zinc-500";
     }
   });
+
+  const footerClass = $derived.by(() => {
+    return variant === "commit" ? "ml-auto w-full" : "ml-auto";
+  });
 </script>
 
-<Card class={`git-card transition-colors ${clickable ? 'hover:bg-accent/50' : ''}`}>
+<Card class={`git-card transition-colors ${clickable ? "hover:bg-accent/50" : ""}`}>
   <div class="flex items-start gap-3">
     <!-- Left column: icon / status indicator -->
     {#if slotIcon}
@@ -75,8 +79,14 @@
       <div class="flex items-center justify-between gap-2">
         <div class="flex-1 min-w-0">
           {#if href}
-            <a href={href} class={clickable ? 'cursor-pointer' : ''} data-sveltekit-preload-data={disablePrefetch ? 'off' : undefined}>
-              <h3 class={`text-base font-semibold leading-tight break-words line-clamp-2 ${clickable ? 'hover:text-accent transition-colors' : ''}`}>
+            <a
+              href={href}
+              class={clickable ? "cursor-pointer" : ""}
+              data-sveltekit-preload-data={disablePrefetch ? "off" : undefined}
+            >
+              <h3
+                class={`text-base font-semibold leading-tight break-words line-clamp-2 ${clickable ? "hover:text-accent transition-colors" : ""}`}
+              >
                 {@render slotTitle?.()}
               </h3>
               {#if !compact}
@@ -114,7 +124,7 @@
       <!-- Footer: status pill / controls -->
       <div class="flex items-center gap-2">
         {@render slotStatus?.()}
-        <div class="ml-auto">{@render slotFooter?.()}</div>
+        <div class={footerClass}>{@render slotFooter?.()}</div>
       </div>
     </div>
 
