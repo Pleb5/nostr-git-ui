@@ -53,6 +53,10 @@ export interface AuthConfig {
   tokens: AuthToken[];
 }
 
+export interface GitConfig {
+  defaultCorsProxy?: string | null;
+}
+
 /**
  * Structured error response from the worker.
  * When success is false, the worker now returns code, category, and hint.
@@ -71,11 +75,11 @@ interface WorkerErrorResponse {
  */
 function createErrorFromWorkerResponse(response: WorkerErrorResponse): Error {
   const { error, code, category, hint, context } = response;
-  
+
   // If we have structured error info, create the appropriate error type
   if (code && category) {
     const options = { hint, context };
-    
+
     switch (category) {
       case GitErrorCategory.USER_ACTIONABLE:
         return new UserActionableError(error, code, options);
@@ -84,10 +88,10 @@ function createErrorFromWorkerResponse(response: WorkerErrorResponse): Error {
       case GitErrorCategory.FATAL:
         return new FatalError(error, code, options);
       default:
-        // Fall through to wrapError
+      // Fall through to wrapError
     }
   }
-  
+
   // Fall back to wrapError for classification
   return wrapError(new Error(error), context);
 }
@@ -109,11 +113,14 @@ function isWorkerErrorResponse(result: any): result is WorkerErrorResponse {
  * This provides a clean interface for git operations while managing the underlying worker.
  */
 export class WorkerManager {
+  private static instances = new Set<WorkerManager>();
+  private static globalGitConfig: GitConfig = {};
   private worker: Worker | null = null;
   private api: any = null;
   private isInitialized = false;
   private progressCallback?: WorkerProgressCallback;
   private authConfig: AuthConfig = { tokens: [] };
+  private gitConfig: GitConfig = {};
   private workerConfig?: WorkerManagerConfig;
   // Throttle repeated initialize() calls and avoid duplicate work
   private initInFlight: Promise<void> | null = null;
@@ -121,17 +128,46 @@ export class WorkerManager {
   private static readonly MIN_INIT_INTERVAL_MS = 1500;
   // Deduplicate auth-config updates
   private lastAuthConfigJson = "";
-  
+  // Deduplicate git-config updates
+  private lastGitConfigJson = "";
+
   constructor(progressCallback?: WorkerProgressCallback, workerConfig?: WorkerManagerConfig) {
     this.progressCallback = progressCallback;
     this.workerConfig = workerConfig;
+    this.gitConfig = { ...WorkerManager.globalGitConfig };
+    WorkerManager.instances.add(this);
     // Clean architecture - worker handles EventIO internally
+  }
+
+  static setGlobalGitConfig(config: GitConfig): void {
+    WorkerManager.globalGitConfig = { ...WorkerManager.globalGitConfig, ...config };
+    for (const instance of WorkerManager.instances) {
+      void instance.setGitConfig(WorkerManager.globalGitConfig);
+    }
+  }
+
+  static getGlobalGitConfig(): GitConfig {
+    return { ...WorkerManager.globalGitConfig };
+  }
+
+  static async restartAll(): Promise<void> {
+    const instances = Array.from(WorkerManager.instances);
+    await Promise.all(
+      instances.map(async (instance) => {
+        try {
+          await instance.restart();
+        } catch (error) {
+          console.warn("[WorkerManager] Failed to restart instance:", error);
+        }
+      })
+    );
   }
 
   /**
    * Initialize the git worker and API
    */
   async initialize() {
+    WorkerManager.instances.add(this);
     // If already initialized, return immediately
     if (this.isInitialized && this.api) {
       return;
@@ -158,27 +194,42 @@ export class WorkerManager {
       });
       this.worker = worker;
       this.api = api as any;
-      
+
       try {
         // Ping the worker to verify it's alive (fast failure detection)
         const pingTimeout = 5000; // 5 seconds
         const pingPromise = this.api.ping();
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("Worker ping timed out - worker may not have loaded correctly")), pingTimeout);
+          setTimeout(
+            () => reject(new Error("Worker ping timed out - worker may not have loaded correctly")),
+            pingTimeout
+          );
         });
-        
+
         const pingResult = await Promise.race([pingPromise, timeoutPromise]);
         console.log("[WorkerManager] Worker ping successful:", pingResult);
-        
+
         this.isInitialized = true;
 
         // Set authentication configuration in the worker (dedup)
         const cfgJson = JSON.stringify(this.authConfig || {});
         if (cfgJson !== this.lastAuthConfigJson) {
-          if (this.authConfig.tokens.length > 0 && this.api && typeof (this.api as any).setAuthConfig === 'function') {
+          if (
+            this.authConfig.tokens.length > 0 &&
+            this.api &&
+            typeof (this.api as any).setAuthConfig === "function"
+          ) {
             await (this.api as any).setAuthConfig(this.authConfig);
           }
           this.lastAuthConfigJson = cfgJson;
+        }
+
+        const gitCfgJson = JSON.stringify(this.gitConfig || {});
+        if (gitCfgJson !== this.lastGitConfigJson) {
+          if (this.api && typeof (this.api as any).setGitConfig === "function") {
+            await (this.api as any).setGitConfig(this.gitConfig);
+          }
+          this.lastGitConfigJson = gitCfgJson;
         }
       } catch (error) {
         console.error("Failed to initialize git worker:", error);
@@ -247,21 +298,26 @@ export class WorkerManager {
       const method = (this.api as any)[operation];
 
       if (typeof method !== "function") {
-        throw new FatalError(`Operation '${operation}' is not supported by current worker.${ctx}`, GitErrorCode.UNKNOWN_ERROR);
+        throw new FatalError(
+          `Operation '${operation}' is not supported by current worker.${ctx}`,
+          GitErrorCode.UNKNOWN_ERROR
+        );
       }
 
       // Check if params are actually serializable
       try {
         JSON.stringify(safeParams, null, 2);
       } catch (serError) {
-        throw createUnknownError(`Cannot serialize params for '${operation}'.${ctx}`, undefined, serError instanceof Error ? serError : undefined);
+        throw createUnknownError(
+          `Cannot serialize params for '${operation}'.${ctx}`,
+          undefined,
+          serError instanceof Error ? serError : undefined
+        );
       }
 
       // Add timeout to detect hanging worker calls
       // Allow custom timeout to be specified for long-running background operations
-      const timeoutMs =
-        options?.timeoutMs ??
-        (operation === "analyzePatchMerge" ? 90000 : 30000);
+      const timeoutMs = options?.timeoutMs ?? (operation === "analyzePatchMerge" ? 90000 : 30000);
 
       // If timeout is 0 or negative, don't apply timeout (for truly long-running background ops)
       if (timeoutMs > 0) {
@@ -275,12 +331,12 @@ export class WorkerManager {
 
         const resultPromise = method(safeParams);
         const result = await Promise.race([resultPromise, timeoutPromise]);
-        
+
         // Check if worker returned a structured error response
         if (isWorkerErrorResponse(result)) {
           throw createErrorFromWorkerResponse(result);
         }
-        
+
         try {
           return JSON.parse(JSON.stringify(result)) as T;
         } catch {
@@ -289,12 +345,12 @@ export class WorkerManager {
       } else {
         // No timeout - for long-running background operations
         const result = await method(safeParams);
-        
+
         // Check if worker returned a structured error response
         if (isWorkerErrorResponse(result)) {
           throw createErrorFromWorkerResponse(result);
         }
-        
+
         try {
           return JSON.parse(JSON.stringify(result)) as T;
         } catch {
@@ -317,36 +373,54 @@ export class WorkerManager {
 
       // Comlink clone errors / worker capability mismatches should be fatal
       if (msg && msg.includes("Proxy object could not be cloned")) {
-        const ferr = new FatalError(`Worker returned a non-transferable value for '${operation}'.${ctx}`, GitErrorCode.UNKNOWN_ERROR);
+        const ferr = new FatalError(
+          `Worker returned a non-transferable value for '${operation}'.${ctx}`,
+          GitErrorCode.UNKNOWN_ERROR
+        );
         throw withCause(error, ferr);
       }
 
       // Auth-ish errors
-      if (
-        /unauthorized|forbidden|permission denied|auth|token|401|403/.test(lowered)
-      ) {
-        throw createAuthRequiredError({ operation, context: ctx }, error instanceof Error ? error : undefined);
+      if (/unauthorized|forbidden|permission denied|auth|token|401|403/.test(lowered)) {
+        throw createAuthRequiredError(
+          { operation, context: ctx },
+          error instanceof Error ? error : undefined
+        );
       }
 
       // Timeout-ish errors
       if (/timed out|timeout/.test(lowered)) {
-        throw createTimeoutError({ operation, context: ctx }, error instanceof Error ? error : undefined);
+        throw createTimeoutError(
+          { operation, context: ctx },
+          error instanceof Error ? error : undefined
+        );
       }
 
       // Network-ish errors
       if (
         /failed to fetch|networkerror|fetch failed|econnreset|enotfound|eai_again/.test(lowered)
       ) {
-        throw createNetworkError({ operation, context: ctx }, error instanceof Error ? error : undefined);
+        throw createNetworkError(
+          { operation, context: ctx },
+          error instanceof Error ? error : undefined
+        );
       }
 
       // FS-ish errors (isomorphic-git and browser fs backends often emit these)
       if (/enoent|eacces|eperm|enospc|notfounderror/.test(lowered)) {
-        throw createFsError(`Filesystem error during '${operation}'.${ctx}`, { operation }, error instanceof Error ? error : undefined);
+        throw createFsError(
+          `Filesystem error during '${operation}'.${ctx}`,
+          { operation },
+          error instanceof Error ? error : undefined
+        );
       }
 
       // Unknown
-      throw createUnknownError(`Worker operation '${operation}' failed.${ctx}`, { operation }, error instanceof Error ? error : undefined);
+      throw createUnknownError(
+        `Worker operation '${operation}' failed.${ctx}`,
+        { operation },
+        error instanceof Error ? error : undefined
+      );
     }
   }
 
@@ -381,9 +455,7 @@ export class WorkerManager {
   /**
    * Check if repository is cloned locally
    */
-  async isRepoCloned(params: {
-    repoId: string;
-  }): Promise<boolean> {
+  async isRepoCloned(params: { repoId: string }): Promise<boolean> {
     await this.initialize();
     return this.execute("isRepoCloned", params);
   }
@@ -661,6 +733,27 @@ export class WorkerManager {
   }
 
   /**
+   * Set git configuration for worker operations
+   */
+  async setGitConfig(config: GitConfig): Promise<void> {
+    this.gitConfig = { ...this.gitConfig, ...config };
+
+    if (this.isInitialized && this.api) {
+      try {
+        const nextJson = JSON.stringify(this.gitConfig || {});
+        if (nextJson !== this.lastGitConfigJson) {
+          if (typeof this.api.setGitConfig === "function") {
+            await this.api.setGitConfig(this.gitConfig);
+          }
+          this.lastGitConfigJson = nextJson;
+        }
+      } catch (error) {
+        console.error("Failed to update git configuration:", error);
+      }
+    }
+  }
+
+  /**
    * Add or update a single authentication token
    */
   async addAuthToken(token: AuthToken): Promise<void> {
@@ -701,13 +794,22 @@ export class WorkerManager {
   async resetRepoToRemote(repoId: string, branch?: string): Promise<any> {
     await this.initialize();
 
-    const result = await this.execute<{ success: boolean; remoteCommit?: string; error?: string; code?: GitErrorCode; category?: GitErrorCategory; hint?: string }>("resetRepoToRemote", { repoId, branch }, { timeoutMs: 60000 });
+    const result = await this.execute<{
+      success: boolean;
+      remoteCommit?: string;
+      error?: string;
+      code?: GitErrorCode;
+      category?: GitErrorCategory;
+      hint?: string;
+    }>("resetRepoToRemote", { repoId, branch }, { timeoutMs: 60000 });
 
     if (!result?.success) {
       if (isWorkerErrorResponse(result)) {
         throw createErrorFromWorkerResponse(result);
       }
-      throw createUnknownError(`Reset to remote failed (repoId=${repoId}${branch ? `, branch=${branch}` : ""})`);
+      throw createUnknownError(
+        `Reset to remote failed (repoId=${repoId}${branch ? `, branch=${branch}` : ""})`
+      );
     }
 
     console.log(`Repository ${repoId} reset to remote commit ${result.remoteCommit}`);
@@ -723,10 +825,14 @@ export class WorkerManager {
 
   private handleWorkerProgress = (event: WorkerProgressEvent | MessageEvent): void => {
     const payload = event instanceof MessageEvent ? event.data : event;
-    if (!payload || typeof payload !== 'object') {
+    if (!payload || typeof payload !== "object") {
       return;
     }
-    if ('type' in payload && payload.type !== 'clone-progress' && payload.type !== 'merge-progress') {
+    if (
+      "type" in payload &&
+      payload.type !== "clone-progress" &&
+      payload.type !== "merge-progress"
+    ) {
       return;
     }
 
@@ -736,8 +842,8 @@ export class WorkerManager {
 
     this.progressCallback({
       repoId: (payload as any).repoId,
-      phase: (payload as any).phase ?? (payload as any).step ?? 'unknown',
-      progress: typeof payload.progress === 'number' ? payload.progress : undefined,
+      phase: (payload as any).phase ?? (payload as any).step ?? "unknown",
+      progress: typeof payload.progress === "number" ? payload.progress : undefined,
       patchId: (payload as any).patchId,
       targetBranch: (payload as any).targetBranch,
       message: (payload as any).message,
@@ -748,6 +854,7 @@ export class WorkerManager {
    * Terminate the worker and clean up resources
    */
   dispose(): void {
+    WorkerManager.instances.delete(this);
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
