@@ -75,18 +75,29 @@
   let touchTimer: number | null = $state(null);
   let touchStartX = $state(0);
   let touchStartY = $state(0);
-  let touchLastX = $state(0);
-  let touchLastY = $state(0);
   let touchMoved = $state(false);
   let touchIdentifier = $state<number | null>(null);
   let touchLongPress = $state(false);
   let lastInputWasTouch = $state(false);
-  let pendingTouchMenu = $state(false);
-  let touchMenuTimer: number | null = $state(null);
+  let isTouchSelecting = $state(false);
+  let touchStartIndex = $state<number | null>(null);
+  let touchStartFilePath = $state<string | null>(null);
+  let selectionScrollParent = $state<HTMLElement | null>(null);
+  let autoScrollFrame: number | null = $state(null);
+  let autoScrollClientX = 0;
+  let autoScrollClientY = 0;
+  let autoScrollActive = false;
+  let ignoreMenuCloseUntil = $state(0);
   let showPermalinkMenu = $state(false);
   let permalinkMenuX = $state(0);
   let permalinkMenuY = $state(0);
   let diffContainer: HTMLElement | null = $state(null);
+  const LONG_PRESS_MS = 300;
+  const TOUCH_MOVE_THRESHOLD = 8;
+  const AUTO_SCROLL_THRESHOLD = 36;
+  const AUTO_SCROLL_STEP = 24;
+  const MENU_WIDTH = 192;
+  const MENU_PADDING = 8;
   let diffAnchor = $state("");
 
   const pushErrorToast = (title: string, err: unknown, fallback?: string) => {
@@ -100,6 +111,7 @@
 
   $effect(() => {
     const handler = (e: MouseEvent) => {
+      if (Date.now() < ignoreMenuCloseUntil) return;
       const target = e.target as HTMLElement;
       const inMenu = target.closest?.(".permalink-menu-popup");
       if (!inMenu) showPermalinkMenu = false;
@@ -223,6 +235,7 @@
     const container = diffContainer;
     if (!container || typeof window === "undefined") return;
     const handleSelectionChange = () => {
+      if (isTouchSelecting) return;
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
@@ -230,18 +243,6 @@
       const endNode = range.endContainer;
       if (!container.contains(startNode) || !container.contains(endNode)) return;
       setSelectionFromDom();
-      if (pendingTouchMenu && touchLongPress) {
-        const rect = range.getBoundingClientRect();
-        if (touchMenuTimer) {
-          window.clearTimeout(touchMenuTimer);
-          touchMenuTimer = null;
-        }
-        touchMenuTimer = window.setTimeout(() => {
-          if (!pendingTouchMenu || !touchLongPress) return;
-          openPermalinkMenuAt(rect.left + rect.width / 2, rect.bottom + 4);
-          pendingTouchMenu = false;
-        }, 160);
-      }
     };
     document.addEventListener("selectionchange", handleSelectionChange);
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
@@ -271,37 +272,54 @@
     const handleTouchStart = (e: TouchEvent) => {
       const target = e.target as HTMLElement;
       if (!container.contains(target)) return;
+      if (touchIdentifier !== null) return;
       const touch = e.changedTouches[0];
       if (!touch) return;
       lastInputWasTouch = true;
       touchIdentifier = touch.identifier;
       touchStartX = touch.clientX;
       touchStartY = touch.clientY;
-      touchLastX = touch.clientX;
-      touchLastY = touch.clientY;
       touchMoved = false;
       touchLongPress = false;
-      pendingTouchMenu = false;
+      isTouchSelecting = false;
+      touchStartIndex = null;
+      touchStartFilePath = null;
       clearTouchTimer();
       touchTimer = window.setTimeout(() => {
         touchLongPress = true;
-        pendingTouchMenu = true;
-      }, 300);
+        const hit = getLineFromPoint(touchStartX, touchStartY);
+        if (!hit) return;
+        isTouchSelecting = true;
+        touchStartFilePath = hit.filePath;
+        touchStartIndex = hit.index;
+        setDiffSelection(hit.filePath, hit.index, hit.index);
+        updateAutoScroll(touchStartX, touchStartY);
+      }, LONG_PRESS_MS);
     };
 
     const handleTouchMove = (e: TouchEvent) => {
       if (touchIdentifier === null) return;
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
-      touchLastX = touch.clientX;
-      touchLastY = touch.clientY;
       const dx = touch.clientX - touchStartX;
       const dy = touch.clientY - touchStartY;
-      if (Math.hypot(dx, dy) > 6) {
+      if (!isTouchSelecting && Math.hypot(dx, dy) > TOUCH_MOVE_THRESHOLD) {
         touchMoved = true;
         clearTouchTimer();
-        pendingTouchMenu = false;
+        touchIdentifier = null;
+        touchStartFilePath = null;
+        touchStartIndex = null;
+        stopAutoScroll();
+        return;
       }
+
+      if (!isTouchSelecting || !touchStartFilePath || touchStartIndex === null) return;
+      e.preventDefault();
+      const hit = getLineFromPoint(touch.clientX, touch.clientY);
+      if (hit && hit.filePath === touchStartFilePath) {
+        setDiffSelection(touchStartFilePath, touchStartIndex, hit.index);
+      }
+      updateAutoScroll(touch.clientX, touch.clientY);
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
@@ -309,12 +327,34 @@
       const touch = Array.from(e.changedTouches).find((t) => t.identifier === touchIdentifier);
       if (!touch) return;
       clearTouchTimer();
-      if (touchMenuTimer) {
-        window.clearTimeout(touchMenuTimer);
-        touchMenuTimer = null;
-      }
       touchIdentifier = null;
-      if (!touchLongPress) return;
+      stopAutoScroll();
+      if (!isTouchSelecting) return;
+
+      const selection = getSelectionRange();
+      const rect = getSelectionAnchorRect(selection) ?? getSelectionRect();
+      ignoreMenuCloseUntil = Date.now() + 500;
+      if (rect) {
+        openPermalinkMenuAt(rect.left + MENU_PADDING, rect.bottom + 4);
+      } else {
+        openPermalinkMenuAt(touch.clientX, touch.clientY);
+      }
+
+      touchLongPress = false;
+      isTouchSelecting = false;
+      touchStartFilePath = null;
+      touchStartIndex = null;
+    };
+
+    const handleTouchCancel = () => {
+      clearTouchTimer();
+      touchIdentifier = null;
+      touchLongPress = false;
+      touchMoved = false;
+      isTouchSelecting = false;
+      touchStartFilePath = null;
+      touchStartIndex = null;
+      stopAutoScroll();
     };
 
     container.addEventListener("contextmenu", handleContextMenu, { capture: true } as any);
@@ -325,17 +365,18 @@
     } as any);
     container.addEventListener("touchmove", handleTouchMove, {
       capture: true,
-      passive: true,
+      passive: false,
     } as any);
     container.addEventListener("touchend", handleTouchEnd, { capture: true } as any);
-    container.addEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+    container.addEventListener("touchcancel", handleTouchCancel, { capture: true } as any);
     return () => {
       container.removeEventListener("contextmenu", handleContextMenu, { capture: true } as any);
       container.removeEventListener("pointerdown", handlePointerDown, { capture: true } as any);
       container.removeEventListener("touchstart", handleTouchStart, { capture: true } as any);
       container.removeEventListener("touchmove", handleTouchMove, { capture: true } as any);
       container.removeEventListener("touchend", handleTouchEnd, { capture: true } as any);
-      container.removeEventListener("touchcancel", handleTouchEnd, { capture: true } as any);
+      container.removeEventListener("touchcancel", handleTouchCancel, { capture: true } as any);
+      stopAutoScroll();
     };
   });
 
@@ -500,11 +541,144 @@
     }
   }
 
+  function findSelectionScrollParent(element: HTMLElement | null): HTMLElement | null {
+    if (!element || typeof window === "undefined") return null;
+    let current: HTMLElement | null = element;
+    while (current) {
+      const style = window.getComputedStyle(current);
+      const overflowY = style.overflowY;
+      if (
+        (overflowY === "auto" || overflowY === "scroll") &&
+        current.scrollHeight > current.clientHeight
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function autoScrollForSelection(clientY: number) {
+    const threshold = AUTO_SCROLL_THRESHOLD;
+    const maxStep = AUTO_SCROLL_STEP;
+    const scrollParent =
+      selectionScrollParent &&
+      selectionScrollParent.scrollHeight > selectionScrollParent.clientHeight
+        ? selectionScrollParent
+        : diffContainer
+          ? findSelectionScrollParent(diffContainer)
+          : null;
+
+    if (scrollParent) {
+      if (scrollParent !== selectionScrollParent) {
+        selectionScrollParent = scrollParent;
+      }
+      const rect = scrollParent.getBoundingClientRect();
+      if (clientY < rect.top + threshold) {
+        const delta = Math.min(maxStep, rect.top + threshold - clientY);
+        scrollParent.scrollTop -= delta;
+      } else if (clientY > rect.bottom - threshold) {
+        const delta = Math.min(maxStep, clientY - (rect.bottom - threshold));
+        scrollParent.scrollTop += delta;
+      }
+      return;
+    }
+
+    if (clientY < threshold) {
+      window.scrollBy({ top: -maxStep });
+    } else if (clientY > window.innerHeight - threshold) {
+      window.scrollBy({ top: maxStep });
+    }
+  }
+
+  function startAutoScroll() {
+    if (autoScrollFrame !== null) return;
+    const tick = () => {
+      if (!autoScrollActive) {
+        autoScrollFrame = null;
+        return;
+      }
+      autoScrollForSelection(autoScrollClientY);
+      if (isTouchSelecting && touchStartFilePath && touchStartIndex !== null) {
+        const hit = getLineFromPoint(autoScrollClientX, autoScrollClientY);
+        if (hit && hit.filePath === touchStartFilePath) {
+          setDiffSelection(touchStartFilePath, touchStartIndex, hit.index);
+        }
+      }
+      autoScrollFrame = window.requestAnimationFrame(tick);
+    };
+    autoScrollFrame = window.requestAnimationFrame(tick);
+  }
+
+  function updateAutoScroll(clientX: number, clientY: number) {
+    autoScrollClientX = clientX;
+    autoScrollClientY = clientY;
+    if (!autoScrollActive) {
+      autoScrollActive = true;
+      startAutoScroll();
+    }
+  }
+
+  function stopAutoScroll() {
+    autoScrollActive = false;
+    if (autoScrollFrame !== null) {
+      window.cancelAnimationFrame(autoScrollFrame);
+      autoScrollFrame = null;
+    }
+  }
+
+  function getLineFromPoint(clientX: number, clientY: number) {
+    if (!diffContainer || typeof document === "undefined") return null;
+    const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const lineEl = target?.closest?.("[data-diff-index]") as HTMLElement | null;
+    if (!lineEl || !diffContainer.contains(lineEl)) return null;
+    const filePath = lineEl.dataset.filePath;
+    const index = Number(lineEl.dataset.diffIndex || "");
+    if (!filePath || !Number.isFinite(index)) return null;
+    return { filePath, index, element: lineEl };
+  }
+
+  function setDiffSelection(filePath: string, startIndex: number, endIndex: number) {
+    selectedFilePath = filePath;
+    selectedStartIndex = Math.min(startIndex, endIndex);
+    selectedEndIndex = Math.max(startIndex, endIndex);
+  }
+
+  function getSelectionAnchorRect(selection: DiffSelection | null): DOMRect | null {
+    if (!selection || !diffContainer) return null;
+    const lineEl = diffContainer.querySelector(
+      `[data-file-path="${CSS.escape(selection.filePath)}"][data-diff-index="${selection.end}"]`
+    ) as HTMLElement | null;
+    if (lineEl) return lineEl.getBoundingClientRect();
+    return null;
+  }
+
+  function getSelectionRect(): DOMRect | null {
+    if (typeof window === "undefined") return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (range.collapsed) return null;
+    const rects = Array.from(range.getClientRects());
+    if (rects.length > 0) return rects[0];
+    return range.getBoundingClientRect();
+  }
+
+  function clamp(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, value));
+  }
+
   function openPermalinkMenuAt(clientX: number, clientY: number) {
     if (!diffContainer) return;
     const rect = diffContainer.getBoundingClientRect();
-    permalinkMenuX = Math.max(8, clientX - rect.left + diffContainer.scrollLeft);
-    permalinkMenuY = Math.max(8, clientY - rect.top + diffContainer.scrollTop);
+    const minX = diffContainer.scrollLeft + MENU_PADDING;
+    const maxX = Math.max(
+      minX,
+      diffContainer.scrollLeft + diffContainer.clientWidth - MENU_WIDTH - MENU_PADDING
+    );
+    const desiredX = clientX - rect.left + diffContainer.scrollLeft;
+    permalinkMenuX = clamp(desiredX, minX, maxX);
+    permalinkMenuY = Math.max(MENU_PADDING, clientY - rect.top + diffContainer.scrollTop);
     showPermalinkMenu = true;
   }
 
@@ -671,7 +845,7 @@
   <div class="p-4 text-center text-muted-foreground">No changes to display</div>
 {:else}
   <div
-    class="min-w-fit rounded-md border border-border relative"
+    class="split-diff-view min-w-fit rounded-md border border-border relative"
     bind:this={diffContainer}
     id={diffAnchor ? `diff-${diffAnchor}` : undefined}
   >
@@ -880,5 +1054,13 @@
   :global(.diff-line-selected) {
     outline: 1px solid hsl(var(--ring));
     outline-offset: -1px;
+  }
+
+  @media (pointer: coarse) {
+    :global(.split-diff-view) {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
   }
 </style>
