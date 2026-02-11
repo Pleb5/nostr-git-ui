@@ -126,7 +126,47 @@
   const AUTO_SCROLL_STEP = 24;
   const MENU_WIDTH = 176;
   const MENU_PADDING = 8;
-  const viewerExtensions = [EditorView.editable.of(false), EditorState.readOnly.of(true)];
+  const viewerExtensions = [
+    EditorState.readOnly.of(true),
+    EditorView.editable.of(false),
+    EditorView.contentAttributes.of({
+      inputmode: "none",
+      autocapitalize: "off",
+      autocomplete: "off",
+      autocorrect: "off",
+      spellcheck: "false",
+    }),
+    EditorView.domEventHandlers({
+      beforeinput: (event) => {
+        event.preventDefault();
+        return true;
+      },
+      input: (event) => {
+        event.preventDefault();
+        return true;
+      },
+      paste: (event) => {
+        event.preventDefault();
+        return true;
+      },
+      cut: (event) => {
+        event.preventDefault();
+        return true;
+      },
+      drop: (event) => {
+        event.preventDefault();
+        return true;
+      },
+      dragstart: (event) => {
+        event.preventDefault();
+        return true;
+      },
+      dragover: (event) => {
+        event.preventDefault();
+        return true;
+      },
+    }),
+  ];
 
   $effect(() => {
     if (path === lastFilePath) return;
@@ -1410,9 +1450,11 @@
             >
               <CodeMirror
                 bind:value={content}
+                editable={false}
+                readonly={true}
                 extensions={[
-                  ...viewerExtensions,
                   ...(cmExtensions.length ? cmExtensions : [lineNumbers()]),
+                  ...viewerExtensions,
                 ]}
                 onready={handleEditorReady}
               />
@@ -1489,10 +1531,16 @@
     caret-color: hsl(var(--foreground)) !important;
     -webkit-user-select: text;
     user-select: text;
+    -webkit-user-drag: none;
+    -webkit-user-modify: read-only;
   }
 
   :global(.file-view .cm-selectionBackground) {
     background-color: hsl(var(--accent) / 0.35) !important;
+  }
+
+  :global(.file-view .cm-cursor) {
+    display: none !important;
   }
 
   :global(.file-view .cm-content ::selection) {
