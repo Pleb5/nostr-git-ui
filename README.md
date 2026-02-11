@@ -274,7 +274,7 @@ pnpm -w test:repo
 
 This uses a dedicated Vitest config to run `packages/nostr-git/packages/ui/tests/Repo.spec.ts` with:
 
-- jsdom environment and setup (`vitest.repo.config.ts`, `vitest.setup.ts`)
+- jsdom environment and setup (`tests/vitest.config.ts`, `tests/setup.ts`)
 - Stubs for `$lib/stores/context|tokens|toast`
 - Polyfills (`fake-indexeddb`, `self`)
 
