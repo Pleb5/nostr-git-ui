@@ -72,7 +72,7 @@
     try {
       await navigator.clipboard.writeText(link);
       toast.push({
-        message: "Copied to clipboard!",
+        message: "Event Link Copied!",
         timeout: 2000,
       });
     } catch (error) {
