@@ -48,12 +48,31 @@
     progress?: EditProgress;
     error?: string;
     isEditing?: boolean;
-    getProfile?: (pubkey: string) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
-    searchProfiles?: (query: string) => Promise<Array<{ pubkey: string; name?: string; picture?: string; nip05?: string; display_name?: string }>>;
+    getProfile?: (
+      pubkey: string
+    ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
+    searchProfiles?: (query: string) => Promise<
+      Array<{
+        pubkey: string;
+        name?: string;
+        picture?: string;
+        nip05?: string;
+        display_name?: string;
+      }>
+    >;
     searchRelays?: (query: string) => Promise<string[]>;
   }
 
-  const { repo, onPublishEvent, progress, error, isEditing = false, getProfile, searchProfiles, searchRelays }: Props = $props();
+  const {
+    repo,
+    onPublishEvent,
+    progress,
+    error,
+    isEditing = false,
+    getProfile,
+    searchProfiles,
+    searchRelays,
+  }: Props = $props();
 
   // Extract current values from repo
   function extractCurrentValues(): FormData {
@@ -95,29 +114,27 @@
 
   // Form state - initialize with current values
   let formData = $state<FormData>(extractCurrentValues());
-  
-  
+
   // Autocomplete state for relays
   let relaySearchQuery = $state("");
   let relaySearchResults = $state<string[]>([]);
   let showRelayAutocomplete = $state(false);
-  
+
   // Autocomplete state for hashtags
   let hashtagSearchQuery = $state("");
   let hashtagSearchResults = $state<string[]>([]);
   let showHashtagAutocomplete = $state(false);
+  let hashtagInputElement: HTMLInputElement | undefined = $state();
+  let highlightedHashtagIndex = $state(-1);
 
-
-  
-  
   // Handle relay search with debounce
   let relaySearchTimeout: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     const query = relaySearchQuery;
-    
+
     // Clear previous timeout
     if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
-    
+
     if (query && searchRelays) {
       relaySearchTimeout = setTimeout(async () => {
         try {
@@ -125,7 +142,7 @@
           relaySearchResults = results;
           showRelayAutocomplete = results.length > 0;
         } catch (e) {
-          console.error('Failed to search relays', e);
+          console.error("Failed to search relays", e);
           relaySearchResults = [];
         }
       }, 300);
@@ -133,27 +150,104 @@
       relaySearchResults = [];
       showRelayAutocomplete = false;
     }
-    
+
     // Cleanup function
     return () => {
       if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
     };
   });
-  
+
+  // Normalize hashtag: strip #, lowercase, trim
+  function normalizeHashtag(tag: string): string {
+    return tag.toLowerCase().replace(/^#/, "").trim();
+  }
+
+  // Check if a tag already exists (case-insensitive)
+  function tagExists(tag: string): boolean {
+    const normalized = normalizeHashtag(tag);
+    return formData.hashtags.some((t) => normalizeHashtag(t) === normalized);
+  }
+
+  function getNormalizedQuery(): string {
+    return normalizeHashtag(hashtagSearchQuery);
+  }
+
+  function canCreateCustomTag(): boolean {
+    const normalized = getNormalizedQuery();
+    return normalized.length > 0 && !tagExists(normalized);
+  }
+
+  function getTotalHashtagOptions(): number {
+    return hashtagSearchResults.length + (canCreateCustomTag() ? 1 : 0);
+  }
+
   // Handle hashtag search (client-side filtering)
   $effect(() => {
-    const query = hashtagSearchQuery;
-    
+    const query = hashtagSearchQuery.trim();
+
     if (query) {
-      // Use the store's search method
-      const results = commonHashtags.search(query, 10);
+      const normalized = normalizeHashtag(query);
+      const results = commonHashtags.search(normalized, 10);
       hashtagSearchResults = results;
-      showHashtagAutocomplete = results.length > 0;
+      showHashtagAutocomplete = true;
     } else {
       hashtagSearchResults = [];
       showHashtagAutocomplete = false;
     }
+    highlightedHashtagIndex = -1;
   });
+
+  function addHashtag(tag: string) {
+    const normalized = normalizeHashtag(tag);
+    if (normalized && !tagExists(normalized)) {
+      formData.hashtags = [...formData.hashtags, normalized];
+      resetHashtagInput();
+    }
+  }
+
+  function resetHashtagInput() {
+    hashtagSearchQuery = "";
+    showHashtagAutocomplete = false;
+    highlightedHashtagIndex = -1;
+  }
+
+  function handleHashtagKeydown(e: KeyboardEvent) {
+    if (!showHashtagAutocomplete && e.key === "Enter" && hashtagSearchQuery.trim()) {
+      e.preventDefault();
+      addHashtag(hashtagSearchQuery);
+      return;
+    }
+
+    if (!showHashtagAutocomplete) return;
+
+    const totalOptions = getTotalHashtagOptions();
+    const canCreate = canCreateCustomTag();
+
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        highlightedHashtagIndex = Math.min(highlightedHashtagIndex + 1, totalOptions - 1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        highlightedHashtagIndex = Math.max(highlightedHashtagIndex - 1, -1);
+        break;
+      case "Enter":
+        e.preventDefault();
+        if (highlightedHashtagIndex >= 0 && highlightedHashtagIndex < hashtagSearchResults.length) {
+          addHashtag(hashtagSearchResults[highlightedHashtagIndex]);
+        } else if (highlightedHashtagIndex === hashtagSearchResults.length && canCreate) {
+          addHashtag(hashtagSearchQuery);
+        } else if (canCreate) {
+          addHashtag(hashtagSearchQuery);
+        }
+        break;
+      case "Escape":
+        e.preventDefault();
+        resetHashtagInput();
+        break;
+    }
+  }
 
   // Load repository references with robust fallback logic
   let availableRefs: Array<{
@@ -163,9 +257,10 @@
     commitId: string;
   }> = [];
   let loadingRefs = $state(true);
-  
+
   // Load commit history for earliest unique commit selection
-  let availableCommits: Array<{ oid: string; message: string; author: string; timestamp: number }> = [];
+  let availableCommits: Array<{ oid: string; message: string; author: string; timestamp: number }> =
+    [];
   let loadingCommits = $state(false);
   let commitSearchQuery = $state("");
   let showCommitDropdown = $state(false);
@@ -204,25 +299,30 @@
 
   // Get available branches for dropdown
   let availableBranches = $derived(availableRefs.filter((ref) => ref.type === "heads"));
-  
+
   // Load commits when default branch changes
   $effect(() => {
     if (repo && formData.defaultBranch && !loadingRefs) {
-      console.log('[EditRepoPanel] Loading commits for branch:', formData.defaultBranch);
+      console.log("[EditRepoPanel] Loading commits for branch:", formData.defaultBranch);
       loadingCommits = true;
-      
+
       // First try to get already loaded commits
       const existingCommits = repo.commits;
-      console.log('[EditRepoPanel] Existing commits:', existingCommits?.length);
-      
+      console.log("[EditRepoPanel] Existing commits:", existingCommits?.length);
+
       if (existingCommits && existingCommits.length > 0) {
         availableCommits = existingCommits;
         loadingCommits = false;
       } else {
         // Try to load commits
-        repo.getCommitHistory({ branch: formData.defaultBranch, depth: 100 })
+        repo
+          .getCommitHistory({ branch: formData.defaultBranch, depth: 100 })
           .then((commits) => {
-            console.log('[EditRepoPanel] Loaded commits from getCommitHistory:', commits?.length, commits);
+            console.log(
+              "[EditRepoPanel] Loaded commits from getCommitHistory:",
+              commits?.length,
+              commits
+            );
             availableCommits = commits || repo.commits || [];
             loadingCommits = false;
           })
@@ -235,27 +335,34 @@
       }
     }
   });
-  
+
   // Filter commits based on search query
   let filteredCommits = $derived.by(() => {
-    console.log('[EditRepoPanel] Filtering commits, query:', commitSearchQuery, 'available:', availableCommits.length);
+    console.log(
+      "[EditRepoPanel] Filtering commits, query:",
+      commitSearchQuery,
+      "available:",
+      availableCommits.length
+    );
     if (!commitSearchQuery) {
       const results = availableCommits.slice(0, 20);
-      console.log('[EditRepoPanel] No query, returning first 20:', results.length);
+      console.log("[EditRepoPanel] No query, returning first 20:", results.length);
       return results;
     }
     const query = commitSearchQuery.toLowerCase();
     const results = availableCommits
-      .filter(c => {
-        const oid = c.oid || '';
-        const message = c.message || '';
-        const author = c.author || '';
-        return oid.toLowerCase().includes(query) ||
-               message.toLowerCase().includes(query) ||
-               author.toLowerCase().includes(query);
+      .filter((c) => {
+        const oid = c.oid || "";
+        const message = c.message || "";
+        const author = c.author || "";
+        return (
+          oid.toLowerCase().includes(query) ||
+          message.toLowerCase().includes(query) ||
+          author.toLowerCase().includes(query)
+        );
       })
       .slice(0, 20);
-    console.log('[EditRepoPanel] Filtered results:', results.length);
+    console.log("[EditRepoPanel] Filtered results:", results.length);
     return results;
   });
 
@@ -317,7 +424,9 @@
     }
 
     // Maintainers validation (accept npub or 64-char hex)
-    const invalidMaintainers = (Array.isArray(formData.maintainers) ? formData.maintainers : []).filter((m) => {
+    const invalidMaintainers = (
+      Array.isArray(formData.maintainers) ? formData.maintainers : []
+    ).filter((m) => {
       const v = m?.trim?.();
       if (!v) return false;
       return !/^npub1[ac-hj-np-z02-9]{58}$/.test(v) && !/^[a-fA-F0-9]{64}$/.test(v);
@@ -327,13 +436,17 @@
     }
 
     // Relays validation (wss:// URLs)
-    const invalidRelays = (Array.isArray(formData.relays) ? formData.relays : []).filter((r) => r?.trim?.() && !r.match(/^wss?:\/\/.+/));
+    const invalidRelays = (Array.isArray(formData.relays) ? formData.relays : []).filter(
+      (r) => r?.trim?.() && !r.match(/^wss?:\/\/.+/)
+    );
     if (invalidRelays.length > 0) {
       errors.relays = "Relays must be valid WebSocket URLs (wss://...)";
     }
 
     // Web URLs validation
-    const invalidWebUrls = (Array.isArray(formData.webUrls) ? formData.webUrls : []).filter((w) => w?.trim?.() && !w.match(/^https?:\/\/.+/));
+    const invalidWebUrls = (Array.isArray(formData.webUrls) ? formData.webUrls : []).filter(
+      (w) => w?.trim?.() && !w.match(/^https?:\/\/.+/)
+    );
     if (invalidWebUrls.length > 0) {
       errors.webUrls = "Web URLs must be valid HTTP/HTTPS URLs";
     }
@@ -497,7 +610,7 @@
     const norm = (arr: string[] | undefined | any) => {
       if (!arr) return [];
       if (!Array.isArray(arr)) return [];
-      return arr.filter((v) => v && typeof v === 'string' && v.trim());
+      return arr.filter((v) => v && typeof v === "string" && v.trim());
     };
 
     const basicChanged =
@@ -699,21 +812,23 @@
             maxSelections={50}
             showAvatars={true}
             compact={false}
-            {getProfile}
-            {searchProfiles}
+            getProfile={getProfile}
+            searchProfiles={searchProfiles}
             add={(pubkey: string) => {
               if (!formData.maintainers.includes(pubkey)) {
                 formData.maintainers = [...formData.maintainers, pubkey];
               }
             }}
-            {...({ remove: (pubkey: string) => {
-              formData.maintainers = formData.maintainers.filter(p => p !== pubkey);
-            } } as any)}
+            {...{
+              remove: (pubkey: string) => {
+                formData.maintainers = formData.maintainers.filter((p) => p !== pubkey);
+              },
+            } as any}
             onDeleteLabel={(evt) => {
               // Handle LabelEvent deletion - extract pubkey and remove from array
-              const pubkey = evt.tags?.find(t => t[0] === "p")?.[1];
+              const pubkey = evt.tags?.find((t) => t[0] === "p")?.[1];
               if (pubkey) {
-                formData.maintainers = formData.maintainers.filter(p => p !== pubkey);
+                formData.maintainers = formData.maintainers.filter((p) => p !== pubkey);
               }
             }}
           />
@@ -759,22 +874,24 @@
                 </button>
               </div>
             {/each}
-            
+
             <!-- Autocomplete input for adding relays -->
             {#if searchRelays}
               <div class="relative">
                 <input
                   type="text"
                   bind:value={relaySearchQuery}
-                  onfocus={() => showRelayAutocomplete = relaySearchResults.length > 0}
-                  onblur={() => setTimeout(() => showRelayAutocomplete = false, 200)}
+                  onfocus={() => (showRelayAutocomplete = relaySearchResults.length > 0)}
+                  onblur={() => setTimeout(() => (showRelayAutocomplete = false), 200)}
                   disabled={isEditing}
                   autocomplete="off"
                   class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
                   placeholder="Search for relays..."
                 />
                 {#if showRelayAutocomplete && relaySearchResults.length > 0}
-                  <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                  >
                     {#each relaySearchResults as relayUrl}
                       <button
                         type="button"
@@ -948,37 +1065,89 @@
                 </button>
               </div>
             {/each}
-            
+
             <!-- Autocomplete input for adding hashtags -->
             <div class="relative">
               <input
+                bind:this={hashtagInputElement}
                 type="text"
                 bind:value={hashtagSearchQuery}
-                onfocus={() => showHashtagAutocomplete = hashtagSearchResults.length > 0}
-                onblur={() => setTimeout(() => showHashtagAutocomplete = false, 200)}
+                onfocus={() => {
+                  if (hashtagSearchQuery.trim()) {
+                    showHashtagAutocomplete =
+                      hashtagSearchResults.length > 0 || canCreateCustomTag();
+                  }
+                }}
+                onblur={() => {
+                  setTimeout(() => {
+                    showHashtagAutocomplete = false;
+                    highlightedHashtagIndex = -1;
+                  }, 250);
+                }}
+                onkeydown={handleHashtagKeydown}
                 disabled={isEditing}
                 autocomplete="off"
                 class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder="Search hashtags..."
+                placeholder="Search or type to add tags (press Enter)"
               />
-              {#if showHashtagAutocomplete && hashtagSearchResults.length > 0}
-                <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                  {#each hashtagSearchResults as tag}
+              {#if showHashtagAutocomplete}
+                <div
+                  class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                >
+                  {#each hashtagSearchResults as tag, index}
+                    {@const isAlreadyAdded = tagExists(tag)}
                     <button
                       type="button"
-                      onclick={() => {
-                        if (!formData.hashtags.includes(tag)) {
-                          formData.hashtags = [...formData.hashtags, tag];
-                        }
-                        hashtagSearchQuery = "";
-                        showHashtagAutocomplete = false;
+                      aria-selected={index === highlightedHashtagIndex}
+                      disabled={isAlreadyAdded}
+                      onmousedown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                       }}
-                      class="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm flex items-center gap-2"
+                      onclick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (!isAlreadyAdded) {
+                          addHashtag(tag);
+                        }
+                      }}
+                      class="w-full text-left px-3 py-2 text-sm flex items-center gap-2
+                             {index === highlightedHashtagIndex
+                        ? 'bg-gray-700'
+                        : 'hover:bg-gray-700'}
+                             {isAlreadyAdded ? 'opacity-50 cursor-not-allowed' : ''}"
                     >
                       <Hash class="w-3 h-3 text-gray-400" />
                       {tag}
+                      {#if isAlreadyAdded}
+                        <span class="text-xs text-gray-500 ml-auto">(already added)</span>
+                      {/if}
                     </button>
                   {/each}
+                  {#if canCreateCustomTag()}
+                    <button
+                      type="button"
+                      aria-selected={highlightedHashtagIndex === hashtagSearchResults.length}
+                      onmousedown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onclick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        addHashtag(hashtagSearchQuery);
+                      }}
+                      class="w-full text-left px-3 py-2 text-sm flex items-center gap-2 border-t border-gray-700
+                             {highlightedHashtagIndex === hashtagSearchResults.length
+                        ? 'bg-gray-700'
+                        : 'hover:bg-gray-700'}"
+                    >
+                      <Plus class="w-3 h-3 text-blue-400" />
+                      <span class="text-blue-400 font-medium"
+                        >Create tag: {getNormalizedQuery()}</span
+                      >
+                    </button>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -1006,20 +1175,23 @@
               id="earliest-commit"
               type="text"
               bind:value={commitSearchQuery}
-              onfocus={() => showCommitDropdown = availableCommits.length > 0}
-              onblur={() => setTimeout(() => showCommitDropdown = false, 200)}
+              onfocus={() => (showCommitDropdown = availableCommits.length > 0)}
+              onblur={() => setTimeout(() => (showCommitDropdown = false), 200)}
               disabled={isEditing || loadingCommits}
               autocomplete="off"
               class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed font-mono text-sm"
               class:border-red-500={validationErrors.earliestUniqueCommit}
-              placeholder={formData.earliestUniqueCommit || "Search commits or paste commit hash..."}
+              placeholder={formData.earliestUniqueCommit ||
+                "Search commits or paste commit hash..."}
               aria-describedby={validationErrors.earliestUniqueCommit
                 ? "earliest-commit-error"
                 : undefined}
               aria-invalid={validationErrors.earliestUniqueCommit ? "true" : "false"}
             />
             {#if showCommitDropdown && filteredCommits.length > 0}
-              <div class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-96 overflow-y-auto">
+              <div
+                class="absolute z-10 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-96 overflow-y-auto"
+              >
                 {#each filteredCommits as commit}
                   <button
                     type="button"
@@ -1033,10 +1205,16 @@
                     <div class="flex items-start gap-2">
                       <GitCommit class="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
                       <div class="flex-1 min-w-0">
-                        <div class="text-xs font-mono text-blue-400">{commit.oid?.slice(0, 7) || 'unknown'}</div>
-                        <div class="text-sm text-white truncate">{commit.message?.split('\n')[0] || 'No message'}</div>
+                        <div class="text-xs font-mono text-blue-400">
+                          {commit.oid?.slice(0, 7) || "unknown"}
+                        </div>
+                        <div class="text-sm text-white truncate">
+                          {commit.message?.split("\n")[0] || "No message"}
+                        </div>
                         <div class="text-xs text-gray-400 mt-0.5">
-                          {commit.author || 'Unknown'} · {new Date((commit.timestamp || 0) * 1000).toLocaleDateString()}
+                          {commit.author || "Unknown"} · {new Date(
+                            (commit.timestamp || 0) * 1000
+                          ).toLocaleDateString()}
                         </div>
                       </div>
                     </div>
@@ -1046,7 +1224,9 @@
             {/if}
           </div>
           {#if formData.earliestUniqueCommit}
-            <div class="mt-2 p-2 bg-gray-800/50 rounded text-xs font-mono text-gray-300 flex items-center justify-between">
+            <div
+              class="mt-2 p-2 bg-gray-800/50 rounded text-xs font-mono text-gray-300 flex items-center justify-between"
+            >
               <span class="truncate">{formData.earliestUniqueCommit}</span>
               <button
                 type="button"
@@ -1054,7 +1234,7 @@
                   e.preventDefault();
                   e.stopPropagation();
                   formData.earliestUniqueCommit = "";
-                  console.log('[EditRepoPanel] Cleared earliest commit');
+                  console.log("[EditRepoPanel] Cleared earliest commit");
                 }}
                 class="ml-2 text-red-400 hover:text-red-300 flex-shrink-0"
                 aria-label="Clear commit"

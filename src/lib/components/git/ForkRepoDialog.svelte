@@ -8,13 +8,20 @@
     ChevronDown,
     ExternalLink,
     GitCommit,
+    Hash,
+    Globe,
+    Users,
+    Plus,
+    Trash2,
   } from "@lucide/svelte";
   import { Repo } from "./Repo.svelte";
   import { useForkRepo } from "../../hooks/useForkRepo.svelte";
   import { tokens } from "$lib/stores/tokens";
+  import { PeoplePicker } from "@nostr-git/ui";
+  import { commonHashtags } from "../../stores/hashtags";
   import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
   import type { Token } from "$lib/stores/tokens";
-  import type { ForkResult } from "../../hooks/useForkRepo.svelte";
+  import type { ForkResult, ForkConfig } from "../../hooks/useForkRepo.svelte";
   import { toast } from "../../stores/toast";
   import { validateGraspServerUrl } from "@nostr-git/core/events";
   import {
@@ -34,6 +41,20 @@
     useForkRepoImpl?: typeof useForkRepo;
     // Optional callback to navigate to the forked repository after fork completion
     navigateToForkedRepo?: (result: ForkResult) => void;
+    defaultRelays?: string[];
+    getProfile?: (
+      pubkey: string
+    ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
+    searchProfiles?: (query: string) => Promise<
+      Array<{
+        pubkey: string;
+        name?: string;
+        picture?: string;
+        nip05?: string;
+        display_name?: string;
+      }>
+    >;
+    searchRelays?: (query: string) => Promise<string[]>;
   }
 
   const {
@@ -43,6 +64,10 @@
     graspServerUrls = [],
     useForkRepoImpl,
     navigateToForkedRepo,
+    defaultRelays = [],
+    getProfile,
+    searchProfiles,
+    searchRelays,
   }: Props = $props();
 
   // Initialize the useForkRepo hook (allow DI override)
@@ -182,6 +207,54 @@
   let showCommitDropdown = $state(false);
   let commitInputFocused = $state(false);
 
+  // Fork metadata
+  let tags = $state<string[]>([]);
+  let maintainers = $state<string[]>([]);
+  let preferredRelays = $state<string[]>([]);
+  let relaysInitialized = $state(false);
+  let tagsInitialized = $state(false);
+  let maintainersInitialized = $state(false);
+
+  $effect(() => {
+    if (!relaysInitialized && preferredRelays.length === 0 && defaultRelays.length > 0) {
+      preferredRelays = [...defaultRelays];
+      relaysInitialized = true;
+    }
+  });
+
+  $effect(() => {
+    if (tagsInitialized) return;
+    if (!repo?.repoEvent) return;
+    const repoTags = (repo?.hashtags || []).filter(Boolean);
+    if (tags.length === 0 && repoTags.length > 0) {
+      tags = [...repoTags];
+    }
+    tagsInitialized = true;
+  });
+
+  $effect(() => {
+    if (maintainersInitialized) return;
+    if (!repo?.repoEvent) return;
+    const repoMaintainers = (repo?.maintainers || []).filter(Boolean);
+    if (maintainers.length === 0 && repoMaintainers.length > 0) {
+      maintainers = [...repoMaintainers];
+    }
+    maintainersInitialized = true;
+  });
+
+  // Autocomplete state for relays
+  let relaySearchQuery = $state("");
+  let relaySearchResults = $state<string[]>([]);
+  let showRelayAutocomplete = $state(false);
+  let relayInputElement: HTMLInputElement | undefined = $state();
+
+  // Autocomplete state for hashtags
+  let hashtagSearchQuery = $state("");
+  let hashtagSearchResults = $state<string[]>([]);
+  let showHashtagAutocomplete = $state(false);
+  let hashtagInputElement: HTMLInputElement | undefined = $state();
+  let highlightedHashtagIndex = $state(-1);
+
   // Local reactive list of GRASP servers. Seed from prop, keep updated from profile and prop changes.
   let graspServerUrlsLocal = $state<string[]>([]);
 
@@ -208,6 +281,135 @@
   const knownGraspServers = $derived.by(() =>
     (graspServerUrlsLocal || []).map((u) => u.trim()).filter(Boolean)
   );
+
+  // Handle relay search with debounce
+  let relaySearchTimeout: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const query = relaySearchQuery;
+    if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
+
+    if (query && searchRelays) {
+      relaySearchTimeout = setTimeout(async () => {
+        try {
+          const results = await searchRelays(query);
+          relaySearchResults = results;
+          showRelayAutocomplete = results.length > 0;
+        } catch (e) {
+          console.error("Failed to search relays", e);
+          relaySearchResults = [];
+        }
+      }, 300);
+    } else {
+      relaySearchResults = [];
+      showRelayAutocomplete = false;
+    }
+
+    return () => {
+      if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
+    };
+  });
+
+  // Normalize hashtag: strip #, lowercase, trim
+  function normalizeHashtag(tag: string): string {
+    return tag.toLowerCase().replace(/^#/, "").trim();
+  }
+
+  // Check if a tag already exists (case-insensitive)
+  function tagExists(tag: string): boolean {
+    const normalized = normalizeHashtag(tag);
+    return tags.some((t) => normalizeHashtag(t) === normalized);
+  }
+
+  function getNormalizedQuery(): string {
+    return normalizeHashtag(hashtagSearchQuery);
+  }
+
+  function canCreateCustomTag(): boolean {
+    const normalized = getNormalizedQuery();
+    return normalized.length > 0 && !tagExists(normalized);
+  }
+
+  function getTotalHashtagOptions(): number {
+    return hashtagSearchResults.length + (canCreateCustomTag() ? 1 : 0);
+  }
+
+  // Handle hashtag search (client-side filtering)
+  $effect(() => {
+    const query = hashtagSearchQuery.trim();
+
+    if (query) {
+      const normalized = normalizeHashtag(query);
+      hashtagSearchResults = commonHashtags.search(normalized, 10);
+      showHashtagAutocomplete = true;
+    } else {
+      hashtagSearchResults = [];
+      showHashtagAutocomplete = false;
+    }
+    highlightedHashtagIndex = -1;
+  });
+
+  function addHashtag(tag: string) {
+    const normalized = normalizeHashtag(tag);
+    if (normalized && !tagExists(normalized)) {
+      tags = [...tags, normalized];
+      resetHashtagInput();
+    }
+  }
+
+  function resetHashtagInput() {
+    hashtagSearchQuery = "";
+    showHashtagAutocomplete = false;
+    highlightedHashtagIndex = -1;
+  }
+
+  function handleHashtagKeydown(e: KeyboardEvent) {
+    if (!showHashtagAutocomplete && e.key === "Enter" && hashtagSearchQuery.trim()) {
+      e.preventDefault();
+      addHashtag(hashtagSearchQuery);
+      return;
+    }
+
+    if (!showHashtagAutocomplete) return;
+
+    const totalOptions = getTotalHashtagOptions();
+    const canCreate = canCreateCustomTag();
+
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        highlightedHashtagIndex = Math.min(highlightedHashtagIndex + 1, totalOptions - 1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        highlightedHashtagIndex = Math.max(highlightedHashtagIndex - 1, -1);
+        break;
+      case "Enter":
+        e.preventDefault();
+        if (highlightedHashtagIndex >= 0 && highlightedHashtagIndex < hashtagSearchResults.length) {
+          addHashtag(hashtagSearchResults[highlightedHashtagIndex]);
+        } else if (highlightedHashtagIndex === hashtagSearchResults.length && canCreate) {
+          addHashtag(hashtagSearchQuery);
+        } else if (canCreate) {
+          addHashtag(hashtagSearchQuery);
+        }
+        break;
+      case "Escape":
+        e.preventDefault();
+        resetHashtagInput();
+        break;
+    }
+  }
+
+  // Helpers for multi-value fields
+  function addItem(arr: string[]): string[] {
+    return [...(arr || []), ""];
+  }
+  function removeItem(arr: string[], index: number): string[] {
+    return (arr || []).filter((_, i) => i !== index);
+  }
+  function updateItem(arr: string[], index: number, value: string): string[] {
+    return (arr || []).map((item, i) => (i === index ? value : item));
+  }
 
   // Load commits on mount
   $effect(() => {
@@ -677,24 +879,31 @@
         relayParam = val;
       }
 
-      const result = await forkState.forkRepository(originalRepo, {
+      const provider: ForkConfig["provider"] =
+        selectedService === "github.com"
+          ? "github"
+          : selectedService === "gitlab.com"
+            ? "gitlab"
+            : selectedService === "gitea.com"
+              ? "gitea"
+              : selectedService === "bitbucket.org"
+                ? "bitbucket"
+                : selectedService === "grasp"
+                  ? "grasp"
+                  : "github";
+
+      const forkConfig: ForkConfig = {
         forkName,
         visibility: "public",
-        provider:
-          selectedService === "github.com"
-            ? "github"
-            : selectedService === "gitlab.com"
-              ? "gitlab"
-              : selectedService === "gitea.com"
-                ? "gitea"
-                : selectedService === "bitbucket.org"
-                  ? "bitbucket"
-                  : selectedService === "grasp"
-                    ? "grasp"
-                    : "github",
+        provider,
         relayUrl: relayParam,
         earliestUniqueCommit: earliestUniqueCommit || undefined,
-      });
+        tags: tags,
+        maintainers: maintainers,
+        relays: preferredRelays,
+      };
+
+      const result = await forkState.forkRepository(originalRepo, forkConfig);
 
       if (result) {
         console.log("✅ ForkRepoDialog: Fork completed successfully:", result);
@@ -782,7 +991,7 @@
   >
     <div
       bind:this={dialogEl}
-      class="bg-gray-900 rounded-lg shadow-xl w-full max-w-md border border-gray-700 overflow-hidden relative z-[60] outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 transform-gpu"
+      class="bg-gray-900 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden border border-gray-700 relative z-[60] outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 transform-gpu"
     >
       <!-- Header -->
       <div class="flex items-center justify-between p-6 border-b border-gray-700">
@@ -1044,6 +1253,254 @@
               <p class="text-gray-400 text-xs mt-1">
                 The commit ID of the earliest unique commit to identify this fork among other forks
               </p>
+            </div>
+
+            <!-- Fork Metadata -->
+            <div class="space-y-4 border-t border-gray-700 pt-4">
+              <div>
+                <h4 class="text-sm font-medium text-gray-300">Fork metadata</h4>
+                <p class="text-xs text-gray-400">
+                  Optional NIP-34 fields for your fork announcement.
+                </p>
+              </div>
+
+              <!-- Tags / Topics -->
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">
+                  <Hash class="w-4 h-4 inline mr-1" />
+                  Tags/Topics
+                </label>
+                {#if tags.length > 0}
+                  <div class="flex flex-wrap gap-2 mb-2">
+                    {#each tags as tag}
+                      <div class="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 text-sm">
+                        <Hash class="w-3 h-3 text-gray-400" />
+                        <span class="text-white text-sm">{tag}</span>
+                        <button
+                          type="button"
+                          onclick={() => (tags = tags.filter((t) => t !== tag))}
+                          class="text-gray-400 hover:text-gray-200 transition-colors"
+                          aria-label="Remove tag"
+                        >
+                          <X class="w-4 h-4" />
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
+                <div class="relative">
+                  <input
+                    bind:this={hashtagInputElement}
+                    type="text"
+                    bind:value={hashtagSearchQuery}
+                    onfocus={() => {
+                      if (hashtagSearchQuery.trim()) {
+                        showHashtagAutocomplete =
+                          hashtagSearchResults.length > 0 || canCreateCustomTag();
+                      }
+                    }}
+                    onblur={() => {
+                      setTimeout(() => {
+                        showHashtagAutocomplete = false;
+                        highlightedHashtagIndex = -1;
+                      }, 250);
+                    }}
+                    onkeydown={handleHashtagKeydown}
+                    autocomplete="off"
+                    class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Search or type to add tags (press Enter)"
+                  />
+                  {#if showHashtagAutocomplete}
+                    <div
+                      role="listbox"
+                      aria-label="Hashtag suggestions"
+                      class="absolute z-[50] w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                    >
+                      {#each hashtagSearchResults as tag, index}
+                        {@const isAlreadyAdded = tagExists(tag)}
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={index === highlightedHashtagIndex}
+                          disabled={isAlreadyAdded}
+                          onmousedown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onclick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (!isAlreadyAdded) {
+                              addHashtag(tag);
+                            }
+                          }}
+                          class="w-full text-left px-3 py-2 text-sm flex items-center gap-2
+                                 {index === highlightedHashtagIndex
+                            ? 'bg-gray-700'
+                            : 'hover:bg-gray-700'}
+                                 {isAlreadyAdded ? 'opacity-50 cursor-not-allowed' : ''}"
+                        >
+                          <Hash class="w-3 h-3 text-gray-400" />
+                          <span class="flex-1">{tag}</span>
+                          {#if isAlreadyAdded}
+                            <span class="text-xs text-gray-500">(already added)</span>
+                          {/if}
+                        </button>
+                      {/each}
+                      {#if canCreateCustomTag()}
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={highlightedHashtagIndex === hashtagSearchResults.length}
+                          onmousedown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onclick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            addHashtag(hashtagSearchQuery);
+                          }}
+                          class="w-full text-left px-3 py-2 text-sm flex items-center gap-2 border-t border-gray-700
+                                 {highlightedHashtagIndex === hashtagSearchResults.length
+                            ? 'bg-gray-700'
+                            : 'hover:bg-gray-700'}"
+                        >
+                          <Plus class="w-3 h-3 text-blue-400" />
+                          <span class="text-blue-400 font-medium"
+                            >Create tag: {getNormalizedQuery()}</span
+                          >
+                        </button>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+                <p class="mt-1 text-xs text-gray-400">Add tags or topics for this repository</p>
+              </div>
+
+              <!-- Additional Maintainers -->
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">
+                  <Users class="w-4 h-4 inline mr-1" />
+                  Additional Maintainers
+                </label>
+                <PeoplePicker
+                  selected={maintainers}
+                  placeholder="Search by name, nip-05, or npub..."
+                  maxSelections={50}
+                  showAvatars={true}
+                  compact={false}
+                  getProfile={getProfile}
+                  searchProfiles={searchProfiles}
+                  add={(pubkey: string) => {
+                    if (!maintainers.includes(pubkey)) {
+                      maintainers = [...maintainers, pubkey];
+                    }
+                  }}
+                  remove={(pubkey: string) => {
+                    maintainers = maintainers.filter((p) => p !== pubkey);
+                  }}
+                />
+                <p class="mt-1 text-xs text-gray-400">Maintainer public keys (npub or hex)</p>
+              </div>
+
+              <!-- Preferred Relays -->
+              <div>
+                <label class="block text-sm font-medium text-gray-300 mb-2">
+                  <Globe class="w-4 h-4 inline mr-1" />
+                  Preferred Relays
+                </label>
+                <div class="space-y-2">
+                  {#each preferredRelays as r, index}
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={preferredRelays[index]}
+                        oninput={(e) =>
+                          (preferredRelays = updateItem(
+                            preferredRelays,
+                            index,
+                            (e.target as HTMLInputElement).value
+                          ))}
+                        placeholder="wss://relay.example.com"
+                        class="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
+                      <button
+                        type="button"
+                        class="p-2 text-red-400 hover:text-red-300"
+                        aria-label="Remove relay"
+                        onclick={() => (preferredRelays = removeItem(preferredRelays, index))}
+                      >
+                        <Trash2 class="w-4 h-4" />
+                      </button>
+                    </div>
+                  {/each}
+
+                  {#if searchRelays}
+                    <div class="relative">
+                      <input
+                        bind:this={relayInputElement}
+                        type="text"
+                        bind:value={relaySearchQuery}
+                        onfocus={() => (showRelayAutocomplete = relaySearchResults.length > 0)}
+                        onblur={(e) => {
+                          setTimeout(() => {
+                            if (
+                              !e.relatedTarget ||
+                              !(e.relatedTarget as HTMLElement).closest(
+                                "#relay-suggestions-listbox"
+                              )
+                            ) {
+                              showRelayAutocomplete = false;
+                            }
+                          }, 200);
+                        }}
+                        autocomplete="off"
+                        class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Search for relays..."
+                      />
+                      {#if showRelayAutocomplete && relaySearchResults.length > 0}
+                        <div
+                          id="relay-suggestions-listbox"
+                          class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                        >
+                          {#each relaySearchResults as relayUrl}
+                            <button
+                              type="button"
+                              onmousedown={(e) => {
+                                e.preventDefault();
+                              }}
+                              onclick={() => {
+                                if (!preferredRelays.includes(relayUrl)) {
+                                  preferredRelays = [...preferredRelays, relayUrl];
+                                }
+                                relaySearchQuery = "";
+                                showRelayAutocomplete = false;
+                              }}
+                              class="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm font-mono"
+                            >
+                              {relayUrl}
+                            </button>
+                          {/each}
+                        </div>
+                      {/if}
+                    </div>
+                  {:else}
+                    <button
+                      type="button"
+                      class="px-3 py-2 text-blue-400 hover:text-blue-300"
+                      onclick={() => (preferredRelays = addItem(preferredRelays))}
+                    >
+                      <Plus class="w-4 h-4 inline mr-1" />
+                      Add relay
+                    </button>
+                  {/if}
+                </div>
+                <p class="mt-1 text-xs text-gray-400">
+                  Defaults from the source repo relays (or global defaults if none).
+                </p>
+              </div>
             </div>
 
             <!-- Existing Fork Status -->

@@ -1,9 +1,6 @@
 import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
 import type { Token } from "$lib/stores/tokens";
-import {
-  createRepoAnnouncementEvent,
-  createRepoStateEvent,
-} from "@nostr-git/core/events";
+import { createRepoAnnouncementEvent, createRepoStateEvent } from "@nostr-git/core/events";
 import { tokens as tokensStore } from "$lib/stores/tokens";
 import { getGitServiceApi } from "@nostr-git/core/git";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
@@ -15,6 +12,9 @@ export interface ForkConfig {
   provider?: "github" | "gitlab" | "gitea" | "bitbucket" | "grasp";
   relayUrl?: string; // Required for GRASP
   earliestUniqueCommit?: string; // Optional commit hash to identify the fork
+  tags?: string[]; // NIP-34 topic tags
+  maintainers?: string[]; // Additional maintainers
+  relays?: string[]; // Preferred relays
 }
 
 export interface ForkProgress {
@@ -77,7 +77,7 @@ function parseForkErrorStructure(errorMessage: string): ParsedForkError {
       /named "([^"]+)".*?URL: (.+)/,
       /"([^"]+)".*?URL: (.+)/,
     ];
-    
+
     for (const pattern of patterns) {
       const match = errorMessage.match(pattern);
       if (match) {
@@ -110,7 +110,7 @@ function parseForkErrorStructure(errorMessage: string): ParsedForkError {
       /named "([^"]+)".*?URL: (.+)/,
       /"([^"]+)".*?URL: (.+)/,
     ];
-    
+
     for (const pattern of patterns) {
       const match = errorMessage.match(pattern);
       if (match) {
@@ -140,7 +140,10 @@ function parseForkErrorStructure(errorMessage: string): ParsedForkError {
 /**
  * Convert parsed fork error into user-friendly message
  */
-function formatForkErrorMessage(parsed: ParsedForkError, defaultProvider: string = "github"): string {
+function formatForkErrorMessage(
+  parsed: ParsedForkError,
+  defaultProvider: string = "github"
+): string {
   const provider = parsed.provider || defaultProvider;
   const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
 
@@ -285,7 +288,13 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
    * 4. Create and emit NIP-34 events
    */
   async function forkRepository(
-    originalRepo: { owner: string; name: string; description?: string; cloneUrls?: string[]; sourceRepoId?: string },
+    originalRepo: {
+      owner: string;
+      name: string;
+      description?: string;
+      cloneUrls?: string[];
+      sourceRepoId?: string;
+    },
     config: ForkConfig
   ): Promise<ForkResult | null> {
     if (isForking) {
@@ -351,7 +360,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       // Step 2: Get current user and fork repository using tryTokensForHost for fallback retries
       updateProgress("user", "Getting current user info...", "running");
-      
+
       // Use passed workerApi if available, otherwise create new worker
       let gitWorkerApi: any, worker: Worker;
       if (options.workerApi) {
@@ -372,11 +381,11 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       // EventIO handles signing internally - no more signer registration needed!
       let workerResult: any;
-      
+
       if (provider === "grasp") {
         // EventIO will be configured by the worker internally
         console.log("🔐 GRASP fork - EventIO handles signing internally (no more signer passing!)");
-        
+
         // For GRASP, proceed directly without token retry
         const gitServiceApi = getGitServiceApi(provider as any, providerToken!, relayUrl);
         const userData = await gitServiceApi.getCurrentUser();
@@ -427,17 +436,17 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
               // Note: onProgress callback removed - functions cannot be serialized through Comlink
             });
             console.log("[useForkRepo] forkAndCloneRepo returned", result);
-            
+
             if (!result.success) {
               const ctx = `owner=${originalRepo.owner} repo=${originalRepo.name} forkName=${config.forkName} provider=${provider}`;
               throw new Error(`${result.error || "Fork operation failed"} (${ctx})`);
             }
-            
+
             return result;
           }
         );
       }
-      
+
       if (!workerResult.success) {
         const ctx = `owner=${originalRepo.owner} repo=${originalRepo.name} forkName=${config.forkName} provider=${provider}`;
         throw new Error(`${workerResult.error || "Fork operation failed"} (${ctx})`);
@@ -454,7 +463,18 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         cloneUrls.push(relayUrl);
       }
 
-      const relays = provider === "grasp" && relayUrl ? [relayUrl] : undefined;
+      const requestedRelays = (config.relays || []).map((r) => r.trim()).filter(Boolean);
+      let relays = [...requestedRelays];
+      if (provider === "grasp" && relayUrl && !relays.includes(relayUrl)) {
+        relays.push(relayUrl);
+      }
+
+      const rawMaintainers = [userPubkey, ...(config.maintainers || [])].filter(
+        (value): value is string => Boolean(value && value.trim())
+      );
+      const maintainers = Array.from(new Set(rawMaintainers));
+
+      const hashtags = (config.tags || []).map((tag) => tag.trim()).filter(Boolean);
 
       const announcementEvent = createRepoAnnouncementEvent({
         repoId: workerResult.repoId,
@@ -463,9 +483,12 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           originalRepo.description || `Fork of ${originalRepo.owner}/${originalRepo.name}`,
         clone: cloneUrls,
         web: [workerResult.forkUrl.replace(/\.git$/, "")],
-        maintainers: userPubkey ? [userPubkey] : undefined,
-        ...(relays ? { relays } : {}),
-        ...(config.earliestUniqueCommit ? { earliestUniqueCommit: config.earliestUniqueCommit } : {}),
+        maintainers: maintainers.length > 0 ? maintainers : undefined,
+        hashtags: hashtags.length > 0 ? hashtags : undefined,
+        ...(relays.length > 0 ? { relays } : {}),
+        ...(config.earliestUniqueCommit
+          ? { earliestUniqueCommit: config.earliestUniqueCommit }
+          : {}),
       });
 
       // Create Repository State event (kind 30618)
@@ -500,7 +523,9 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         } catch (publishError) {
           console.error("❌ Failed to publish Nostr events:", publishError);
           // Re-throw to be caught by outer catch block
-          throw new Error(`Failed to publish Nostr events: ${publishError instanceof Error ? publishError.message : String(publishError)}`);
+          throw new Error(
+            `Failed to publish Nostr events: ${publishError instanceof Error ? publishError.message : String(publishError)}`
+          );
         }
       }
 
