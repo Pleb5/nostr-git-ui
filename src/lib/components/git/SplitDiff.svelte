@@ -887,7 +887,7 @@
             <div class="flex shrink-0">
               <!-- Old Line Number -->
               <div
-                class="w-12 px-2 py-1 text-right text-xs font-mono {getLineNumClass(
+                class="w-10 px-1 py-1 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs {getLineNumClass(
                   line.type
                 )} border-r border-border"
               >
@@ -903,7 +903,7 @@
               </div>
               <!-- New Line Number -->
               <div
-                class="w-12 px-2 py-1 text-right text-xs font-mono {getLineNumClass(
+                class="w-10 px-1 py-1 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs {getLineNumClass(
                   line.type
                 )} border-r border-border"
               >
@@ -921,7 +921,7 @@
 
             <!-- Change Indicator -->
             <div
-              class="w-6 px-1 py-1 text-center text-xs font-mono shrink-0 {getLineNumClass(
+              class="hidden w-6 px-1 py-1 text-center text-xs font-mono shrink-0 sm:block {getLineNumClass(
                 line.type
               )} border-r border-border"
             >
@@ -935,10 +935,8 @@
             </div>
 
             <!-- Line Content -->
-            <div class="flex-1 px-2 py-1 font-mono text-sm whitespace-nowrap">
-              <pre class="whitespace-pre m-0 inline">
-                <span class="hljs">{@html highlightCode(line.content, language)}</span>
-              </pre>
+            <div class="flex-1 px-1 py-1 font-mono text-sm whitespace-nowrap sm:px-2">
+              <pre class="whitespace-pre m-0 inline"><span class="hljs">{@html highlightCode(line.content, language)}</span></pre>
             </div>
 
             <div class="w-8 px-1 py-1 shrink-0 opacity-0 hover:opacity-100 transition-opacity">
