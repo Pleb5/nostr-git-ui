@@ -561,6 +561,14 @@ export class WorkerManager {
   }
 
   /**
+   * Delete remote repository via provider API
+   */
+  async deleteRemoteRepo(params: { remoteUrl: string; token: string }): Promise<any> {
+    await this.initialize();
+    return this.execute("deleteRemoteRepo", params);
+  }
+
+  /**
    * Analyze patch merge
    */
   async analyzePatchMerge(params: {

@@ -48,6 +48,8 @@
     progress?: EditProgress;
     error?: string;
     isEditing?: boolean;
+    canDelete?: boolean;
+    onRequestDelete?: () => void;
     getProfile?: (
       pubkey: string
     ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
@@ -69,6 +71,8 @@
     progress,
     error,
     isEditing = false,
+    canDelete = false,
+    onRequestDelete,
     getProfile,
     searchProfiles,
     searchRelays,
@@ -1258,6 +1262,33 @@
             The commit ID of the earliest unique commit to identify this repository among forks
           </p>
         </div>
+
+        {#if onRequestDelete}
+          <div class="border border-red-600/40 rounded-lg p-4 bg-red-950/30">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <h3 class="text-red-300 font-semibold">Danger Zone</h3>
+                <p class="text-sm text-red-200/80 mt-1">
+                  Delete this repository and its related Nostr events. This action cannot be undone.
+                </p>
+                {#if !canDelete}
+                  <p class="text-sm text-red-200/70 mt-2">
+                    Only the repository owner can delete it.
+                  </p>
+                {/if}
+              </div>
+              <button
+                type="button"
+                onclick={onRequestDelete}
+                disabled={isEditing || !canDelete}
+                class="px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
+              >
+                <Trash2 class="w-4 h-4" />
+                <span>Delete repo</span>
+              </button>
+            </div>
+          </div>
+        {/if}
 
         <!-- Progress Display -->
         {#if isEditing && progress}
