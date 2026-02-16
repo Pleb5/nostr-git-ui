@@ -372,7 +372,13 @@
     <!-- footer actions (expand) -->
     {#snippet slotFooter()}
       <div class="flex items-center gap-2">
-        <EventActions event={event} url={relayUrl} noun="issue" customActions={undefined} />
+        <EventActions
+          event={event}
+          url={relayUrl}
+          noun="issue"
+          relays={commentRelays}
+          customActions={undefined}
+        />
         <button
           type="button"
           aria-expanded={isExpanded}
