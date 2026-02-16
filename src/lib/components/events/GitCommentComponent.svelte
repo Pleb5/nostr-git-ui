@@ -3,8 +3,9 @@
   import { onMount } from "svelte";
   import { MessageCircle, Copy, Reply } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
+  import RichText from "../RichText.svelte";
 
-  const { Card, Button, ProfileLink } = useRegistry();
+  const { Card, Button, ProfileLink, Markdown } = useRegistry();
 
   interface Props {
     event: NostrEvent;
@@ -129,8 +130,12 @@
         {/if}
       </div>
 
-      <div class="text-sm text-muted-foreground mb-3">
-        <p class="whitespace-pre-wrap">{commentContent}</p>
+      <div class="text-muted-foreground text-sm mb-3">
+        {#if Markdown}
+          <Markdown content={commentContent} event={event as any} variant="comment" />
+        {:else}
+          <RichText content={commentContent} prose={false} />
+        {/if}
       </div>
 
       {#if repoAddress}

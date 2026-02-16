@@ -1,7 +1,8 @@
 <script lang="ts">
   import { MessageSquare, Loader2, Share } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
-  const { Avatar, AvatarFallback, AvatarImage, Button, Textarea } = useRegistry();
+  import RichText from "../RichText.svelte";
+  const { Avatar, AvatarFallback, AvatarImage, Button, Textarea, Markdown } = useRegistry();
   import { formatDistanceToNow } from "date-fns";
   import { tick } from "svelte";
   import parseDiff from "parse-diff";
@@ -41,6 +42,7 @@
     lineNumber: number;
     filePath?: string;
     content: string;
+    rawEvent?: CommentEvent;
     author: {
       name: string;
       avatar: string;
@@ -1212,7 +1214,17 @@
                                   })}
                                 </span>
                               </div>
-                              <p class="text-sm mt-1">{c.content}</p>
+                              <div class="mt-1 text-muted-foreground text-sm">
+                                {#if Markdown}
+                                  <Markdown
+                                    content={c.content}
+                                    event={c.rawEvent as any}
+                                    variant="comment"
+                                  />
+                                {:else}
+                                  <RichText content={c.content} prose={false} />
+                                {/if}
+                              </div>
                             </div>
                           </div>
                         {/each}

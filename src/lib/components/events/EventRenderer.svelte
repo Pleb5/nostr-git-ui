@@ -55,7 +55,7 @@
       case 14:
         return "encrypted-message";
       case 1111:
-        return "long-form";
+        return "git-comment";
       case 31922:
         return "calendar-event";
       default:

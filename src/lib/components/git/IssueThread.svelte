@@ -192,9 +192,14 @@
             </div>
           </div>
           <div class="w-full flex flex-col gap-y-2 mt-2">
-            <div class="text-muted-foreground">
+            <div class="text-muted-foreground text-sm">
               {#if Markdown}
-                <Markdown content={c.content} />
+                <Markdown
+                  content={c.content}
+                  event={c.raw as any}
+                  relays={relays}
+                  variant="comment"
+                />
               {:else}
                 <RichText content={c.content} prose={false} />
               {/if}
