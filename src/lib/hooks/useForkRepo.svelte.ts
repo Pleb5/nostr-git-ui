@@ -217,6 +217,18 @@ function parseForkError(error: unknown, defaultProvider: string = "github"): str
   return formatForkErrorMessage(parsed, defaultProvider);
 }
 
+function dedupeCloneUrls(urls: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const url of urls) {
+    const trimmed = String(url || "").trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
 /**
  * Svelte 5 composable for managing fork repository workflow
  * Handles git-worker integration, progress tracking, and NIP-34 event emission
@@ -458,10 +470,14 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       // Create Repository Announcement event (kind 30617)
       // For GRASP, ensure the relay URL is included in both relays and clone tags
-      const cloneUrls = [workerResult.forkUrl];
-      if (provider === "grasp" && relayUrl && !cloneUrls.includes(relayUrl)) {
-        cloneUrls.push(relayUrl);
+      const sameNameFork = config.forkName === originalRepo.name;
+      const cloneUrlSeed = sameNameFork
+        ? [workerResult.forkUrl, ...(originalRepo.cloneUrls ?? [])]
+        : [workerResult.forkUrl];
+      if (provider === "grasp" && relayUrl) {
+        cloneUrlSeed.push(relayUrl);
       }
+      const cloneUrls = dedupeCloneUrls(cloneUrlSeed);
 
       const requestedRelays = (config.relays || []).map((r) => r.trim()).filter(Boolean);
       let relays = [...requestedRelays];
