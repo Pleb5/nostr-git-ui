@@ -7,12 +7,14 @@
     href,
     icon,
     activeTab,
+    notification = false,
   }: {
     tabValue: string;
     label: string;
     href: string;
     icon?: any;
     activeTab: string;
+    notification?: boolean;
   } = $props();
 
   const isActive = activeTab === tabValue;
@@ -52,6 +54,15 @@
 >
   <span class="flex items-center gap-1">
     {@render icon?.()}
-    <span class="relative">{label}</span>
+    <span class="relative">
+      {label}
+      {#if notification}
+        <span
+          class="absolute -right-2 -top-1 h-2 w-2 rounded-full bg-primary"
+          aria-label="Unread updates"
+          title="Unread updates"
+        ></span>
+      {/if}
+    </span>
   </span>
 </a>

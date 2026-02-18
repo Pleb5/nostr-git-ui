@@ -7,6 +7,7 @@
     Settings,
     Bookmark,
     AlertTriangle,
+    Bell,
     X,
   } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
@@ -26,6 +27,8 @@
     bookmarkRepo,
     isBookmarked = false,
     isTogglingBookmark = false,
+    watchRepo,
+    isWatching = false,
   }: {
     repoClass: Repo;
     activeTab?: string;
@@ -38,6 +41,8 @@
     bookmarkRepo?: () => void | Promise<void>;
     isBookmarked?: boolean;
     isTogglingBookmark?: boolean;
+    watchRepo?: () => void | Promise<void>;
+    isWatching?: boolean;
   } = $props();
   const name = $derived.by(() => repoClass.name);
   const description = $derived.by(() => repoClass.description);
@@ -113,6 +118,18 @@
         >
           <Bookmark class="h-4 w-4 {isBookmarked ? 'fill-current' : ''}" />
           <span class="hidden sm:inline">{isBookmarked ? "Bookmarked" : "Bookmark"}</span>
+        </Button>
+      {/if}
+      {#if watchRepo}
+        <Button
+          variant={isWatching ? "default" : "outline"}
+          size="sm"
+          class="gap-1 sm:gap-2 px-2 sm:px-3 flex-shrink-0"
+          onclick={watchRepo}
+          title={isWatching ? "Watching" : "Watch"}
+        >
+          <Bell class="h-4 w-4 {isWatching ? 'fill-current' : ''}" />
+          <span class="hidden sm:inline">{isWatching ? "Watching" : "Watch"}</span>
         </Button>
       {/if}
       <Button
