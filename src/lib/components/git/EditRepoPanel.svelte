@@ -6,6 +6,7 @@
     AlertCircle,
     Plus,
     Trash2,
+    GripVertical,
     Users,
     Globe,
     Link,
@@ -390,6 +391,53 @@
     value: string
   ) {
     formData[field] = formData[field].map((item, i) => (i === index ? value : item));
+  }
+
+  let draggingCloneIndex = $state<number | null>(null);
+  let dragOverCloneIndex = $state<number | null>(null);
+
+  function moveCloneUrl(fromIndex: number, toIndex: number) {
+    const next = [...formData.cloneUrls];
+    if (fromIndex < 0 || fromIndex >= next.length) return;
+    if (fromIndex === toIndex) return;
+    const [moved] = next.splice(fromIndex, 1);
+    let targetIndex = toIndex;
+    if (targetIndex < 0) targetIndex = 0;
+    if (targetIndex > next.length) targetIndex = next.length;
+    next.splice(targetIndex, 0, moved);
+    formData.cloneUrls = next;
+  }
+
+  function handleCloneDragStart(index: number, event: DragEvent) {
+    if (isEditing) return;
+    draggingCloneIndex = index;
+    dragOverCloneIndex = index;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", String(index));
+    }
+  }
+
+  function handleCloneDragOver(index: number, event: DragEvent) {
+    if (draggingCloneIndex === null || isEditing) return;
+    event.preventDefault();
+    dragOverCloneIndex = index;
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+  }
+
+  function handleCloneDrop(index: number, event: DragEvent) {
+    if (draggingCloneIndex === null || isEditing) return;
+    event.preventDefault();
+    moveCloneUrl(draggingCloneIndex, index);
+    draggingCloneIndex = null;
+    dragOverCloneIndex = null;
+  }
+
+  function handleCloneDragEnd() {
+    draggingCloneIndex = null;
+    dragOverCloneIndex = null;
   }
 
   // UI state
@@ -997,7 +1045,27 @@
           </label>
           <div class="space-y-2">
             {#each formData.cloneUrls as cloneUrl, index}
-              <div class="flex items-center space-x-2">
+              {@const isCloneDragOver = dragOverCloneIndex === index && draggingCloneIndex !== null}
+              <div
+                class={`flex items-center space-x-2 rounded-lg ${
+                  isCloneDragOver ? "bg-gray-800/40 ring-1 ring-blue-500/40" : ""
+                }`}
+                ondragover={(event) => handleCloneDragOver(index, event)}
+                ondrop={(event) => handleCloneDrop(index, event)}
+              >
+                <button
+                  type="button"
+                  draggable={!isEditing}
+                  disabled={isEditing}
+                  aria-label="Reorder clone URL"
+                  aria-grabbed={draggingCloneIndex === index ? "true" : "false"}
+                  ondragstart={(event) => handleCloneDragStart(index, event)}
+                  ondragend={handleCloneDragEnd}
+                  class="p-2 text-gray-400 hover:text-gray-200 cursor-grab active:cursor-grabbing disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Drag to reorder"
+                >
+                  <GripVertical class="w-4 h-4" />
+                </button>
                 <input
                   type="text"
                   bind:value={formData.cloneUrls[index]}
