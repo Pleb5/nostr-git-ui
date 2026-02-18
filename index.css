@@ -712,6 +712,10 @@ body {
   right: -0.25rem;
 }
 
+.-right-2 {
+  right: -0.5rem;
+}
+
 .-top-1 {
   top: -0.25rem;
 }
@@ -2687,10 +2691,6 @@ body {
 
 .text-\[11px\] {
   font-size: 11px;
-}
-
-.text-\[14px\] {
-  font-size: 14px;
 }
 
 .text-base {
