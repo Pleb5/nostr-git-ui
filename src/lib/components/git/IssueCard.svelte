@@ -118,36 +118,6 @@
     return trimmed.replace(/^#/, "");
   }
 
-  function toStringSet(value: unknown): Set<string> {
-    if (!value) return new Set<string>();
-    if (value instanceof Set) {
-      return new Set(Array.from(value).filter((v) => typeof v === "string") as string[]);
-    }
-    if (Array.isArray(value)) {
-      return new Set(value.filter((v) => typeof v === "string") as string[]);
-    }
-    if (typeof value === "string") {
-      return new Set([value]);
-    }
-    return new Set<string>();
-  }
-
-  function normalizeEffectiveLabels(eff?: any | null): {
-    flat: Set<string>;
-    byNamespace: Record<string, Set<string>>;
-  } {
-    const flat = toStringSet(eff?.flat);
-    const byNamespace: Record<string, Set<string>> = {};
-
-    if (eff && typeof eff.byNamespace === "object") {
-      for (const ns of Object.keys(eff.byNamespace)) {
-        byNamespace[ns] = toStringSet(eff.byNamespace[ns]);
-      }
-    }
-
-    return { flat, byNamespace };
-  }
-
   function toNaturalArray(values?: Iterable<string> | null): string[] {
     if (!values) return [];
     const out = new Set<string>();
@@ -159,45 +129,6 @@
     return Array.from(out);
   }
 
-  function groupLabels(view: { flat: Set<string>; byNamespace: Record<string, Set<string>> }): {
-    Status: string[];
-    Type: string[];
-    Area: string[];
-    Tags: string[];
-    Other: string[];
-  } {
-    const groupSets = {
-      Status: new Set<string>(),
-      Type: new Set<string>(),
-      Area: new Set<string>(),
-      Tags: new Set<string>(),
-      Other: new Set<string>(),
-    };
-
-    const namespaceToGroup = (ns: string): keyof typeof groupSets => {
-      if (ns === "org.nostr.git.status") return "Status";
-      if (ns === "org.nostr.git.type") return "Type";
-      if (ns === "org.nostr.git.area") return "Area";
-      if (ns === "#t") return "Tags";
-      return "Other";
-    };
-
-    for (const ns of Object.keys(view.byNamespace)) {
-      const group = namespaceToGroup(ns);
-      for (const val of view.byNamespace[ns]) {
-        groupSets[group].add(toNaturalLabel(val));
-      }
-    }
-
-    return {
-      Status: Array.from(groupSets.Status),
-      Type: Array.from(groupSets.Type),
-      Area: Array.from(groupSets.Area),
-      Tags: Array.from(groupSets.Tags),
-      Other: Array.from(groupSets.Other),
-    };
-  }
-
   const displayLabels = $derived.by(() => {
     // First, normalize the extraLabels (which come from the centralized label system)
     const normalizedExtraLabels = toNaturalArray(extraLabels);
@@ -207,15 +138,6 @@
 
     // Merge and deduplicate
     const merged = Array.from(new Set([...parsedLabels, ...normalizedExtraLabels]));
-
-    // Debug logging
-    console.debug(`[IssueCard] Issue ${id}:`, {
-      extraLabels,
-      normalizedExtraLabels,
-      parsedLabels,
-      merged,
-      labels,
-    });
 
     return merged;
   });

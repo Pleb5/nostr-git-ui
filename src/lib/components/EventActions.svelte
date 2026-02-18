@@ -1,5 +1,15 @@
 <script lang="ts">
-  const { event, url, noun, customActions } = $props();
+  import type { Snippet } from "svelte";
+
+  type Props = {
+    event: unknown;
+    url: string;
+    noun: string;
+    customActions?: Snippet;
+    relays?: string[];
+  };
+
+  const { event, url, noun, customActions, relays }: Props = $props();
 </script>
 
 <div class="flex items-center gap-2">
