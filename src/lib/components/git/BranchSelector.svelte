@@ -4,16 +4,16 @@
   const { repo }: { repo: Repo } = $props();
 
   // Get all refs (branches and tags) from repo
-  const refs = $derived(repo.refs);
-  const branches = $derived(refs.filter((ref) => ref.type === "heads"));
-  const tags = $derived(refs.filter((ref) => ref.type === "tags"));
-  const selectedBranch = $derived(repo.selectedBranch || repo.mainBranch || "");
+  const refs = $derived.by(() => repo.refs);
+  const mainBranch = $derived.by(() => repo.mainBranch || "");
+  const branches = $derived.by(() => refs.filter((ref) => ref.type === "heads"));
+  const tags = $derived.by(() => refs.filter((ref) => ref.type === "tags"));
+  const selectedBranch = $derived.by(() => repo.selectedBranch || mainBranch || "");
   const selectedLabel = $derived.by(() => {
     if (!refs.length) return "No branches found";
     if (!selectedBranch) return "";
     const isMainBranch =
-      selectedBranch === repo.mainBranch &&
-      branches.some((branch) => branch.name === selectedBranch);
+      selectedBranch === mainBranch && branches.some((branch) => branch.name === selectedBranch);
     return isMainBranch ? `${selectedBranch} (default)` : selectedBranch;
   });
   const selectWidthCh = $derived.by(() => {
@@ -22,7 +22,7 @@
     const minCh = 12;
     return Math.max(minCh, label.length + paddingCh);
   });
-  const isSwitching = $derived(repo.isBranchSwitching);
+  const isSwitching = $derived.by(() => repo.isBranchSwitching);
 
   // Debug logging
   $effect(() => {
@@ -34,7 +34,7 @@
       "tags:",
       tags.length
     );
-    console.log("[BranchSelector] selectedBranch:", selectedBranch, "mainBranch:", repo.mainBranch);
+    console.log("[BranchSelector] selectedBranch:", selectedBranch, "mainBranch:", mainBranch);
     console.log("[BranchSelector] isSwitching:", isSwitching);
   });
 
@@ -74,7 +74,7 @@
         <optgroup label="Branches">
           {#each branches as branch (branch.name)}
             <option value={branch.name}>
-              {branch.name}{branch.name === repo.mainBranch ? " (default)" : ""}
+              {branch.name}{branch.name === mainBranch ? " (default)" : ""}
             </option>
           {/each}
         </optgroup>

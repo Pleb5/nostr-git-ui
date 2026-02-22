@@ -7,6 +7,8 @@
     Plus,
     Trash2,
     GripVertical,
+    ChevronUp,
+    ChevronDown,
     Users,
     Globe,
     Link,
@@ -79,6 +81,17 @@
     searchRelays,
   }: Props = $props();
 
+  const copyList = (values?: string[] | null) => (Array.isArray(values) ? [...values] : []);
+
+  const cloneFormData = (data: FormData): FormData => ({
+    ...data,
+    maintainers: copyList(data.maintainers),
+    relays: copyList(data.relays),
+    webUrls: copyList(data.webUrls),
+    cloneUrls: copyList(data.cloneUrls),
+    hashtags: copyList(data.hashtags),
+  });
+
   // Extract current values from repo
   function extractCurrentValues(): FormData {
     if (!repo) {
@@ -87,11 +100,11 @@
         description: "",
         visibility: "public" as "public" | "private",
         defaultBranch: "",
-        maintainers: [],
-        relays: [],
-        webUrls: [],
-        cloneUrls: [],
-        hashtags: [],
+        maintainers: copyList(),
+        relays: copyList(),
+        webUrls: copyList(),
+        cloneUrls: copyList(),
+        hashtags: copyList(),
         earliestUniqueCommit: "",
       };
     }
@@ -108,17 +121,19 @@
       description: repo.description || "",
       visibility: isPrivate ? "private" : ("public" as "public" | "private"),
       defaultBranch,
-      maintainers: repo.maintainers || [],
-      relays: repo.relays || [],
-      webUrls: repo.web || [],
-      cloneUrls: repo.clone || [],
-      hashtags: repo.hashtags || [],
+      maintainers: copyList(repo.maintainers),
+      relays: copyList(repo.relays),
+      webUrls: copyList(repo.web),
+      cloneUrls: copyList(repo.clone),
+      hashtags: copyList(repo.hashtags),
       earliestUniqueCommit: repo.earliestUniqueCommit || "",
     };
   }
 
   // Form state - initialize with current values
-  let formData = $state<FormData>(extractCurrentValues());
+  const initialValues = extractCurrentValues();
+  let formData = $state<FormData>(cloneFormData(initialValues));
+  let originalFormData = $state<FormData>(cloneFormData(initialValues));
 
   // Autocomplete state for relays
   let relaySearchQuery = $state("");
@@ -446,7 +461,9 @@
   // Update form data when repo changes
   $effect(() => {
     if (repo && repo.repoEvent && !isEditing) {
-      formData = extractCurrentValues();
+      const next = extractCurrentValues();
+      formData = cloneFormData(next);
+      originalFormData = cloneFormData(next);
     }
   });
 
@@ -656,7 +673,7 @@
 
   // Check if form has changes
   const isFormDirty = $derived.by(() => {
-    const original = extractCurrentValues();
+    const original = originalFormData;
 
     // Normalize arrays by trimming empties for fair comparison (handleSave filters them out)
     const norm = (arr: string[] | undefined | any) => {
@@ -1046,6 +1063,8 @@
           <div class="space-y-2">
             {#each formData.cloneUrls as cloneUrl, index}
               {@const isCloneDragOver = dragOverCloneIndex === index && draggingCloneIndex !== null}
+              {@const isFirstClone = index === 0}
+              {@const isLastClone = index === formData.cloneUrls.length - 1}
               <div
                 class={`flex items-center space-x-2 rounded-lg ${
                   isCloneDragOver ? "bg-gray-800/40 ring-1 ring-blue-500/40" : ""
@@ -1066,6 +1085,28 @@
                 >
                   <GripVertical class="w-4 h-4" />
                 </button>
+                <div class="flex flex-col gap-1 sm:hidden">
+                  <button
+                    type="button"
+                    onclick={() => moveCloneUrl(index, index - 1)}
+                    disabled={isEditing || isFirstClone}
+                    class="p-1 text-gray-400 hover:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Move clone URL up"
+                    title="Move up"
+                  >
+                    <ChevronUp class="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => moveCloneUrl(index, index + 1)}
+                    disabled={isEditing || isLastClone}
+                    class="p-1 text-gray-400 hover:text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="Move clone URL down"
+                    title="Move down"
+                  >
+                    <ChevronDown class="w-4 h-4" />
+                  </button>
+                </div>
                 <input
                   type="text"
                   bind:value={formData.cloneUrls[index]}
