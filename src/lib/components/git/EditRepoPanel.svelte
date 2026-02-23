@@ -701,6 +701,9 @@
 
   // Check if form is valid
   const isFormValid = $derived.by(() => Object.keys(validationErrors).length === 0);
+  const workflowScopeIssue = $derived.by(() =>
+    Boolean(error && /workflow|\.github\/workflows/i.test(error))
+  );
 </script>
 
 <!-- Edit Repository Panel -->
@@ -1433,6 +1436,20 @@
               <div class="flex-1">
                 <h4 class="text-red-400 font-medium mb-1">Update Failed</h4>
                 <p class="text-red-300 text-sm">{error}</p>
+                {#if workflowScopeIssue}
+                  <div class="mt-3 text-xs text-red-200/80">
+                    GitHub requires the workflow token scope to push files under
+                    <span class="font-mono">.github/workflows</span>.
+                    <a
+                      href="/settings/profile"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="ml-2 inline-flex items-center text-red-200 hover:text-red-100 underline"
+                    >
+                      Open settings
+                    </a>
+                  </div>
+                {/if}
                 {#if !isEditing}
                   <button
                     onclick={handleRetry}

@@ -733,6 +733,13 @@
           };
         }
         const reason = pushResult?.reason ? ` (${pushResult.reason})` : "";
+        if (pushResult?.reason === "workflow_scope_missing") {
+          return {
+            text:
+              `error: push blocked${reason}: ${pushResult?.error || "unknown error"}\n` +
+              "hint: GitHub requires the workflow token scope for .github/workflows changes. Update your token or remove those changes.\n",
+          };
+        }
         return { text: `error: push blocked${reason}: ${pushResult?.error || "unknown error"}\n` };
       } catch (e: any) {
         return { text: `error: push exception: ${e?.message || String(e)}\n` };

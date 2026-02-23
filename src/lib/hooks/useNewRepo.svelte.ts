@@ -1095,6 +1095,11 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
             if (result?.requiresConfirmation) {
               throw new Error(result.warning || "Force push requires confirmation.");
             }
+            if (result?.reason === "workflow_scope_missing") {
+              throw new Error(
+                "GitHub requires the workflow token scope to push files under .github/workflows. Update your token or remove those files."
+              );
+            }
             throw new Error(result?.error || "Safe push failed");
           }
 

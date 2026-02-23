@@ -290,7 +290,13 @@ export function useEditRepo(hookOptions: UseEditRepoOptions = {}) {
       };
     } catch (err: any) {
       console.error("Edit repository failed:", err);
-      error = err.message || "Repository update failed";
+      const message = err?.message || "Repository update failed";
+      if (/workflow|\.github\/workflows/i.test(message)) {
+        error =
+          "GitHub requires the workflow token scope to push files under .github/workflows. Update your token or remove those changes.";
+      } else {
+        error = message;
+      }
 
       // Reset progress on error
       progress = undefined;

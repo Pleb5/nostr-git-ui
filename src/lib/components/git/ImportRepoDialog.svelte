@@ -527,6 +527,9 @@
       (repoMetadata.isOwner || (!repoMetadata.isOwner && forkRepo && forkName.trim()))
   );
   const isProgressComplete = $derived(currentProgress?.isComplete && completedResult !== null);
+  const workflowScopeIssue = $derived.by(() =>
+    Boolean(currentProgress?.error && /workflow|\.github\/workflows/i.test(currentProgress.error))
+  );
 
   // Phased progress from hook: use explicit phase and IMPORT_PHASES order (no string matching)
   type PhaseStatus = "completed" | "active" | "pending";
@@ -1031,6 +1034,20 @@
                     <div class="flex-1">
                       <p class="text-sm text-red-400 font-medium">Import failed</p>
                       <p class="text-sm text-red-300 mt-1">{currentProgress.error}</p>
+                      {#if workflowScopeIssue}
+                        <div class="mt-3 text-xs text-red-200/80">
+                          GitHub requires the workflow token scope to push files under
+                          <span class="font-mono">.github/workflows</span>.
+                          <a
+                            href="/settings/profile"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="ml-2 inline-flex items-center text-red-200 hover:text-red-100 underline"
+                          >
+                            Open settings
+                          </a>
+                        </div>
+                      {/if}
                     </div>
                   </div>
                 </div>

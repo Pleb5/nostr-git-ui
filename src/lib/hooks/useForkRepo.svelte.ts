@@ -15,6 +15,7 @@ export interface ForkConfig {
   tags?: string[]; // NIP-34 topic tags
   maintainers?: string[]; // Additional maintainers
   relays?: string[]; // Preferred relays
+  workflowFilesAction?: "include" | "omit";
 }
 
 export interface ForkProgress {
@@ -33,6 +34,14 @@ export interface ForkResult {
   announcementEvent: RepoAnnouncementEvent;
   stateEvent: RepoStateEvent;
 }
+
+export interface ForkWorkflowDecision {
+  requiresWorkflowDecision: true;
+  workflowFiles: string[];
+  error: string;
+}
+
+export type ForkRepositoryResult = ForkResult | ForkWorkflowDecision;
 
 export interface UseForkRepoOptions {
   workerApi?: any; // Git worker API instance (optional for backward compatibility)
@@ -308,7 +317,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       sourceRepoId?: string;
     },
     config: ForkConfig
-  ): Promise<ForkResult | null> {
+  ): Promise<ForkRepositoryResult | null> {
     if (isForking) {
       throw new Error("Fork operation already in progress");
     }
@@ -417,6 +426,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           dir: destinationPath,
           sourceCloneUrls: originalRepo.cloneUrls ? [...originalRepo.cloneUrls] : undefined, // Convert to plain array for Comlink
           sourceRepoId: originalRepo.sourceRepoId || undefined, // Pass source repo ID for finding existing local clone
+          workflowFilesAction: config.workflowFilesAction,
           // Note: onProgress callback removed - functions cannot be serialized through Comlink
         });
         console.log("[useForkRepo] forkAndCloneRepo returned", workerResult);
@@ -445,10 +455,14 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
               dir: destinationPath,
               sourceCloneUrls: originalRepo.cloneUrls ? [...originalRepo.cloneUrls] : undefined, // Convert to plain array for Comlink
               sourceRepoId: originalRepo.sourceRepoId || undefined, // Pass source repo ID for finding existing local clone
+              workflowFilesAction: config.workflowFilesAction,
               // Note: onProgress callback removed - functions cannot be serialized through Comlink
             });
             console.log("[useForkRepo] forkAndCloneRepo returned", result);
 
+            if (result?.requiresWorkflowDecision) {
+              return result;
+            }
             if (!result.success) {
               const ctx = `owner=${originalRepo.owner} repo=${originalRepo.name} forkName=${config.forkName} provider=${provider}`;
               throw new Error(`${result.error || "Fork operation failed"} (${ctx})`);
@@ -459,6 +473,13 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         );
       }
 
+      if (workerResult?.requiresWorkflowDecision) {
+        return {
+          requiresWorkflowDecision: true,
+          workflowFiles: workerResult.workflowFiles || [],
+          error: workerResult.error || "Workflow scope required",
+        };
+      }
       if (!workerResult.success) {
         const ctx = `owner=${originalRepo.owner} repo=${originalRepo.name} forkName=${config.forkName} provider=${provider}`;
         throw new Error(`${workerResult.error || "Fork operation failed"} (${ctx})`);

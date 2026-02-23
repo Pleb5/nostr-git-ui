@@ -105,6 +105,7 @@
   let showDetails = $state(false);
   let dialogEl = $state<HTMLDivElement | null>(null);
   let initialFocusEl = $state<HTMLInputElement | null>(null);
+  let workflowDecision = $state<{ workflowFiles: string[]; error: string } | null>(null);
 
   // Extract repository information from Repo instance
   const cloneUrl = $derived(repo.clone?.[0] || "");
@@ -824,7 +825,7 @@
     }
   }
 
-  async function handleFork() {
+  async function handleFork(workflowAction?: "include" | "omit") {
     console.log("🚀 ForkRepoDialog: handleFork called", {
       forkName,
       originalRepo,
@@ -832,6 +833,7 @@
     });
     completedResult = null;
     showDetails = false;
+    workflowDecision = null;
 
     // Validate service availability
     if (availableServices.length === 0) {
@@ -903,7 +905,21 @@
         relays: preferredRelays,
       };
 
+      if (workflowAction) {
+        (forkConfig as { workflowFilesAction?: "include" | "omit" }).workflowFilesAction =
+          workflowAction;
+      }
+
       const result = await forkState.forkRepository(originalRepo, forkConfig);
+
+      if (result && "requiresWorkflowDecision" in result && result.requiresWorkflowDecision) {
+        const decision = result as { workflowFiles?: string[]; error?: string };
+        workflowDecision = {
+          workflowFiles: decision.workflowFiles || [],
+          error: decision.error || "Workflow scope required",
+        };
+        return;
+      }
 
       if (result) {
         console.log("✅ ForkRepoDialog: Fork completed successfully:", result);
@@ -922,6 +938,11 @@
     if (error && !isForking) {
       handleFork();
     }
+  }
+
+  function handleWorkflowDecision(action: "include" | "omit") {
+    workflowDecision = null;
+    handleFork(action);
   }
 
   // Submit via Enter on inputs; prevent default form navigation
@@ -1646,6 +1667,64 @@
             Fork completed successfully.
           {/if}
         </div>
+
+        {#if workflowDecision}
+          <div class="bg-amber-900/40 border border-amber-500 rounded-lg p-4">
+            <div class="flex items-start space-x-3">
+              <AlertCircle class="w-5 h-5 text-amber-300 mt-0.5 flex-shrink-0" />
+              <div class="flex-1">
+                <h4 class="text-amber-200 font-medium mb-1">Workflow files detected</h4>
+                <div class="text-amber-100 text-sm space-y-2">
+                  <p>
+                    GitHub requires the workflow token scope to push files under
+                    <span class="font-mono">.github/workflows</span>.
+                  </p>
+                  {#if workflowDecision.error}
+                    <p class="text-xs text-amber-200/80">{workflowDecision.error}</p>
+                  {/if}
+                  <p class="text-xs text-amber-200/80">
+                    Creating a fork without workflows pushes a single snapshot commit.
+                  </p>
+                  {#if workflowDecision.workflowFiles.length > 0}
+                    {@const shown = workflowDecision.workflowFiles.slice(0, 3)}
+                    <p class="text-xs text-amber-200/80">
+                      Files: {shown.join(", ")}
+                      {#if workflowDecision.workflowFiles.length > shown.length}
+                        +{workflowDecision.workflowFiles.length - shown.length} more
+                      {/if}
+                    </p>
+                  {/if}
+                </div>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={isForking}
+                    onclick={() => handleWorkflowDecision("include")}
+                    class="px-3 py-1.5 text-sm border border-amber-300 text-amber-100 rounded hover:border-amber-200 hover:text-amber-50 disabled:opacity-50"
+                  >
+                    Continue with workflows
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isForking}
+                    onclick={() => handleWorkflowDecision("omit")}
+                    class="px-3 py-1.5 text-sm border border-amber-500 text-amber-200 rounded hover:border-amber-400 hover:text-amber-100 disabled:opacity-50"
+                  >
+                    Create fork without workflows
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isForking}
+                    onclick={() => (workflowDecision = null)}
+                    class="px-3 py-1.5 text-sm border border-gray-600 text-gray-300 rounded hover:border-gray-500 hover:text-gray-100 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
 
         <!-- Error Display -->
         {#if error}
