@@ -265,6 +265,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
   let isForking = $state(false);
   let progress = $state<ForkProgress[]>([]);
   let error = $state<string | null>(null);
+  let warning = $state<string | null>(null);
 
   let tokens = $state<Token[]>([]);
 
@@ -324,6 +325,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
     isForking = true;
     error = null;
+    warning = null;
     progress = [];
 
     try {
@@ -559,10 +561,10 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           updateProgress("publish", "Successfully published to Nostr relays", "completed");
         } catch (publishError) {
           console.error("❌ Failed to publish Nostr events:", publishError);
-          // Re-throw to be caught by outer catch block
-          throw new Error(
-            `Failed to publish Nostr events: ${publishError instanceof Error ? publishError.message : String(publishError)}`
-          );
+          const message =
+            publishError instanceof Error ? publishError.message : String(publishError);
+          warning = `Fork succeeded, but publishing Nostr events failed: ${message}`;
+          updateProgress("publish", "Publishing to Nostr relays failed (non-fatal)", "completed");
         }
       }
 
@@ -613,6 +615,9 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     },
     get error() {
       return error;
+    },
+    get warning() {
+      return warning;
     },
     get isForking() {
       return isForking;

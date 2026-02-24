@@ -102,6 +102,7 @@
   // Access reactive state through getters
   const progress = $derived(forkState.progress);
   const error = $derived(forkState.error);
+  const warning = $derived(forkState.warning);
   const isForking = $derived(forkState.isForking);
   const errorMarkdown = $derived.by(() => {
     if (!error) return "";
@@ -1766,6 +1767,18 @@
                     Cancel
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        {#if warning}
+          <div class="bg-amber-900/40 border border-amber-500 rounded-lg p-4">
+            <div class="flex items-start space-x-3">
+              <AlertCircle class="w-5 h-5 text-amber-300 mt-0.5 flex-shrink-0" />
+              <div class="flex-1">
+                <h4 class="text-amber-200 font-medium mb-1">Fork completed with warnings</h4>
+                <p class="text-amber-100 text-sm">{warning}</p>
               </div>
             </div>
           </div>
