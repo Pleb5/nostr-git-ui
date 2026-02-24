@@ -15,6 +15,7 @@
     Trash2,
   } from "@lucide/svelte";
   import { Repo } from "./Repo.svelte";
+  import { useRegistry } from "../../useRegistry";
   import { useForkRepo } from "../../hooks/useForkRepo.svelte";
   import { tokens } from "$lib/stores/tokens";
   import { PeoplePicker } from "@nostr-git/ui";
@@ -72,6 +73,7 @@
 
   // Initialize the useForkRepo hook (allow DI override)
   const forkImpl = $derived(useForkRepoImpl ?? useForkRepo);
+  const { Markdown } = useRegistry();
   const forkState = $derived(
     forkImpl({
       userPubkey: pubkey, // Pass Nostr pubkey for maintainers
@@ -101,6 +103,17 @@
   const progress = $derived(forkState.progress);
   const error = $derived(forkState.error);
   const isForking = $derived(forkState.isForking);
+  const errorMarkdown = $derived.by(() => {
+    if (!error) return "";
+    const marker = "View it at: ";
+    if (!error.includes(marker)) return error;
+    const [intro, url] = error.split(marker);
+    const trimmedUrl = (url || "").trim();
+    if (!trimmedUrl) return error;
+    const introText = intro.trim();
+    const prefix = introText ? `${introText}\n\n` : "";
+    return `${prefix}[View existing fork](${trimmedUrl})`;
+  });
   let completedResult = $state<ForkResult | null>(null);
   let showDetails = $state(false);
   let dialogEl = $state<HTMLDivElement | null>(null);
@@ -169,6 +182,10 @@
     cloneUrls: repo.clone || [], // Pass all clone URLs for cross-platform forking
     sourceRepoId: repo.repoId || "", // Pass the source repo's canonical ID for finding existing local clone
   });
+  const ownerDisplay = $derived.by(() => `${originalRepo.owner}/${originalRepo.name}`);
+  const ownerIsNostr = $derived.by(() =>
+    /^(nostr:)?(npub|nprofile)1/i.test(originalRepo.owner || "")
+  );
 
   // Determine default service based on hostname
   function getDefaultService(hostname: string): string {
@@ -183,6 +200,7 @@
   let forkName = $state("");
   let selectedService = $state("github.com");
   let isCheckingExistingFork = $state(false);
+  const forkOwnerDisplay = $derived.by(() => `${originalRepo.owner}/${forkName}`);
   let existingForkInfo = $state<
     | {
         exists: boolean;
@@ -1047,16 +1065,32 @@
       <div class="p-6 space-y-6">
         <!-- Original Repository Info -->
         <div class="bg-gray-800 rounded-lg p-4 border border-gray-600">
-          <div class="flex items-start space-x-3">
-            <GitFork class="w-5 h-5 text-gray-400 mt-0.5" />
-            <div class="flex-1 min-w-0">
-              <h3 class="text-sm font-medium text-white">
-                {originalRepo.owner}/{originalRepo.name}
-              </h3>
-              {#if originalRepo.description}
-                <p class="text-sm text-gray-400 mt-1">{originalRepo.description}</p>
-              {/if}
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center space-x-3">
+              <GitFork class="w-5 h-5 text-gray-400" />
+              <div class="text-sm font-medium text-white">
+                {#if Markdown && ownerIsNostr}
+                  <div class="fork-owner-inline">
+                    <Markdown content={ownerDisplay} relays={defaultRelays} variant="comment" />
+                  </div>
+                {:else}
+                  {ownerDisplay}
+                {/if}
+              </div>
             </div>
+            {#if originalRepo.description}
+              <div class="text-sm text-gray-400 ml-8">
+                {#if Markdown}
+                  <Markdown
+                    content={originalRepo.description}
+                    relays={defaultRelays}
+                    variant="comment"
+                  />
+                {:else}
+                  <p>{originalRepo.description}</p>
+                {/if}
+              </div>
+            {/if}
           </div>
         </div>
 
@@ -1745,7 +1779,9 @@
               <div class="flex-1">
                 <h4 class="text-red-400 font-medium mb-1">Fork Failed</h4>
                 <div class="text-red-300 text-sm">
-                  {#if error.includes("View it at: ")}
+                  {#if Markdown}
+                    <Markdown content={errorMarkdown} relays={defaultRelays} variant="comment" />
+                  {:else if error.includes("View it at: ")}
                     <!-- Parse and make URLs clickable -->
                     {@const parts = error.split("View it at: ")}
                     <p class="mb-2">{parts[0]}</p>
@@ -1841,9 +1877,19 @@
                 <code class="block bg-black/40 rounded px-2 py-1 break-all"
                   >git clone {completedResult?.forkUrl}</code
                 >
-                <div>
+                <div class="flex items-center gap-1">
                   <span class="text-gray-400">Repository:</span>
-                  <span class="ml-1">{originalRepo.owner}/{forkName}</span>
+                  {#if Markdown && ownerIsNostr}
+                    <div class="fork-owner-inline">
+                      <Markdown
+                        content={forkOwnerDisplay}
+                        relays={defaultRelays}
+                        variant="comment"
+                      />
+                    </div>
+                  {:else}
+                    <span class="text-gray-300">{forkOwnerDisplay}</span>
+                  {/if}
                 </div>
                 {#if completedResult?.branches?.length}
                   <div class="text-gray-400">
@@ -1937,3 +1983,13 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .fork-owner-inline :global(.markdown) {
+    display: inline;
+  }
+
+  .fork-owner-inline :global(p) {
+    margin: 0;
+  }
+</style>

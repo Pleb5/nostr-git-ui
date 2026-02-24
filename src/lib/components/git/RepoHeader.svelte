@@ -11,7 +11,7 @@
     X,
   } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
-  const { Button } = useRegistry();
+  const { Button, Markdown } = useRegistry();
   import { Repo } from "./Repo.svelte";
   import BranchSelector from "./BranchSelector.svelte";
 
@@ -171,7 +171,13 @@
     </div>
   </div>
   {#if description}
-    <p class="text-muted-foreground mb-4 text-sm sm:text-base break-words">{description}</p>
+    <div class="repo-description text-muted-foreground mb-4">
+      {#if Markdown}
+        <Markdown content={description} variant="comment" />
+      {:else}
+        <p class="text-sm sm:text-base break-words">{description}</p>
+      {/if}
+    </div>
   {/if}
   <nav class={cn("bg-muted text-muted-foreground rounded-md w-full")}>
     <div class="flex overflow-x-auto scrollbar-hide">
@@ -187,5 +193,18 @@
   .break-words {
     word-wrap: break-word;
     overflow-wrap: break-word;
+  }
+
+  .repo-description :global(.markdown) {
+    font-size: 0.875rem;
+    line-height: 1.5;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+
+  @media (min-width: 640px) {
+    .repo-description :global(.markdown) {
+      font-size: 1rem;
+    }
   }
 </style>
