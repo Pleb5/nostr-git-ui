@@ -180,8 +180,8 @@
   }
 
   // Form state
-  let forkName = $derived.by(() => `${originalRepo.name}-fork`);
-  let selectedService = $derived.by(() => getDefaultService(parsedUrl.hostname));
+  let forkName = $state("");
+  let selectedService = $state("github.com");
   let isCheckingExistingFork = $state(false);
   let existingForkInfo = $state<
     | {
@@ -215,6 +215,17 @@
   let relaysInitialized = $state(false);
   let tagsInitialized = $state(false);
   let maintainersInitialized = $state(false);
+
+  let formSeedKey = $state("");
+
+  $effect(() => {
+    const currentSeedKey = `${parsedUrl.hostname}/${originalRepo.owner}/${originalRepo.name}`;
+    if (currentSeedKey !== formSeedKey) {
+      formSeedKey = currentSeedKey;
+      forkName = `${originalRepo.name}-fork`;
+      selectedService = getDefaultService(parsedUrl.hostname);
+    }
+  });
 
   $effect(() => {
     if (!relaysInitialized && preferredRelays.length === 0 && defaultRelays.length > 0) {
