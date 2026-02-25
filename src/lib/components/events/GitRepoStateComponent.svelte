@@ -25,6 +25,14 @@
     lastUpdate ? lastUpdate.toLocaleDateString() + " " + lastUpdate.toLocaleTimeString() : ""
   );
 
+  const shortenMiddle = (value: string, start = 20, end = 10) => {
+    if (!value) return "";
+    if (value.length <= start + end + 3) return value;
+    return `${value.slice(0, start)}...${value.slice(-end)}`;
+  };
+
+  const shortCloneUrl = $derived(cloneUrl ? shortenMiddle(cloneUrl) : "");
+
   const parseEventData = () => {
     const eventTags = event.tags || [];
 
@@ -89,7 +97,9 @@
   });
 </script>
 
-<div class="git-repo-state-event border-l-4 border-green-500 bg-green-50 p-4 rounded-r-lg transition-all duration-200 ease-in-out hover:shadow-md">
+<div
+  class="git-repo-state-event border-l-4 border-green-500 bg-green-50 p-4 rounded-r-lg transition-all duration-200 ease-in-out hover:shadow-md"
+>
   <div class="flex items-start gap-3">
     <GitBranch class="text-green-600 mt-1" size={20} />
 
@@ -109,8 +119,8 @@
         {#if cloneUrl}
           <div class="flex items-center gap-2">
             <span class="text-sm font-medium text-gray-600">Clone URL:</span>
-            <code class="bg-gray-100 px-2 py-1 rounded text-sm font-mono flex-1">
-              {cloneUrl}
+            <code class="bg-gray-100 px-2 py-1 rounded text-sm font-mono flex-1" title={cloneUrl}>
+              {shortCloneUrl || cloneUrl}
             </code>
             <button
               type="button"

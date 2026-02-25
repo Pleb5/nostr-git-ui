@@ -19,9 +19,10 @@
 
   interface Props {
     event: NostrEvent;
+    relay?: string;
   }
 
-  let { event }: Props = $props();
+  let { event, relay }: Props = $props();
 
   // Reactive state using Svelte 5 runes
   let issueTitle = $state("");
@@ -38,6 +39,83 @@
   const displayTitle = $derived(issueTitle || issueSubject || "Untitled Issue");
   const issueContent = $derived(event.content || "");
   const createdDate = $derived(new Date(event.created_at * 1000));
+
+  const shortenMiddle = (value: string, start = 10, end = 6) => {
+    if (!value) return "";
+    if (value.length <= start + end + 3) return value;
+    return `${value.slice(0, start)}...${value.slice(-end)}`;
+  };
+
+  const parseRepoAddress = (address: string) => {
+    const parts = address.split(":");
+    if (parts.length < 3) return null;
+    const [kindStr, pubkey, ...identifierParts] = parts;
+    const kind = Number.parseInt(kindStr, 10);
+    const identifier = identifierParts.join(":");
+    if (!kind || !pubkey || !identifier) return null;
+    return { kind, pubkey, identifier };
+  };
+
+  const deriveRelayFromLocation = () => {
+    if (typeof window === "undefined") return "";
+    const match = window.location.pathname.match(/\/spaces\/([^/]+)\//);
+    if (!match) return "";
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  };
+
+  const encodeRelayPath = (value: string) =>
+    encodeURIComponent(
+      value
+        .replace(/^wss:\/\//, "")
+        .replace(/^ws:\/\//, "")
+        .replace(/\/$/, "")
+    );
+
+  const basePathFromLocation = () => {
+    if (typeof window === "undefined") return "";
+    const match = window.location.pathname.match(/(\/spaces\/[^/]+\/git\/[^/]+)/);
+    return match ? match[1] : "";
+  };
+
+  const repoNaddr = $derived.by(() => {
+    if (!repoAddress) return "";
+    const parsed = parseRepoAddress(repoAddress);
+    if (!parsed) return "";
+    try {
+      return nip19.naddrEncode({
+        kind: parsed.kind,
+        pubkey: parsed.pubkey,
+        identifier: parsed.identifier,
+        relays: [],
+      });
+    } catch {
+      return "";
+    }
+  });
+
+  const basePath = $derived.by(() => {
+    const relayValue = relay || deriveRelayFromLocation();
+    if (repoNaddr && relayValue) {
+      return `/spaces/${encodeRelayPath(relayValue)}/git/${repoNaddr}`;
+    }
+    return basePathFromLocation();
+  });
+
+  const issueHref = $derived.by(() => {
+    if (basePath) return `${basePath}/issues/${event.id}`;
+    return `issues/${event.id}`;
+  });
+
+  const repoDisplay = $derived.by(() => {
+    if (!repoAddress) return "";
+    const parsed = parseRepoAddress(repoAddress);
+    if (parsed?.identifier) return parsed.identifier;
+    return shortenMiddle(repoAddress);
+  });
 
   // Status color mapping
   const statusInfo = $derived.by(() => {
@@ -131,7 +209,7 @@
     <div class="flex-1">
       <div class="flex items-center justify-between">
         <div class="flex-1">
-          <a href={`issues/${event.id}`} class="block">
+          <a href={issueHref} class="block">
             <h3
               class="text-base font-semibold mb-0.5 leading-tight hover:text-accent transition-colors"
               title={displayTitle}
@@ -190,8 +268,8 @@
         {#if repoAddress}
           <div class="flex items-center gap-2 mb-2">
             <span class="text-xs text-muted-foreground">Repository:</span>
-            <code class="bg-muted px-2 py-1 rounded text-xs font-mono">
-              {repoAddress}
+            <code class="bg-muted px-2 py-1 rounded text-xs font-mono" title={repoAddress}>
+              {repoDisplay || repoAddress}
             </code>
             <Button
               variant="ghost"

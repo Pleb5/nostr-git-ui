@@ -87,9 +87,9 @@
 {#if useFeedStyle}
   <!-- New unified feed style components -->
   {#if componentType === "git-issue"}
-    <GitIssueComponent event={event} />
+    <GitIssueComponent event={event} relay={relay} />
   {:else if componentType === "git-patch"}
-    <GitPatchComponent event={event} />
+    <GitPatchComponent event={event} relay={relay} />
   {:else if componentType === "git-comment"}
     <GitCommentFeed event={event} />
   {:else if componentType === "git-permalink"}
@@ -116,9 +116,9 @@
   {:else if componentType === "git-repo-state"}
     <GitRepoStateComponent event={event} />
   {:else if componentType === "git-issue"}
-    <GitIssueComponent event={event} />
+    <GitIssueComponent event={event} relay={relay} />
   {:else if componentType === "git-patch"}
-    <GitPatchComponent event={event} />
+    <GitPatchComponent event={event} relay={relay} />
   {:else if componentType === "git-comment"}
     <GitCommentComponent event={event} />
   {:else if componentType === "git-permalink"}

@@ -108,6 +108,14 @@
     }
   };
 
+  const encodeRelayPath = (value: string) =>
+    encodeURIComponent(
+      value
+        .replace(/^wss:\/\//, "")
+        .replace(/^ws:\/\//, "")
+        .replace(/\/$/, "")
+    );
+
   $effect(() => {
     if (!isDiff || !filePath || !repoAddress || typeof window === "undefined") {
       diffHash = "";
@@ -144,7 +152,7 @@
 
   const basePath = $derived.by(() => {
     if (!repoNaddr || !relayValue) return "";
-    return `/spaces/${encodeURIComponent(relayValue)}/git/${repoNaddr}`;
+    return `/spaces/${encodeRelayPath(relayValue)}/git/${repoNaddr}`;
   });
 
   const diffAnchor = $derived.by(() => {

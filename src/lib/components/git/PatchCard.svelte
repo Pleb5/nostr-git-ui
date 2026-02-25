@@ -51,6 +51,7 @@
     actorPubkey?: string;
     reviewersCount?: number; // new optional prop
     relays?: string[]; // Relay URLs for EventActions
+    isNew?: boolean;
   }
 
   const {
@@ -66,6 +67,7 @@
     actorPubkey,
     reviewersCount = 0, // default value
     relays = [],
+    isNew = false,
   }: Props = $props();
 
   const isPullRequest = event.kind === GIT_PULL_REQUEST;
@@ -251,217 +253,225 @@
   }
 </script>
 
-<BaseItemCard clickable={true} href={`patches/${id}`} variant="patch">
-  <!-- title -->
-  {#snippet slotTitle()}
-    {displayTitle}
-  {/snippet}
+<div class={isNew ? "border-l-2 border-primary pl-2" : ""}>
+  <BaseItemCard clickable={true} href={`patches/${id}`} variant="patch">
+    <!-- title -->
+    {#snippet slotTitle()}
+      {displayTitle}
+    {/snippet}
 
-  <!-- actions (bookmark + chevron) -->
-  {#snippet slotActions()}
-    <Button
-      variant="ghost"
-      size="icon"
-      class={isBookmarked ? "text-primary" : "text-muted-foreground"}
-      onclick={toggleBookmark}
-      aria-label="Toggle bookmark"
-    >
-      {#if isBookmarked}
-        <BookmarkCheck class="h-4 w-4" />
-      {:else}
-        <BookmarkPlus class="h-4 w-4" />
-      {/if}
-    </Button>
-    <Button
-      variant="ghost"
-      size="icon"
-      aria-expanded={isExpanded}
-      aria-controls="patch-description"
-      onclick={toggleExpand}
-    >
-      {#if isExpanded}
-        <ChevronUp class="h-5 w-5 text-muted-foreground" />
-      {:else}
-        <ChevronDown class="h-5 w-5 text-muted-foreground" />
-      {/if}
-    </Button>
-  {/snippet}
-
-  <!-- meta row -->
-  {#snippet slotMeta()}
-    {#if repo && statusEvents}
-      <Status
-        repo={repo}
-        rootId={id}
-        rootKind={event.kind}
-        rootAuthor={event.pubkey}
-        statusEvents={statusEvents}
-        actorPubkey={actorPubkey}
-        compact={true}
-      />
-    {:else if statusIcon}
-      {@const { icon: Icon, color } = statusIcon}
-      <Icon class={`h-6 w-6 ${color}`} />
-    {/if}
-    <span class="whitespace-nowrap">Opened <TimeAgo date={createdAt} /></span>
-    <span
-      class="ml-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
-    >
-      {isPullRequest ? "Pull Request" : "Patch"}
-    </span>
-    <div class="flex items-center gap-1">
-      <span class="whitespace-nowrap">• By </span>
-      <NostrAvatar pubkey={event.pubkey} title={displayTitle || "Issue author"} />
-      <ProfileLink pubkey={event.pubkey} />
-    </div>
-    {#if baseBranch}
-      <div class="flex items-center gap-1">
-        <span class="whitespace-nowrap">• Base: </span>
-        <span class="max-w-[120px] inline-block truncate align-bottom" title={baseBranch}
-          >{baseBranch}</span
-        >
-      </div>
-    {/if}
-    {#if commitCount > 0}
-      <span class="whitespace-nowrap">• {commitCount + (patches?.length ?? 0)} commits</span>
-    {/if}
-    {#if comments?.length > 0}
-      <span class="whitespace-nowrap">• {comments?.length ?? 0} comments</span>
-    {/if}
-    {#if reviewersCount > 0}
-      <span class="whitespace-nowrap"
-        >• {reviewersCount} reviewer{reviewersCount === 1 ? "" : "s"}</span
+    <!-- actions (bookmark + chevron) -->
+    {#snippet slotActions()}
+      <Button
+        variant="ghost"
+        size="icon"
+        class={isBookmarked ? "text-primary" : "text-muted-foreground"}
+        onclick={toggleBookmark}
+        aria-label="Toggle bookmark"
       >
-    {/if}
-    {#if parsed.commitHash}
-      <div class="flex items-center gap-1 whitespace-nowrap">
-        <span>•</span>
-        <GitCommit class="h-3 w-3" />
-        <code class="text-xs font-mono">{parsed.commitHash.substring(0, 7)}</code>
-        <button
-          class="hover:text-foreground transition-colors"
-          onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+        {#if isBookmarked}
+          <BookmarkCheck class="h-4 w-4" />
+        {:else}
+          <BookmarkPlus class="h-4 w-4" />
+        {/if}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-expanded={isExpanded}
+        aria-controls="patch-description"
+        onclick={toggleExpand}
+      >
+        {#if isExpanded}
+          <ChevronUp class="h-5 w-5 text-muted-foreground" />
+        {:else}
+          <ChevronDown class="h-5 w-5 text-muted-foreground" />
+        {/if}
+      </Button>
+    {/snippet}
+
+    <!-- meta row -->
+    {#snippet slotMeta()}
+      {#if repo && statusEvents}
+        <Status
+          repo={repo}
+          rootId={id}
+          rootKind={event.kind}
+          rootAuthor={event.pubkey}
+          statusEvents={statusEvents}
+          actorPubkey={actorPubkey}
+          compact={true}
+        />
+      {:else if statusIcon}
+        {@const { icon: Icon, color } = statusIcon}
+        <Icon class={`h-6 w-6 ${color}`} />
+      {/if}
+      <span class="whitespace-nowrap">Opened <TimeAgo date={createdAt} /></span>
+      <span
+        class="ml-2 inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+      >
+        {isPullRequest ? "Pull Request" : "Patch"}
+      </span>
+      <div class="flex items-center gap-1">
+        <span class="whitespace-nowrap">• By </span>
+        <NostrAvatar pubkey={event.pubkey} title={displayTitle || "Issue author"} />
+        <ProfileLink pubkey={event.pubkey} />
+      </div>
+      {#if baseBranch}
+        <div class="flex items-center gap-1">
+          <span class="whitespace-nowrap">• Base: </span>
+          <span class="max-w-[120px] inline-block truncate align-bottom" title={baseBranch}
+            >{baseBranch}</span
+          >
+        </div>
+      {/if}
+      {#if commitCount > 0}
+        <span class="whitespace-nowrap">• {commitCount + (patches?.length ?? 0)} commits</span>
+      {/if}
+      {#if comments?.length > 0}
+        <span class="whitespace-nowrap">• {comments?.length ?? 0} comments</span>
+      {/if}
+      {#if reviewersCount > 0}
+        <span class="whitespace-nowrap"
+          >• {reviewersCount} reviewer{reviewersCount === 1 ? "" : "s"}</span
         >
-          <Copy class="h-3 w-3" />
-        </button>
-      </div>
-    {/if}
-    {#if getTagValue(event as any, "commit-pgp-sig")}
-      <span>•</span>
-      <div class="flex items-center gap-1 text-green-600">
-        <Shield class="h-3 w-3" />
-        <span class="text-xs">Signed</span>
-      </div>
-    {/if}
-  {/snippet}
+      {/if}
+      {#if parsed.commitHash}
+        <div class="flex items-center gap-1 whitespace-nowrap">
+          <span>•</span>
+          <GitCommit class="h-3 w-3" />
+          <code class="text-xs font-mono">{parsed.commitHash.substring(0, 7)}</code>
+          <button
+            class="hover:text-foreground transition-colors"
+            onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+          >
+            <Copy class="h-3 w-3" />
+          </button>
+        </div>
+      {/if}
+      {#if getTagValue(event as any, "commit-pgp-sig")}
+        <span>•</span>
+        <div class="flex items-center gap-1 text-green-600">
+          <Shield class="h-3 w-3" />
+          <span class="text-xs">Signed</span>
+        </div>
+      {/if}
+    {/snippet}
 
-  <!-- body content -->
-  {#if isExpanded}
-    <p class="text-sm text-muted-foreground mt-3">{description}</p>
-    <div class="mt-3 p-3 bg-muted/30 rounded border text-xs">
-      <div class="grid grid-cols-2 gap-2">
-        {#if parsed.commitHash}
-          <div class="flex items-center justify-between">
-            <span class="text-muted-foreground">Commit:</span>
-            <div class="flex items-center gap-1">
-              <code class="bg-background px-1 rounded font-mono"
-                >{parsed.commitHash.substring(0, 8)}</code
-              >
-              <button
-                class="hover:text-foreground transition-colors"
-                onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
-              >
-                <Copy class="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-        {/if}
-
-        {#if event.tags}
-          {@const committerName = getTagValue(event as any, "committer")}
-          {#if committerName && committerName !== parsed.author.name}
+    <!-- body content -->
+    {#if isExpanded}
+      <p class="text-sm text-muted-foreground mt-3 max-w-full break-all sm:break-words">
+        {description}
+      </p>
+      <div class="mt-3 p-3 bg-muted/30 rounded border text-xs">
+        <div class="grid grid-cols-2 gap-2">
+          {#if parsed.commitHash}
             <div class="flex items-center justify-between">
-              <span class="text-muted-foreground">Committer:</span>
-              <div class="flex items-center gap-1 min-w-0">
-                <User class="h-3 w-3 flex-shrink-0" />
-                <span class="truncate" title={committerName}>{committerName}</span>
+              <span class="text-muted-foreground">Commit:</span>
+              <div class="flex items-center gap-1">
+                <code class="bg-background px-1 rounded font-mono"
+                  >{parsed.commitHash.substring(0, 8)}</code
+                >
+                <button
+                  class="hover:text-foreground transition-colors"
+                  onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+                >
+                  <Copy class="h-3 w-3" />
+                </button>
               </div>
             </div>
           {/if}
 
-          {@const recipients = getTags(event as any, "p")}
-          {#if recipients.length > 0}
-            <div class="col-span-2 flex items-center justify-between">
-              <span class="text-muted-foreground">Reviewers:</span>
-              <span>{recipients.length} tagged</span>
-            </div>
+          {#if event.tags}
+            {@const committerName = getTagValue(event as any, "committer")}
+            {#if committerName && committerName !== parsed.author.name}
+              <div class="flex items-center justify-between">
+                <span class="text-muted-foreground">Committer:</span>
+                <div class="flex items-center gap-1 min-w-0">
+                  <User class="h-3 w-3 flex-shrink-0" />
+                  <span class="truncate" title={committerName}>{committerName}</span>
+                </div>
+              </div>
+            {/if}
+
+            {@const recipients = getTags(event as any, "p")}
+            {#if recipients.length > 0}
+              <div class="col-span-2 flex items-center justify-between">
+                <span class="text-muted-foreground">Reviewers:</span>
+                <span>{recipients.length} tagged</span>
+              </div>
+            {/if}
           {/if}
-        {/if}
 
-        {#if parsed.diff && parsed.diff.length > 0}
-          {@const lineStats = parsed.diff.reduce(
-            (acc: any, file: any) => {
-              const content = file.content || "";
-              const added = (content.match(/^\+/gm) || []).length;
-              const removed = (content.match(/^-/gm) || []).length;
-              return { added: acc.added + added, removed: acc.removed + removed };
-            },
-            { added: 0, removed: 0 }
-          )}
+          {#if parsed.diff && parsed.diff.length > 0}
+            {@const lineStats = parsed.diff.reduce(
+              (acc: any, file: any) => {
+                const content = file.content || "";
+                const added = (content.match(/^\+/gm) || []).length;
+                const removed = (content.match(/^-/gm) || []).length;
+                return { added: acc.added + added, removed: acc.removed + removed };
+              },
+              { added: 0, removed: 0 }
+            )}
 
-          <div class="col-span-2 pt-2 border-t">
-            <div class="flex items-center justify-between text-xs">
-              <span class="text-muted-foreground">Files:</span>
-              <div class="flex items-center gap-3">
-                <span class="flex items-center gap-1">
-                  <FileCode class="h-3 w-3" />
-                  {parsed.diff.length} changed
-                </span>
-                {#if lineStats.added > 0}
-                  <span class="text-green-600">+{lineStats.added}</span>
-                {/if}
-                {#if lineStats.removed > 0}
-                  <span class="text-red-600">-{lineStats.removed}</span>
-                {/if}
+            <div class="col-span-2 pt-2 border-t">
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-muted-foreground">Files:</span>
+                <div class="flex items-center gap-3">
+                  <span class="flex items-center gap-1">
+                    <FileCode class="h-3 w-3" />
+                    {parsed.diff.length} changed
+                  </span>
+                  {#if lineStats.added > 0}
+                    <span class="text-green-600">+{lineStats.added}</span>
+                  {/if}
+                  {#if lineStats.removed > 0}
+                    <span class="text-red-600">-{lineStats.removed}</span>
+                  {/if}
+                </div>
               </div>
             </div>
-          </div>
-        {/if}
+          {/if}
+        </div>
       </div>
-    </div>
-  {:else}
-    <p class="text-sm text-muted-foreground mt-3 line-clamp-2">{description}</p>
-  {/if}
-
-  <!-- tags -->
-  {#snippet slotTags()}
-    {#if displayLabels && displayLabels.length}
-      {#each displayLabels as label}
-        <span class="rounded bg-muted px-2 py-0.5 text-xs max-w-full break-words shrink-0">
-          {label}
-        </span>
-      {/each}
+    {:else}
+      <p
+        class="text-sm text-muted-foreground mt-3 line-clamp-2 max-w-full break-all sm:break-words"
+      >
+        {description}
+      </p>
     {/if}
-  {/snippet}
 
-  <!-- footer actions: reactions/actions and counts -->
-  {#snippet slotFooter()}
-    <div class="flex items-center gap-1">
-      <ReactionSummary
-        event={event}
-        url={relayUrl}
-        reactionClass="tooltip-left"
-        deleteReaction={() => {}}
-        createReaction={() => {}}
-        noTooltip={false}
-        children={() => {}}
-      />
-      <EventActions event={event} url={relayUrl} noun={noun} customActions={undefined} />
-      <MessageSquare class="h-4 w-4 text-muted-foreground" />
-      <span class="text-sm text-muted-foreground">{comments?.length ?? 0}</span>
-    </div>
-  {/snippet}
-</BaseItemCard>
+    <!-- tags -->
+    {#snippet slotTags()}
+      {#if displayLabels && displayLabels.length}
+        {#each displayLabels as label}
+          <span class="rounded bg-muted px-2 py-0.5 text-xs max-w-full break-words shrink-0">
+            {label}
+          </span>
+        {/each}
+      {/if}
+    {/snippet}
+
+    <!-- footer actions: reactions/actions and counts -->
+    {#snippet slotFooter()}
+      <div class="flex items-center gap-1">
+        <ReactionSummary
+          event={event}
+          url={relayUrl}
+          reactionClass="tooltip-left"
+          deleteReaction={() => {}}
+          createReaction={() => {}}
+          noTooltip={false}
+          children={() => {}}
+        />
+        <EventActions event={event} url={relayUrl} noun={noun} customActions={undefined} />
+        <MessageSquare class="h-4 w-4 text-muted-foreground" />
+        <span class="text-sm text-muted-foreground">{comments?.length ?? 0}</span>
+      </div>
+    {/snippet}
+  </BaseItemCard>
+</div>
 
 {#if isExpanded}
   <Card class="git-card transition-colors">

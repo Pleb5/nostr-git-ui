@@ -4470,6 +4470,10 @@ body {
     word-break: normal;
   }
 
+  .sm\:break-words {
+    overflow-wrap: break-word;
+  }
+
   .sm\:rounded-lg {
     border-radius: var(--radius);
   }

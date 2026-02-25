@@ -17,9 +17,10 @@
 
   interface Props {
     event: NostrEvent;
+    relay?: string;
   }
 
-  let { event }: Props = $props();
+  let { event, relay }: Props = $props();
 
   // Reactive state using Svelte 5 runes
   let patchTitle = $state("");
@@ -38,6 +39,83 @@
   const patchContent = $derived(event.content || "");
   const createdDate = $derived(new Date(event.created_at * 1000));
   const isSigned = $derived(event.tags?.some((tag) => tag[0] === "commit-pgp-sig"));
+
+  const shortenMiddle = (value: string, start = 10, end = 6) => {
+    if (!value) return "";
+    if (value.length <= start + end + 3) return value;
+    return `${value.slice(0, start)}...${value.slice(-end)}`;
+  };
+
+  const parseRepoAddress = (address: string) => {
+    const parts = address.split(":");
+    if (parts.length < 3) return null;
+    const [kindStr, pubkey, ...identifierParts] = parts;
+    const kind = Number.parseInt(kindStr, 10);
+    const identifier = identifierParts.join(":");
+    if (!kind || !pubkey || !identifier) return null;
+    return { kind, pubkey, identifier };
+  };
+
+  const deriveRelayFromLocation = () => {
+    if (typeof window === "undefined") return "";
+    const match = window.location.pathname.match(/\/spaces\/([^/]+)\//);
+    if (!match) return "";
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  };
+
+  const encodeRelayPath = (value: string) =>
+    encodeURIComponent(
+      value
+        .replace(/^wss:\/\//, "")
+        .replace(/^ws:\/\//, "")
+        .replace(/\/$/, "")
+    );
+
+  const basePathFromLocation = () => {
+    if (typeof window === "undefined") return "";
+    const match = window.location.pathname.match(/(\/spaces\/[^/]+\/git\/[^/]+)/);
+    return match ? match[1] : "";
+  };
+
+  const repoNaddr = $derived.by(() => {
+    if (!repoAddress) return "";
+    const parsed = parseRepoAddress(repoAddress);
+    if (!parsed) return "";
+    try {
+      return nip19.naddrEncode({
+        kind: parsed.kind,
+        pubkey: parsed.pubkey,
+        identifier: parsed.identifier,
+        relays: [],
+      });
+    } catch {
+      return "";
+    }
+  });
+
+  const basePath = $derived.by(() => {
+    const relayValue = relay || deriveRelayFromLocation();
+    if (repoNaddr && relayValue) {
+      return `/spaces/${encodeRelayPath(relayValue)}/git/${repoNaddr}`;
+    }
+    return basePathFromLocation();
+  });
+
+  const patchHref = $derived.by(() => {
+    if (basePath) return `${basePath}/patches/${event.id}`;
+    return `patches/${event.id}`;
+  });
+
+  const repoDisplay = $derived.by(() => {
+    if (!repoAddress) return "";
+    const parsed = parseRepoAddress(repoAddress);
+    if (parsed?.identifier) return parsed.identifier;
+    return shortenMiddle(repoAddress);
+  });
 
   // Status color mapping
   const statusColors = $derived.by(() => {
@@ -129,7 +207,7 @@
     <div class="flex-1">
       <div class="flex items-center justify-between">
         <div class="flex-1">
-          <a href={`patches/${event.id}`} class="block">
+          <a href={patchHref} class="block">
             <h3
               class="text-base font-semibold mb-0.5 leading-tight hover:text-accent transition-colors"
               title={displayTitle}
@@ -186,7 +264,9 @@
       </div>
 
       {#if !isExpanded}
-        <p class="text-sm text-muted-foreground mb-3 line-clamp-2">
+        <p
+          class="text-sm text-muted-foreground mb-3 line-clamp-2 max-w-full break-all sm:break-words"
+        >
           {patchContent}
         </p>
       {:else}
@@ -200,7 +280,7 @@
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">Commit:</span>
               <div class="flex items-center gap-1">
-                <code class="bg-muted px-2 py-1 rounded font-mono">
+                <code class="bg-muted px-2 py-1 rounded font-mono" title={commitHash}>
                   {shortCommit}
                 </code>
                 <Button
@@ -220,8 +300,8 @@
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">Repository:</span>
               <div class="flex items-center gap-1">
-                <code class="bg-muted px-2 py-1 rounded font-mono text-xs">
-                  {repoAddress.split("/").pop() || repoAddress}
+                <code class="bg-muted px-2 py-1 rounded font-mono text-xs" title={repoAddress}>
+                  {repoDisplay || repoAddress}
                 </code>
                 <Button
                   variant="ghost"
