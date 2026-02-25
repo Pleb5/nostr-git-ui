@@ -44,6 +44,8 @@ export type RepoCard = {
   web: string[];
   clone: string[];
   maintainers: string[];
+  effectiveMaintainers: string[];
+  taggedMaintainers: string[];
   refs: any;
   rootsCount: number;
   revisionsCount: number;
@@ -68,6 +70,7 @@ export type ComputeCardsOptions = {
   Router: any;
   nip19: any;
   Address: any;
+  repoAnnouncements?: any[];
 };
 
 // Minimal singleton repositories store that holds RepoCard[]
@@ -77,7 +80,6 @@ function createRepositoriesStore() {
 
   // Caches for derived stores (same as in the page component)
   const refStateStoreByEuc = new Map<string, any>();
-  const maintainersStoreByEuc = new Map<string, any>();
   const patchDagStoreByAddr = new Map<string, any>();
 
   function notify() {
@@ -134,7 +136,6 @@ function createRepositoriesStore() {
     options: ComputeCardsOptions
   ): RepoCard[] {
     const {
-      deriveMaintainersForEuc,
       deriveRepoRefState,
       derivePatchGraph,
       parseRepoAnnouncementEvent,
@@ -145,8 +146,59 @@ function createRepositoriesStore() {
 
     // Validate that a string is a valid hex pubkey (exactly 64 hex characters)
     const isValidPubkey = (pubkey: string | undefined | null): boolean => {
-      if (!pubkey || typeof pubkey !== 'string') return false;
+      if (!pubkey || typeof pubkey !== "string") return false;
       return /^[0-9a-f]{64}$/i.test(pubkey);
+    };
+
+    const getTagValue = (event: any, name: string): string =>
+      (event?.tags || []).find((t: string[]) => t[0] === name)?.[1] || "";
+
+    const getEucTag = (event: any): string =>
+      (event?.tags || []).find((t: string[]) => t[0] === "r" && t[2] === "euc")?.[1] || "";
+
+    const isSameRepoIdentity = (baseEvent: any, candidateEvent: any): boolean => {
+      const baseD = getTagValue(baseEvent, "d");
+      const candidateD = getTagValue(candidateEvent, "d");
+      if (!baseD || !candidateD || baseD !== candidateD) return false;
+
+      const baseEuc = getEucTag(baseEvent);
+      const candidateEuc = getEucTag(candidateEvent);
+
+      if (baseEuc && candidateEuc) return baseEuc === candidateEuc;
+      if (baseEuc || candidateEuc) return false;
+      return true;
+    };
+
+    const getTaggedMaintainers = (event: any): string[] => {
+      const raw = (event?.tags || [])
+        .filter((t: string[]) => t[0] === "maintainers")
+        .flatMap((t: string[]) => t.slice(1));
+      return Array.from(new Set(raw.filter((pk: string) => isValidPubkey(pk))));
+    };
+
+    const getAnnouncingMaintainers = (event: any): Set<string> => {
+      const announcers = new Set<string>();
+      if (isValidPubkey(event?.pubkey)) announcers.add(event.pubkey);
+
+      for (const announcement of options.repoAnnouncements || []) {
+        if (!announcement?.pubkey || !isValidPubkey(announcement.pubkey)) continue;
+        if (!isSameRepoIdentity(event, announcement)) continue;
+        announcers.add(announcement.pubkey);
+      }
+
+      return announcers;
+    };
+
+    const getEffectiveMaintainers = (event: any, tagged: string[]): string[] => {
+      const announcers = getAnnouncingMaintainers(event);
+      const effective = new Set<string>();
+
+      if (isValidPubkey(event?.pubkey)) effective.add(event.pubkey);
+      for (const pk of tagged) {
+        if (announcers.has(pk)) effective.add(pk);
+      }
+
+      return Array.from(effective);
     };
 
     const bookmarked = loadedBookmarkedRepos || [];
@@ -166,7 +218,9 @@ function createRepositoriesStore() {
       const compositeKey = createRepoKey(event);
       const d = (event.tags || []).find((t: string[]) => t[0] === "d")?.[1] || "";
       const name = (event.tags || []).find((t: string[]) => t[0] === "name")?.[1] || "";
-      const cloneUrls = (event.tags || []).filter((t: string[]) => t[0] === "clone").map((t: string[]) => t[1]);
+      const cloneUrls = (event.tags || [])
+        .filter((t: string[]) => t[0] === "clone")
+        .map((t: string[]) => t[1]);
 
       // Extract event data
       const web = (event.tags || [])
@@ -179,22 +233,11 @@ function createRepositoriesStore() {
       // If we already have this repo, merge maintainers (duplicate announcement)
       if (byCompositeKey.has(compositeKey)) {
         const existing = byCompositeKey.get(compositeKey)!;
-        // Add this event's author as maintainer if not already present
-        if (event.pubkey && !existing.maintainers.includes(event.pubkey)) {
-          existing.maintainers.push(event.pubkey);
-        }
         // Merge web/clone URLs
         existing.web = Array.from(new Set([...existing.web, ...web]));
         existing.clone = Array.from(new Set([...existing.clone, ...clone]));
         continue;
       }
-
-      let mStore = maintainersStoreByEuc.get(euc);
-      if (!mStore) {
-        mStore = deriveMaintainersForEuc(euc);
-        maintainersStoreByEuc.set(euc, mStore);
-      }
-      const maintainers = Array.from(mStore.get() || []).filter((pk: any) => isValidPubkey(pk as string));
       let rStore = refStateStoreByEuc.get(euc);
       if (!rStore) {
         rStore = deriveRepoRefState(euc);
@@ -204,6 +247,7 @@ function createRepositoriesStore() {
       const first = event;
       let title = euc;
       let description = "";
+      const taggedMaintainers = getTaggedMaintainers(first);
       try {
         if (first) {
           const parsed = parseRepoAnnouncementEvent(first);
@@ -211,13 +255,15 @@ function createRepositoriesStore() {
           if (parsed?.description) description = parsed.description;
         }
       } catch {}
+      const effectiveMaintainers = getEffectiveMaintainers(first, taggedMaintainers);
       // Compute principal maintainer and naddr for navigation
       // Use first valid maintainer, or fall back to event pubkey if valid
-      const principal = maintainers.length > 0 && isValidPubkey(maintainers[0] as string)
-        ? maintainers[0]
-        : isValidPubkey((first as any)?.pubkey)
-        ? (first as any)?.pubkey
-        : "";
+      const principal =
+        effectiveMaintainers.length > 0 && isValidPubkey(effectiveMaintainers[0] as string)
+          ? effectiveMaintainers[0]
+          : isValidPubkey((first as any)?.pubkey)
+            ? (first as any)?.pubkey
+            : "";
       const repoNaddr = (() => {
         try {
           if (!principal || !title) return "";
@@ -256,7 +302,11 @@ function createRepositoriesStore() {
         web: Array.from(new Set(web)) as string[],
         clone: Array.from(new Set(clone)) as string[],
         // Ensure maintainers are filtered to only valid pubkeys
-        maintainers: maintainers.filter((pk: any) => isValidPubkey(pk)) as string[],
+        maintainers: effectiveMaintainers.filter((pk: any) => isValidPubkey(pk)) as string[],
+        effectiveMaintainers: effectiveMaintainers.filter((pk: any) =>
+          isValidPubkey(pk)
+        ) as string[],
+        taggedMaintainers,
         refs,
         rootsCount,
         revisionsCount,
