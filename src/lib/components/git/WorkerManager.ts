@@ -537,6 +537,19 @@ export class WorkerManager {
   }
 
   /**
+   * Get diff between two commits (baseOid -> headOid).
+   * Returns changes with diffHunks for PR diff display.
+   */
+  async getDiffBetween(params: {
+    repoId: string;
+    baseOid: string;
+    headOid: string;
+  }): Promise<{ success: boolean; changes?: any[]; error?: string }> {
+    await this.initialize();
+    return this.execute("getDiffBetween", params);
+  }
+
+  /**
    * Get commit count
    */
   async getCommitCount(params: { repoId: string; branch: string }): Promise<any> {
@@ -581,11 +594,78 @@ export class WorkerManager {
   }
 
   /**
+   * Analyze PR merge (fetches from PR clone URLs, tries multiple on failure)
+   */
+  async analyzePRMerge(params: {
+    repoId: string;
+    prCloneUrls: string[];
+    targetCloneUrls?: string[];
+    tipCommitOid: string;
+    targetBranch?: string;
+    allCommitOids?: string[];
+  }): Promise<any> {
+    await this.initialize();
+    return this.execute("analyzePRMerge", params);
+  }
+
+  /**
    * List branches from repository event (RPC)
    */
   async listBranchesFromEvent(params: { repoEvent: RepoAnnouncementEvent }): Promise<any> {
     await this.initialize();
     return this.execute("listBranchesFromEvent", params);
+  }
+
+  /**
+   * Get PR preview: commits and files changed between source and target branches (RPC)
+   * For fork PRs: cloneUrls = target/upstream, sourceCloneUrls = fork (where source branch lives)
+   */
+  async getPRPreview(params: {
+    repoId: string;
+    sourceBranch: string;
+    targetBranch: string;
+    cloneUrls: string[];
+    sourceCloneUrls?: string[];
+  }): Promise<any> {
+    await this.initialize();
+    return this.execute("getPRPreview", params);
+  }
+
+  /**
+   * Find commits ahead of tip OID in source remote. Source-only - no target.
+   * For fork PRs: cloneUrls = target (for init), sourceCloneUrls = fork.
+   */
+  async getCommitsAheadOfTip(params: {
+    repoId: string;
+    tipOid: string;
+    cloneUrls: string[];
+    sourceCloneUrls?: string[];
+  }): Promise<any> {
+    await this.initialize();
+    return this.execute("getCommitsAheadOfTip", params);
+  }
+
+  /**
+   * Get merge base between head commit and target branch. Call when preparing PR update.
+   */
+  async getMergeBaseBetween(params: {
+    repoId: string;
+    headOid: string;
+    targetBranch: string;
+    cloneUrls: string[];
+    sourceCloneUrls?: string[];
+  }): Promise<{ mergeBase?: string; error?: string }> {
+    await this.initialize();
+    return this.execute("getMergeBaseBetween", params);
+  }
+
+  /**
+   * List branch names from clone URLs without cloning (RPC).
+   * Used when creating PRs from forks to populate source branch dropdown.
+   */
+  async listBranchesFromUrls(params: { cloneUrls: string[] }): Promise<{ branches: string[] }> {
+    await this.initialize();
+    return this.execute("listBranchesFromUrls", params);
   }
 
   /**
@@ -697,6 +777,29 @@ export class WorkerManager {
   }> {
     await this.initialize();
     return this.execute("applyPatchAndPush", params, { timeoutMs: 120000 });
+  }
+
+  /**
+   * Merge a PR and push to remotes (RPC)
+   */
+  async mergePRAndPush(params: {
+    repoId: string;
+    cloneUrls: string[];
+    tipCommitOid: string;
+    targetBranch?: string;
+    mergeCommitMessage?: string;
+    fastForward?: boolean;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    mergeCommitOid?: string;
+    pushedRemotes?: string[];
+    skippedRemotes?: string[];
+    warning?: string;
+    pushErrors?: Array<{ remote: string; url: string; error: string; code: string; stack: string }>;
+  }> {
+    await this.initialize();
+    return this.execute("mergePRAndPush", params, { timeoutMs: 120000 });
   }
 
   /**

@@ -9,6 +9,7 @@ export { default as PatchCard } from "./git/PatchCard.svelte";
 export { default as WikiSidebar } from "./git/WikiSidebar.svelte";
 export { default as RepoTab } from "./git/RepoTab.svelte";
 export { default as NewIssueForm } from "./git/NewIssueForm.svelte";
+export { default as NewPRForm } from "./git/NewPRForm.svelte";
 export { default as MergeAnalyzer } from "./git/MergeAnalyzer.svelte";
 export { default as ConflictVisualizer } from "./git/ConflictVisualizer.svelte";
 export { default as MergeStatus } from "./git/MergeStatus.svelte";
