@@ -881,6 +881,36 @@ export class Repo {
     return await this.patchManager.hasMergeAnalysis(patchId);
   }
 
+  /**
+   * Get merge analysis for a PR (fetches from PR clone URLs, no cache).
+   */
+  async getPRMergeAnalysis(
+    prCloneUrls: string[],
+    tipCommitOid: string,
+    targetBranch: string,
+    allCommitOids?: string[],
+  ): Promise<import("@nostr-git/core/git").PRMergeAnalysisResult | null> {
+    if (!this.repoEvent || !this.workerManager) return null;
+    const repoId = this.key;
+    const fallbackMain = this.branchManager.getMainBranch();
+    // todo: what if branch name has "/" in it?
+    const effectiveBranch = typeof targetBranch === "string" ? targetBranch.split("/").pop() || fallbackMain : fallbackMain;
+    try {
+      const result = await this.workerManager.analyzePRMerge({
+        repoId,
+        prCloneUrls,
+        targetCloneUrls: this.cloneUrls,
+        tipCommitOid,
+        targetBranch: effectiveBranch,
+        allCommitOids: allCommitOids,
+      });
+      return result;
+    } catch (err) {
+      console.error("[Repo] getPRMergeAnalysis failed:", err);
+      return null;
+    }
+  }
+
   // Public API for force refresh merge analysis for a patch
   async refreshMergeAnalysis(
     patch: PatchEvent,

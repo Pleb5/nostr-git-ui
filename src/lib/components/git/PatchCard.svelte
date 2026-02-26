@@ -70,15 +70,38 @@
     isNew = false,
   }: Props = $props();
 
-  const isPullRequest = event.kind === GIT_PULL_REQUEST;
+  const isPullRequest = $derived(event.kind === GIT_PULL_REQUEST);
 
-  const parsed = isPullRequest
-    ? (parsePullRequestEvent(event as PullRequestEvent) as any)
-    : (parseGitPatchFromEvent(event as PatchEvent) as any);
+  const { id, title, description, baseBranch, commitCount, createdAt, commitHash, diff, author } = $derived.by(() => {
+    if (isPullRequest) {
+      const parsed = parsePullRequestEvent(event as PullRequestEvent);
+      return {
+        id: parsed.id,
+        title: parsed.subject,
+        description: parsed.content,
+        baseBranch: parsed.commits[0],
+        commitCount: parsed.commits.length,
+        createdAt: parsed.createdAt,
+      };
+    }
 
-  const { id, title, description, baseBranch, commitCount, createdAt } = parsed;
-  const displayTitle =
-    title && typeof title === "string" && title.trim().length > 0 ? title.trim() : "Untitled";
+    const parsed = parseGitPatchFromEvent(event as PatchEvent);
+    return {
+      id: parsed.id,
+      title: parsed.title,
+      description: parsed.description,
+      baseBranch: parsed.baseBranch,
+      commitCount: parsed.commitCount,
+      createdAt: parsed.createdAt,
+      commitHash: parsed.commitHash,
+      diff: parsed.diff,
+      author: parsed.author,
+    };
+
+  });
+  
+
+  const displayTitle = $derived(title && typeof title === "string" && title.trim().length > 0 ? title.trim() : "Untitled");
 
   // Create relay URL for EventActions
   const relayUrl = $derived.by(() => {
