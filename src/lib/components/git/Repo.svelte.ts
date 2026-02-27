@@ -341,6 +341,7 @@ export class Repo {
 
     repoEvent.subscribe((event) => {
       if (event) {
+        if (this.repoEvent?.id === event.id) return;
         this.repoEvent = event;
         this.#repo = parseRepoAnnouncementEvent(event);
         this.name = this.#repo!.name!;
@@ -380,11 +381,12 @@ export class Repo {
     });
 
     repoStateEvent.subscribe((event) => {
-      console.log(
-        `[Repo] repoStateEvent subscription fired:`,
-        event ? `has event with ${event.tags?.length || 0} tags` : "undefined"
-      );
       if (event) {
+        if (this.#repoStateEvent?.id === event.id) return;
+        console.log(
+          `[Repo] repoStateEvent subscription fired:`,
+          `has event with ${event.tags?.length || 0} tags`
+        );
         this.#repoStateEvent = event; // Set the reactive state
         this.#state = parseRepoStateEvent(event);
 
