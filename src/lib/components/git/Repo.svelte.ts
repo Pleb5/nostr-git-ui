@@ -937,25 +937,77 @@ export class Repo {
         return;
       }
 
-      this.#loadingIds.clone = context.loading("Initializing repository...");
+      // Check if REST API is available for this repo
+      const hasVendorApi = this.vendorReadRouter?.hasVendorSupport(cloneUrls) ?? false;
+      
+      // Check if current user is a maintainer
+      const isMaintainer = this.viewerPubkey ? this.isAuthorized(this.viewerPubkey) : false;
 
-      // Use smart initialization instead of always cloning
-      const result = await this.workerManager.smartInitializeRepo({
-        repoId,
-        cloneUrls,
-      });
+      console.log(`[Repo] #loadCommitsFromRepo: hasVendorApi=${hasVendorApi}, isMaintainer=${isMaintainer}`);
 
-      if (result.success) {
+      if (hasVendorApi && !isMaintainer) {
+        // NON-MAINTAINER with REST API: Skip git clone entirely, use only REST API
+        console.log(`[Repo] Non-maintainer with REST API available - skipping git clone, using REST API only`);
+        this.#loadingIds.clone = context.loading("Loading repository via API...");
+        
+        // Load commits directly via REST API (CommitManager uses VendorReadRouter)
+        await this.#loadCommits();
+        
         context.update(this.#loadingIds.clone, {
           type: "success",
-          message: result.fromCache ? "Repository loaded from cache" : "Repository initialized",
+          message: "Repository loaded via API",
           duration: 3000,
         });
-
-        // Load commits after successful initialization
+      } else if (hasVendorApi && isMaintainer) {
+        // MAINTAINER with REST API: Load metadata via REST API first for fast UI, then clone in background
+        console.log(`[Repo] Maintainer with REST API available - loading via API first, then cloning in background`);
+        this.#loadingIds.clone = context.loading("Loading repository...");
+        
+        // First: Load commits immediately via REST API for fast UI response
         await this.#loadCommits();
+        
+        context.update(this.#loadingIds.clone, {
+          type: "success",
+          message: "Repository loaded via API",
+          duration: 2000,
+        });
+        
+        // Then: Clone in background for full git functionality (push, commit, etc.)
+        // Fire-and-forget - don't block the UI
+        this.workerManager.smartInitializeRepo({
+          repoId,
+          cloneUrls,
+        }).then((result) => {
+          if (result.success) {
+            console.log(`[Repo] Background git clone completed for maintainer`);
+          } else {
+            console.warn(`[Repo] Background git clone failed:`, result.error);
+          }
+        }).catch((err) => {
+          console.warn(`[Repo] Background git clone error:`, err);
+        });
       } else {
-        throw new Error(result.error || "Smart initialization failed");
+        // NO REST API: Use git clone as before
+        this.#loadingIds.clone = context.loading("Initializing repository...");
+
+        // Use smart initialization instead of always cloning
+        const result = await this.workerManager.smartInitializeRepo({
+          repoId,
+          cloneUrls,
+        });
+
+        if (result.success) {
+          context.update(this.#loadingIds.clone, {
+            type: "success",
+            message: result.fromCache ? "Repository loaded from cache" : "Repository initialized",
+            duration: 3000,
+          });
+
+          // Load commits after successful initialization
+          await this.#loadCommits();
+        } else {
+          throw new Error(result.error || "Smart initialization failed");
+        }
       }
     } catch (error) {
       console.error("Git initialization failed:", error);
