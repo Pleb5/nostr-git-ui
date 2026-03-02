@@ -82,6 +82,8 @@
         baseBranch: parsed.commits[0],
         commitCount: parsed.commits.length,
         createdAt: parsed.createdAt,
+        commitHash: parsed.commits[0],
+        author: parsed.author as {pubkey: string; name?: string},
       };
     }
 
@@ -359,14 +361,14 @@
           >• {reviewersCount} reviewer{reviewersCount === 1 ? "" : "s"}</span
         >
       {/if}
-      {#if parsed.commitHash}
+      {#if commitHash}
         <div class="flex items-center gap-1 whitespace-nowrap">
           <span>•</span>
           <GitCommit class="h-3 w-3" />
-          <code class="text-xs font-mono">{parsed.commitHash.substring(0, 7)}</code>
+          <code class="text-xs font-mono">{commitHash.substring(0, 7)}</code>
           <button
             class="hover:text-foreground transition-colors"
-            onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+            onclick={() => copyToClipboard(commitHash, "Commit hash")}
           >
             <Copy class="h-3 w-3" />
           </button>
@@ -388,16 +390,16 @@
       </p>
       <div class="mt-3 p-3 bg-muted/30 rounded border text-xs">
         <div class="grid grid-cols-2 gap-2">
-          {#if parsed.commitHash}
+          {#if commitHash}
             <div class="flex items-center justify-between">
               <span class="text-muted-foreground">Commit:</span>
               <div class="flex items-center gap-1">
                 <code class="bg-background px-1 rounded font-mono"
-                  >{parsed.commitHash.substring(0, 8)}</code
+                  >{commitHash.substring(0, 8)}</code
                 >
                 <button
                   class="hover:text-foreground transition-colors"
-                  onclick={() => copyToClipboard(parsed.commitHash, "Commit hash")}
+                  onclick={() => copyToClipboard(commitHash, "Commit hash")}
                 >
                   <Copy class="h-3 w-3" />
                 </button>
@@ -407,7 +409,7 @@
 
           {#if event.tags}
             {@const committerName = getTagValue(event as any, "committer")}
-            {#if committerName && committerName !== parsed.author.name}
+            {#if committerName && author.name && committerName !== author.name}
               <div class="flex items-center justify-between">
                 <span class="text-muted-foreground">Committer:</span>
                 <div class="flex items-center gap-1 min-w-0">
@@ -426,8 +428,8 @@
             {/if}
           {/if}
 
-          {#if parsed.diff && parsed.diff.length > 0}
-            {@const lineStats = parsed.diff.reduce(
+          {#if diff && diff.length > 0}
+            {@const lineStats = diff.reduce(
               (acc: any, file: any) => {
                 const content = file.content || "";
                 const added = (content.match(/^\+/gm) || []).length;
@@ -443,7 +445,7 @@
                 <div class="flex items-center gap-3">
                   <span class="flex items-center gap-1">
                     <FileCode class="h-3 w-3" />
-                    {parsed.diff.length} changed
+                    {diff.length} changed
                   </span>
                   {#if lineStats.added > 0}
                     <span class="text-green-600">+{lineStats.added}</span>

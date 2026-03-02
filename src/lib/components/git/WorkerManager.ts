@@ -506,7 +506,12 @@ export class WorkerManager {
   /**
    * Ensure full clone of repository
    */
-  async ensureFullClone(params: { repoId: string; branch: string; depth?: number }): Promise<any> {
+  async ensureFullClone(params: {
+    repoId: string;
+    branch: string;
+    depth?: number;
+    cloneUrls?: string[];
+  }): Promise<any> {
     await this.initialize();
     return this.execute("ensureFullClone", params);
   }
@@ -780,7 +785,18 @@ export class WorkerManager {
   }
 
   /**
-   * Merge a PR and push to remotes (RPC)
+   * Merge a PR and push to remotes (RPC).
+   *
+   * For GRASP remotes the push requires a signed Nostr state event (kind 30618) pointing to the
+   * new merge commit to be on the relay *before* the git push is accepted. This mirrors how
+   * ngit-cli works: publish state → confirm relay received it → git push.
+   *
+   * When `publishStateEvent` is provided the method uses a two-phase approach for GRASP:
+   *   1. Worker merges only (skipPush=true) → returns mergeCommitOid
+   *   2. Main thread publishes state event with new SHA and waits for the callback to resolve
+   *   3. Worker pushes (unauthenticated smart HTTP)
+   *
+   * For non-GRASP remotes the normal single-call path is used.
    */
   async mergePRAndPush(params: {
     repoId: string;
@@ -789,6 +805,19 @@ export class WorkerManager {
     targetBranch?: string;
     mergeCommitMessage?: string;
     fastForward?: boolean;
+    userPubkey?: string;
+    /**
+     * Called after the merge commit is created but before the git push.
+     * Must publish a Nostr state event (kind 30618) with the new branch → SHA mapping to the
+     * GRASP relay and resolve only once the event is confirmed (or best-effort sent).
+     * Params: repoName (identifier only), branch name, new commit SHA, relay WebSocket URL.
+     */
+    publishStateEvent?: (opts: {
+      repoName: string;
+      branch: string;
+      commitSha: string;
+      relayUrl: string;
+    }) => Promise<void>;
   }): Promise<{
     success: boolean;
     error?: string;
@@ -799,7 +828,140 @@ export class WorkerManager {
     pushErrors?: Array<{ remote: string; url: string; error: string; code: string; stack: string }>;
   }> {
     await this.initialize();
-    return this.execute("mergePRAndPush", params, { timeoutMs: 120000 });
+
+    const baseParams: Record<string, unknown> = {
+      repoId: params.repoId,
+      cloneUrls: params.cloneUrls,
+      tipCommitOid: params.tipCommitOid,
+      targetBranch: params.targetBranch,
+      mergeCommitMessage: params.mergeCommitMessage,
+      fastForward: params.fastForward,
+      userPubkey: params.userPubkey,
+    };
+
+    // ── Two-phase flow for GRASP remotes ──────────────────────────────────────
+    // GRASP authorizes pushes by checking the relay for a state event (30618) signed by the
+    // maintainer that declares the new branch HEAD. We must publish it between merge and push.
+    if (typeof params.publishStateEvent === "function") {
+      try {
+        // Ensure repo is cloned so listRemotes works
+        await this.ensureFullClone({
+          repoId: params.repoId,
+          branch: params.targetBranch || "main",
+          cloneUrls: params.cloneUrls,
+        });
+
+        const remotes = await this.execute<Array<{ remote: string; url: string }>>("listRemotes", {
+          repoId: params.repoId,
+        });
+
+        const graspRemotes = (remotes || []).filter(
+          (r) => r.url && /relay\.ngit\.dev|gitnostr\.com|grasp/i.test(r.url)
+        );
+
+        if (graspRemotes.length > 0) {
+          // Phase 1: merge only
+          const mergeOnlyResult = await this.execute<{
+            success: boolean;
+            error?: string;
+            mergeCommitOid?: string;
+          }>("mergePRAndPush", { ...baseParams, skipPush: true }, { timeoutMs: 120000 });
+
+          if (!mergeOnlyResult?.success || !mergeOnlyResult.mergeCommitOid) {
+            return {
+              success: false,
+              error: mergeOnlyResult?.error || "Merge failed",
+            };
+          }
+
+          const mergeCommitOid = mergeOnlyResult.mergeCommitOid;
+          const branch = params.targetBranch || "main";
+
+          // Phase 2: publish state event for each GRASP remote, then push
+          const pushedRemotes: string[] = [];
+          const skippedRemotes: string[] = [];
+          const pushErrors: Array<{ remote: string; url: string; error: string; code: string; stack: string }> = [];
+
+          for (const remote of graspRemotes) {
+            try {
+              // Extract relay WebSocket URL and repo identifier from the GRASP clone URL
+              const u = new URL(remote.url);
+              const relayUrl = `wss://${u.host}`;
+              const parts = u.pathname.replace(/^\//, "").split("/");
+              const repoName = (parts[1] || "").replace(/\.git$/, "");
+
+              // Publish state event with new SHA — GRASP relay must confirm before push
+              await params.publishStateEvent({ repoName, branch, commitSha: mergeCommitOid, relayUrl });
+
+              // Phase 3: push (unauthenticated smart HTTP — relay now has the state event)
+              const pushResult = await this.execute<{ success?: boolean; error?: string }>(
+                "pushToRemote",
+                {
+                  repoId: params.repoId,
+                  remoteUrl: remote.url,
+                  branch,
+                  token: params.userPubkey,
+                  provider: "grasp",
+                },
+                { timeoutMs: 60000 }
+              );
+
+              if (pushResult?.success) {
+                pushedRemotes.push(remote.remote);
+              } else {
+                throw new Error(pushResult?.error || "Push failed");
+              }
+            } catch (err: any) {
+              pushErrors.push({
+                remote: remote.remote,
+                url: remote.url,
+                error: err?.message || String(err),
+                code: err?.code || "UNKNOWN",
+                stack: err?.stack || "",
+              });
+              skippedRemotes.push(remote.remote);
+            }
+          }
+
+          if (pushedRemotes.length === 0 && graspRemotes.length > 0) {
+            // All GRASP pushes failed — reset local state
+            try {
+              await this.execute("resetRepoToRemote", {
+                repoId: params.repoId,
+                branch,
+                cloneUrls: params.cloneUrls,
+              });
+            } catch {
+              // best effort
+            }
+            const firstErr = pushErrors[0];
+            return {
+              success: false,
+              error: firstErr
+                ? `Push to ${firstErr.remote} failed: ${firstErr.error}`
+                : "Push to all GRASP remotes failed",
+              pushedRemotes,
+              skippedRemotes,
+              pushErrors,
+            };
+          }
+
+          return {
+            success: true,
+            mergeCommitOid,
+            pushedRemotes,
+            skippedRemotes,
+            pushErrors: pushErrors.length ? pushErrors : undefined,
+          };
+        }
+      } catch (e: any) {
+        console.warn("[WorkerManager] GRASP two-phase merge failed, falling back to normal flow:", e);
+        // Fall through to normal single-call flow
+      }
+    }
+
+    // ── Normal single-call flow (non-GRASP or no publishStateEvent callback) ──
+    return this.execute("mergePRAndPush", baseParams, { timeoutMs: 120000 });
   }
 
   /**
