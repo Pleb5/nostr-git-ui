@@ -42,8 +42,8 @@
     // When provided, NIP-19 codes in description are replaced by this URL template.
     // e.g. "https://njump.me/{raw}" or "/spaces/{type}/{id}"
     nip19LinkTemplate?: string;
+    assignees?: string[]; // Array of assignee pubkeys
     assigneeCount?: number; // Optional prop for displaying number of assignees
-    assignees?: string[]; // Optional list of assignee pubkeys
     relays?: string[]; // Relay URLs for EventActions
   }
   // Accept event and optional author (Profile store)

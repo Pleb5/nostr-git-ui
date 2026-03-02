@@ -70,7 +70,7 @@ export type ComputeCardsOptions = {
   Router: any;
   nip19: any;
   Address: any;
-  repoAnnouncements?: any[];
+  repoAnnouncements: any;
 };
 
 // Minimal singleton repositories store that holds RepoCard[]
