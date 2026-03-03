@@ -70,6 +70,8 @@
   );
 
   const isDiff = $derived(!!parentCommit);
+  // Derive the icon component to use instead of svelte:component
+  const IconComponent = $derived(isDiff ? GitCommit : FileCode);
   const kindLabel = $derived(isDiff ? "Diff" : "Code");
   const kindTitle = $derived(isDiff ? "Diff permalink" : "Code permalink");
   const kindIconClass = $derived(isDiff ? "text-amber-500" : "text-blue-500");
@@ -262,8 +264,7 @@
 
 <Card class="git-card git-permalink-card hover:bg-accent/50 transition-colors">
   <div class="flex items-start gap-3">
-    <svelte:component
-      this={isDiff ? GitCommit : FileCode}
+    <IconComponent
       class={`h-6 w-6 mt-1 ${kindIconClass}`}
     />
 

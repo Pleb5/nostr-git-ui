@@ -81,7 +81,7 @@
   const shouldAutoOpen = $derived(!!autoOpenPath && autoOpenPath === path);
   const instanceId = Math.random().toString(36).substring(7);
   let content = $state("");
-  let isExpanded = $state(isViewer);
+  let isExpanded = $derived(isViewer);
   let isMetadataPanelOpen = $state(false);
   let isLoading = $state(false);
   let showFileMenu = $state(false);
@@ -119,7 +119,7 @@
 
   let hasLoadedOnce = false;
   let fileViewElement: HTMLElement | null = $state(null);
-  let lastFilePath = $state(path);
+  let lastFilePath = $derived(path);
   const LONG_PRESS_MS = 300;
   const TOUCH_MOVE_THRESHOLD = 8;
   const AUTO_SCROLL_THRESHOLD = 36;
@@ -1259,9 +1259,10 @@
 </script>
 
 <div class={containerClass} bind:this={fileViewElement}>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div
     role={isViewer ? "group" : "button"}
-    tabindex={isViewer ? undefined : 0}
+    tabindex={!isViewer ? 0 : undefined}
     class={headerClass}
     onclick={handleRowActivate}
     onkeydown={(e) => {

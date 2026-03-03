@@ -1069,6 +1069,7 @@
               {@const isFirstClone = index === 0}
               {@const isLastClone = index === formData.cloneUrls.length - 1}
               <div
+                role="listitem"
                 class={`flex items-center space-x-2 rounded-lg ${
                   isCloneDragOver ? "bg-gray-800/40 ring-1 ring-blue-500/40" : ""
                 }`}
@@ -1214,6 +1215,7 @@
                     {@const isAlreadyAdded = tagExists(tag)}
                     <button
                       type="button"
+                      role="option"
                       aria-selected={index === highlightedHashtagIndex}
                       disabled={isAlreadyAdded}
                       onmousedown={(e) => {
@@ -1243,6 +1245,7 @@
                   {#if canCreateCustomTag()}
                     <button
                       type="button"
+                      role="option"
                       aria-selected={highlightedHashtagIndex === hashtagSearchResults.length}
                       onmousedown={(e) => {
                         e.preventDefault();
