@@ -80,7 +80,7 @@ export interface VendorCommitResult {
   hasMore?: boolean;
 }
 
-type SupportedVendor = "github" | "gitlab" | "gitea" | "bitbucket";
+type SupportedVendor = "github" | "gitlab" | "gitea" | "bitbucket" | "grasp-rest";
 
 /**
  * Callback for reporting clone URL errors to the UI
@@ -490,6 +490,7 @@ export class VendorReadRouter {
       if (v === "gitlab") return "gitlab";
       if (v === "gitea") return "gitea";
       if (v === "bitbucket") return "bitbucket";
+      if (v === "grasp-rest") return "grasp-rest";
       return null;
     } catch {
       return null;
@@ -583,6 +584,10 @@ export class VendorReadRouter {
         return this.vendorListDirectoryGitLab({ vendor, remoteUrl, branch, path });
       case "bitbucket":
         return this.vendorListDirectoryBitbucket({ vendor, remoteUrl, branch, path });
+      case "grasp-rest":
+        return this.vendorListDirectoryGraspRest({ vendor, remoteUrl, branch, path });
+      default:
+        throw createUnknownError(`Unsupported vendor: ${vendor}`);
     }
   }
 
@@ -601,6 +606,10 @@ export class VendorReadRouter {
         return this.vendorGetFileContentGitLab({ vendor, remoteUrl, branch, path });
       case "bitbucket":
         return this.vendorGetFileContentBitbucket({ vendor, remoteUrl, branch, path });
+      case "grasp-rest":
+        return this.vendorGetFileContentGraspRest({ vendor, remoteUrl, branch, path });
+      default:
+        throw createUnknownError(`Unsupported vendor: ${vendor}`);
     }
   }
 
@@ -608,12 +617,14 @@ export class VendorReadRouter {
     switch (params.vendor) {
       case "github":
         return this.vendorListRefsGitHub(params.remoteUrl);
-      case "gitea":
-        return this.vendorListRefsGitea(params.remoteUrl);
       case "gitlab":
         return this.vendorListRefsGitLab(params.remoteUrl);
+      case "gitea":
+        return this.vendorListRefsGitea(params.remoteUrl);
       case "bitbucket":
         return this.vendorListRefsBitbucket(params.remoteUrl);
+      case "grasp-rest":
+        return this.vendorListRefsGraspRest(params.remoteUrl);
     }
   }
 
@@ -633,6 +644,10 @@ export class VendorReadRouter {
         return this.vendorListCommitsGitLab(params);
       case "bitbucket":
         return this.vendorListCommitsBitbucket(params);
+      case "grasp-rest":
+        return this.vendorListCommitsGraspRest(params);
+      default:
+        throw createUnknownError(`Unsupported vendor: ${params.vendor}`);
     }
   }
 
@@ -1112,6 +1127,190 @@ export class VendorReadRouter {
   }
 
   // -------------------------
+  // GraspRest vendor support
+  // -------------------------
+
+  private async vendorListDirectoryGraspRest(params: {
+    vendor: "grasp-rest";
+    remoteUrl: string;
+    branch: string;
+    path: string;
+  }): Promise<VendorDirectoryResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("grasp-rest", host);
+    const cleanPath = this.normalizeRepoPath(params.path);
+
+    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/tree/${encodeURIComponent(params.branch)}/${cleanPath ? encodeURIComponent(cleanPath) : ""}`;
+
+    const ctx = this.ctx({
+      op: "listDirectory",
+      remote: params.remoteUrl,
+      branch: params.branch,
+      path: params.path,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "grasp-rest",
+      ctx,
+    });
+
+    if (!json || typeof json !== "object") {
+      throw createUnknownError(`Unexpected GraspRest directory response.${ctx}`);
+    }
+
+    const files: VendorFileInfo[] = json.map((item: any) => ({
+      path: item.path || "",
+      type: item.type === "tree" ? "directory" : "file",
+      size: item.size,
+      oid: item.sha,
+    }));
+
+    return {
+      files,
+      path: params.path || "/",
+      ref: (params.branch || "").split("/").pop() || "",
+      fromVendor: true,
+    };
+  }
+
+  private async vendorGetFileContentGraspRest(params: {
+    vendor: "grasp-rest";
+    remoteUrl: string;
+    branch: string;
+    path: string;
+  }): Promise<VendorFileContentResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("grasp-rest", host);
+    const filePath = this.normalizeRepoPath(params.path);
+
+    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/blob/${encodeURIComponent(params.branch)}/${encodeURIComponent(filePath)}`;
+
+    const ctx = this.ctx({
+      op: "getFileContent",
+      remote: params.remoteUrl,
+      branch: params.branch,
+      path: params.path,
+    });
+
+    const content = await this.fetchTextWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "grasp-rest",
+      ctx,
+    });
+
+    return {
+      content,
+      path: params.path,
+      ref: (params.branch || "").split("/").pop() || "",
+      encoding: "utf-8",
+      size: content.length,
+      fromVendor: true,
+    };
+  }
+
+  private async vendorListRefsGraspRest(remoteUrl: string): Promise<VendorRef[]> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
+    const apiBase = this.getApiBase("grasp-rest", host);
+    const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
+
+    const branchesUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/branches`;
+    const tagsUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`;
+
+    const [branchesJson, tagsJson] = await Promise.all([
+      this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "grasp-rest", ctx }),
+      this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "grasp-rest", ctx }),
+    ]);
+
+    const out: VendorRef[] = [];
+
+    if (Array.isArray(branchesJson)) {
+      for (const b of branchesJson) {
+        const name = String(b?.name || "");
+        const commitId = String(b?.commit?.sha || "");
+        if (!name) continue;
+        out.push({ name, type: "heads", fullRef: `refs/heads/${name}`, commitId });
+      }
+    }
+
+    if (Array.isArray(tagsJson)) {
+      for (const t of tagsJson) {
+        const name = String(t?.name || "");
+        const commitId = String(t?.commit?.sha || "");
+        if (!name) continue;
+        out.push({ name, type: "tags", fullRef: `refs/tags/${name}`, commitId });
+      }
+    }
+
+    return out;
+  }
+
+  private async vendorListCommitsGraspRest(params: {
+    vendor: "grasp-rest";
+    remoteUrl: string;
+    branch: string;
+    page?: number;
+    perPage?: number;
+  }): Promise<VendorCommitResult> {
+    const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const apiBase = this.getApiBase("grasp-rest", host);
+    const page = params.page || 1;
+    const perPage = params.perPage || 30;
+
+    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+      repo
+    )}/commits?sha=${encodeURIComponent(params.branch)}&page=${page}&per_page=${perPage}`;
+
+    const ctx = this.ctx({
+      op: "listCommits",
+      remote: params.remoteUrl,
+      branch: params.branch,
+    });
+
+    const json = await this.fetchJsonWithOptionalTokenRetry({
+      host,
+      url,
+      vendor: "grasp-rest",
+      ctx,
+    });
+
+    if (!Array.isArray(json)) {
+      throw createUnknownError(`Unexpected GraspRest commits response.${ctx}`);
+    }
+
+    const commits: VendorCommit[] = json.map((c: any) => ({
+      sha: c.sha || "",
+      message: c.commit?.message || "",
+      author: {
+        name: c.commit?.author?.name || "",
+        email: c.commit?.author?.email || "",
+        date: c.commit?.author?.date || "",
+      },
+      committer: {
+        name: c.commit?.committer?.name || "",
+        email: c.commit?.committer?.email || "",
+        date: c.commit?.committer?.date || "",
+      },
+      parents: (c.parents || []).map((p: any) => ({ sha: p.sha || "" })),
+    }));
+
+    return {
+      commits,
+      ref: params.branch.split("/").pop() || "",
+      fromVendor: true,
+      hasMore: commits.length === perPage,
+    };
+  }
+
+  // -------------------------
   // Commit listing implementations
   // -------------------------
 
@@ -1383,17 +1582,24 @@ export class VendorReadRouter {
       // Special-case github.com to api.github.com; otherwise assume GH Enterprise at /api/v3
       if (h.toLowerCase() === "github.com") return "https://api.github.com";
       return `https://${h}/api/v3`;
-    }
-    if (vendor === "gitlab") {
+    } else if (vendor === "gitlab") {
       return `https://${h}/api/v4`;
-    }
-    if (vendor === "bitbucket") {
+    } else if (vendor === "gitea") {
+      return `https://${h}/api/v1`;
+    } else if (vendor === "bitbucket") {
       // Special-case bitbucket.org to api.bitbucket.org; otherwise assume self-hosted
       if (h.toLowerCase() === "bitbucket.org") return "https://api.bitbucket.org/2.0";
       return `https://${h}/api/2.0`;
+    } else if (vendor === "grasp-rest") {
+      // For grasp-rest, convert ws(s):// to http(s)://
+      if (h.startsWith("ws://")) {
+        return h.replace("ws://", "http://");
+      } else if (h.startsWith("wss://")) {
+        return h.replace("wss://", "https://");
+      }
+      return `https://${h}`;
     }
-    // gitea
-    return `https://${h}/api/v1`;
+    return `https://${h}`;
   }
 
   private parseOwnerRepoFromCloneUrl(url: string): { host: string; owner: string; repo: string } {
@@ -1500,22 +1706,17 @@ export class VendorReadRouter {
     const headers: Record<string, string> = {
       Accept: "application/json",
     };
-
     if (!token) return headers;
 
     if (vendor === "github" || vendor === "gitea") {
-      headers["Authorization"] = `token ${token}`;
-      return headers;
-    }
-
-    if (vendor === "gitlab") {
-      headers["PRIVATE-TOKEN"] = token;
-      return headers;
-    }
-
-    if (vendor === "bitbucket") {
-      headers["Authorization"] = `Bearer ${token}`;
-      return headers;
+      headers.Authorization = `token ${token}`;
+    } else if (vendor === "gitlab") {
+      headers.Authorization = `Bearer ${token}`;
+    } else if (vendor === "bitbucket") {
+      headers.Authorization = `Bearer ${token}`;
+    } else if (vendor === "grasp-rest") {
+      // grasp-rest uses bearer token for authentication
+      headers.Authorization = `Bearer ${token}`;
     }
 
     return headers;

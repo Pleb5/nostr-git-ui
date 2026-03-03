@@ -24,19 +24,19 @@
   });
   const isSwitching = $derived.by(() => repo.isBranchSwitching);
 
-  // Debug logging
-  $effect(() => {
-    console.log(
-      "[BranchSelector] refs:",
-      refs.length,
-      "branches:",
-      branches.length,
-      "tags:",
-      tags.length
-    );
-    console.log("[BranchSelector] selectedBranch:", selectedBranch, "mainBranch:", mainBranch);
-    console.log("[BranchSelector] isSwitching:", isSwitching);
-  });
+  // Debug logging disabled for performance - uncomment if needed for debugging
+  // $effect(() => {
+  //   console.log(
+  //     "[BranchSelector] refs:",
+  //     refs.length,
+  //     "branches:",
+  //     branches.length,
+  //     "tags:",
+  //     tags.length
+  //   );
+  //   console.log("[BranchSelector] selectedBranch:", selectedBranch, "mainBranch:", mainBranch);
+  //   console.log("[BranchSelector] isSwitching:", isSwitching);
+  // });
 
   function handleChange(e: Event) {
     const target = e.target as HTMLSelectElement;
