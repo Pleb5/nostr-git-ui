@@ -147,9 +147,11 @@
                 <CardContent class="p-3">
                   <div class="flex items-center justify-between mb-2">
                     <span class="font-mono text-sm">{conflict.file}</span>
-                    <Badge variant="destructive" class="text-xs">
-                      {conflict.conflictMarkers?.length ?? 0} conflicts
-                    </Badge>
+                    {#if conflict.type === "content" && conflict.conflictMarkers && conflict.conflictMarkers.length > 0}
+                      <Badge variant="destructive" class="text-xs">
+                        {conflict.conflictMarkers.length} conflicts
+                      </Badge>
+                    {/if}
                   </div>
 
                   <div class="text-xs text-muted-foreground">
