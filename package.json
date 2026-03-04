@@ -13,25 +13,23 @@
       "require": "./dist/index.js"
     },
     "./tailwind.preset.js": "./tailwind.preset.js",
-    "./index.css": "./index.css"
+    "./index.css": "./dist/index.css"
   },
   "files": [
     "dist",
-    "index.css",
     "tailwind.preset.js"
   ],
   "scripts": {
-    "clean": "rm -rf dist index.css",
+    "clean": "rm -rf dist",
     "format": "prettier --write .",
     "lint": "eslint .",
     "lint:fix": "pnpm lint --fix",
     "build": "pnpm run clean && svelte-package && pnpm run build:tailwind",
-    "build:tailwind": "mkdir -p dist && tailwindcss -i ./src/index.css -o ./index.css --minify && cp index.css dist/index.css",
-    "watch": "mkdir -p dist && (pnpm run watch:lib & pnpm run watch:tailwind & pnpm run watch-css)",
+    "build:tailwind": "mkdir -p dist && tailwindcss -i ./src/index.css -o ./dist/index.css --minify",
+    "watch": "mkdir -p dist && (pnpm run watch:lib & pnpm run watch:tailwind)",
     "watch:lib": "svelte-package --watch",
-    "watch:tailwind": "tailwindcss -i ./src/index.css -o ./index.css --watch --verbose",
+    "watch:tailwind": "tailwindcss -i ./src/index.css -o ./dist/index.css --watch --verbose",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
-    "watch-css": "nodemon --watch index.css --ext css --exec \"cp index.css dist/index.css\"",
     "test": "vitest run --reporter=basic",
     "test:watch": "vitest",
     "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
