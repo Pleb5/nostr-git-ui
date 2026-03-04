@@ -666,8 +666,14 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           defaultBranch: config.defaultBranch,
           localRepo: localRepo,
         });
-        await pushToRemote({ ...config }, remoteRepo, canonicalKey);
-        updateProgress("push", "Successfully pushed to remote repository", "completed");
+        try {
+          await pushToRemote({ ...config }, remoteRepo, canonicalKey, localRepo);
+          updateProgress("push", "Successfully pushed to remote repository", "completed");
+        } catch (pushError) {
+          console.error("[CREATE REPO] Push failed:", pushError);
+          updateProgress("push", `Push failed: ${pushError instanceof Error ? pushError.message : String(pushError)}`, "error");
+          throw pushError;
+        }
       }
 
       if (config.provider !== "grasp") {
@@ -950,7 +956,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
     }
   }
 
-  async function pushToRemote(config: NewRepoConfig, remoteRepo: any, canonicalKey?: string) {
+  async function pushToRemote(config: NewRepoConfig, remoteRepo: any, canonicalKey?: string, localRepo?: any) {
     console.log("🚀 Starting pushToRemote function...");
     console.log("🚀 pushToRemote canonicalKey:", canonicalKey);
     console.log("🚀 pushToRemote config:", config);
@@ -1041,6 +1047,75 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         }
       }
       
+      // CRITICAL: Publish updated repo state event (30618) before pushing
+      // This is the missing piece - GRASP servers need the state event with actual commit SHA
+      if (onPublishEvent && localRepo?.initialCommit) {
+        console.log("[NEW REPO] Publishing pre-push state event for GRASP");
+        
+        // Use the original GRASP relay URL (not derived from pushUrl)
+        const primaryRelay =
+          config.relayUrl ||
+          (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls[0] : "");
+        
+        if (!primaryRelay) {
+          console.error("[NEW REPO] No GRASP relay URL available for state event");
+          throw new Error("GRASP relay URL required for state event publishing");
+        }
+        
+        // Ensure it's a WebSocket URL
+        const { wsOrigin } = normalizeGraspOrigins(primaryRelay);
+        console.log(`[NEW REPO] Using original GRASP relay for state event: ${wsOrigin}`);
+        
+        try {
+          // Create updated state event with actual commit SHA
+          const headRef = config.defaultBranch ? `refs/heads/${config.defaultBranch}` : undefined;
+          const refs = localRepo.initialCommit && config.defaultBranch ? [
+            {
+              type: "heads" as const,
+              name: config.defaultBranch,
+              commit: localRepo.initialCommit,
+            },
+          ] : undefined;
+          
+          // Use just the repo name for GRASP/ngit compatibility (not npub:name format)
+          const updatedStateEvent = createStateEventShared({
+            repoId: config.name,
+            refs,
+            head: config.defaultBranch,
+          });
+          
+          // Ensure explicit HEAD/ref tags are present (cast to any to bypass strict typing)
+          if (headRef && !updatedStateEvent.tags.find((t: any[]) => t[0] === "HEAD")) {
+            (updatedStateEvent.tags as any[]).push(["HEAD", `ref: ${headRef}`]);
+          }
+          if (
+            localRepo.initialCommit &&
+            headRef &&
+            !updatedStateEvent.tags.find((t: any[]) => t[0] === "ref" && t[1] === headRef)
+          ) {
+            (updatedStateEvent.tags as any[]).push(["ref", headRef, localRepo.initialCommit]);
+          }
+          
+          // Add relays tag for the GRASP relay
+          const relaysTag = ["relays", wsOrigin];
+          if (!updatedStateEvent.tags?.some((t: any[]) => t[0] === "relays")) {
+            updatedStateEvent.tags = [...(updatedStateEvent.tags || []), relaysTag as any];
+          }
+          
+          console.log("[NEW REPO] Publishing updated state event with commit SHA:", localRepo.initialCommit.substring(0, 8));
+          console.log("[NEW REPO] Updated state event:", JSON.stringify(updatedStateEvent, null, 2));
+          await onPublishEvent(updatedStateEvent);
+          console.log("[NEW REPO] Pre-push state event published successfully");
+          
+          // Wait a moment for the relay to process the event before pushing
+          console.log("[NEW REPO] Waiting 2 seconds for state event to propagate...");
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+        } catch (stateError) {
+          console.warn("[NEW REPO] Failed to publish pre-push state event; proceeding anyway:", stateError);
+        }
+      }
+      
       const directPushResult = await api.pushToRemote({
         repoId: canonicalKey || config.name,
         remoteUrl: pushUrl,
@@ -1055,7 +1130,10 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       };
 
       if (!pushResult.success) {
-        throw new Error("Failed to push to GRASP remote repository");
+        const errorMsg = directPushResult?.error || "Unknown push error";
+        console.error("[NEW REPO] GRASP push failed:", errorMsg);
+        console.error("[NEW REPO] Full push result:", directPushResult);
+        throw new Error(`Failed to push to GRASP remote repository: ${errorMsg}`);
       }
 
       return pushResult;
