@@ -535,11 +535,23 @@
   type PhaseStatus = "completed" | "active" | "pending";
   const progressPhases = $derived.by(() => {
     const p = currentProgress;
-    const list = IMPORT_PHASES.map((id): { id: ImportPhase; label: string; status: PhaseStatus; detail?: string; current?: number; total?: number; mirroredCount?: number } => ({
-      id,
-      label: IMPORT_PHASE_LABELS[id],
-      status: "pending" as PhaseStatus,
-    }));
+    const list = IMPORT_PHASES.map(
+      (
+        id
+      ): {
+        id: ImportPhase;
+        label: string;
+        status: PhaseStatus;
+        detail?: string;
+        current?: number;
+        total?: number;
+        mirroredCount?: number;
+      } => ({
+        id,
+        label: IMPORT_PHASE_LABELS[id],
+        status: "pending" as PhaseStatus,
+      })
+    );
     if (!p) return list;
 
     const c = p.completedCounts;
@@ -933,7 +945,7 @@
                 disabled={!canProceedStep2 || importState.isImporting}
                 class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                SET MY REPO FREE
+                SET THIS REPO FREE
               </button>
             </div>
           </div>
@@ -964,10 +976,10 @@
                     <div class="flex flex-col items-center flex-shrink-0">
                       <div
                         class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors"
-                        class:bg-green-600={phase.status === 'completed'}
-                        class:bg-blue-600={phase.status === 'active' && !currentProgress.error}
-                        class:bg-red-600={phase.status === 'active' && currentProgress.error}
-                        class:bg-gray-600={phase.status === 'pending'}
+                        class:bg-green-600={phase.status === "completed"}
+                        class:bg-blue-600={phase.status === "active" && !currentProgress.error}
+                        class:bg-red-600={phase.status === "active" && currentProgress.error}
+                        class:bg-gray-600={phase.status === "pending"}
                       >
                         {#if phase.status === "completed"}
                           <CheckCircle2 class="w-4 h-4 text-white" />
@@ -993,15 +1005,17 @@
                     <div class="flex-1 min-w-0 pb-4">
                       <p
                         class="text-sm font-medium transition-colors"
-                        class:text-green-400={phase.status === 'completed'}
-                        class:text-blue-400={phase.status === 'active' && !currentProgress.error}
-                        class:text-red-400={phase.status === 'active' && currentProgress.error}
-                        class:text-gray-500={phase.status === 'pending'}
+                        class:text-green-400={phase.status === "completed"}
+                        class:text-blue-400={phase.status === "active" && !currentProgress.error}
+                        class:text-red-400={phase.status === "active" && currentProgress.error}
+                        class:text-gray-500={phase.status === "pending"}
                       >
                         {phase.label}
                       </p>
-                      {#if phase.status === 'completed' && phase.mirroredCount != null}
-                        <p class="text-xs text-green-300/90 mt-0.5">{phase.mirroredCount} mirrored</p>
+                      {#if phase.status === "completed" && phase.mirroredCount != null}
+                        <p class="text-xs text-green-300/90 mt-0.5">
+                          {phase.mirroredCount} mirrored
+                        </p>
                       {/if}
                       {#if phase.status === "active" && phase.detail}
                         <p class="text-sm text-gray-400 mt-0.5 truncate" title={phase.detail}>
@@ -1012,10 +1026,14 @@
                             <div class="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
                               <div
                                 class="h-full bg-blue-500 rounded-full transition-all duration-300"
-                                style="width: {(phase.total && phase.total >= 1 ? Math.min(100, (phase.current ?? 0) / phase.total * 100) : 0) + '%'}"
+                                style="width: {(phase.total && phase.total >= 1
+                                  ? Math.min(100, ((phase.current ?? 0) / phase.total) * 100)
+                                  : 0) + '%'}"
                               ></div>
                             </div>
-                            <span class="text-xs text-gray-500 tabular-nums">{phase.current} / {phase.total}</span>
+                            <span class="text-xs text-gray-500 tabular-nums"
+                              >{phase.current} / {phase.total}</span
+                            >
                           </div>
                         {:else if phase.current != null}
                           <p class="text-xs text-gray-500 mt-0.5">{phase.current} so far</p>
@@ -1060,7 +1078,8 @@
                       <p class="text-sm text-green-300 mt-1">
                         {completedResult.issuesImported} issues,
                         {completedResult.commentsImported} comments,
-                        {completedResult.prsImported} PRs, and {completedResult.profilesCreated} profiles created.
+                        {completedResult.prsImported} PRs, and {completedResult.profilesCreated} profiles
+                        created.
                       </p>
                     </div>
                   </div>
