@@ -124,7 +124,12 @@
   let workflowDecision = $state<{ workflowFiles: string[]; error: string } | null>(null);
 
   // Extract repository information from Repo instance
-  const cloneUrl = $derived(repo.clone?.[0] || "");
+  const cloneUrl = $derived(
+    (repo.clone || []).find((url) => {
+      const trimmed = String(url || "").trim();
+      return trimmed && !trimmed.startsWith("nostr://") && !trimmed.startsWith("nostr:");
+    }) || ""
+  );
   let isOpen = $state(true);
 
   // Parse owner and repo name from clone URL (supports HTTPS and SSH formats)

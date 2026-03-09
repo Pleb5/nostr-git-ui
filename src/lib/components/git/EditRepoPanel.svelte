@@ -113,7 +113,11 @@
     const defaultBranch = repo.mainBranch || "";
 
     // Determine visibility from clone URL (basic heuristic)
-    const cloneUrl = repo.clone?.[0] || "";
+    const editableCloneUrls = copyList(repo.clone).filter((url) => {
+      const trimmed = String(url || "").trim();
+      return trimmed && !trimmed.startsWith("nostr://") && !trimmed.startsWith("nostr:");
+    });
+    const cloneUrl = editableCloneUrls[0] || "";
     const isPrivate = cloneUrl.includes("private") || false;
 
     return {
@@ -124,7 +128,7 @@
       maintainers: copyList(repo.maintainers),
       relays: copyList(repo.relays),
       webUrls: copyList(repo.web),
-      cloneUrls: copyList(repo.clone),
+      cloneUrls: editableCloneUrls,
       hashtags: copyList(repo.hashtags),
       earliestUniqueCommit: repo.earliestUniqueCommit || "",
     };
@@ -1120,6 +1124,13 @@
                   class="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
                   placeholder="https://github.com/user/repo.git"
                 />
+                {#if index === 0}
+                  <span
+                    class="px-2 py-1 text-xs rounded bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                  >
+                    Primary
+                  </span>
+                {/if}
                 <button
                   type="button"
                   onclick={() => removeArrayItem("cloneUrls", index)}

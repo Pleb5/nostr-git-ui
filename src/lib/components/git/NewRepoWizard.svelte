@@ -12,7 +12,8 @@
   } from "../../hooks/useNewRepo.svelte";
   import { tokens as tokensStore, type Token } from "../../stores/tokens.js";
   import { graspServersStore } from "../../stores/graspServers.js";
-  import { buildRepoKey } from "@nostr-git/core/events";
+  import { PLATFORM_RELAYS, PLATFORM_URL } from "@app/core/state";
+  import { makeGitPath } from "@lib/budabit/routes";
   const { Button } = useRegistry();
 
   function deriveOrigins(input: string): { wsOrigin: string; httpOrigin: string } {
@@ -120,10 +121,11 @@
 
   // Token management
   let tokens = $state<Token[]>([]);
-  let selectedProvider = $state<string | undefined>(undefined);
+  let selectedProviders = $state<string[]>([]);
   let graspRelayUrls = $state<string[]>([]);
   let userEditedWebUrl = $state(false);
   let userEditedCloneUrl = $state(false);
+  let userEditedRelays = $state(false);
 
   // Grasp server options sourced from global singleton store
   let graspServerOptions = $state<string[]>([]);
@@ -133,10 +135,10 @@
 
   $effect(() => {
     // Pre-populate GRASP relay URLs from the user's saved GRASP relay set
-    void selectedProvider;
+    void selectedProviders;
     void graspServerOptions;
     if (
-      selectedProvider === "grasp" &&
+      selectedProviders.includes("grasp") &&
       graspRelayUrls.length === 0 &&
       graspServerOptions.length > 0
     ) {
@@ -177,51 +179,125 @@
     return map[p] || undefined;
   }
 
-  async function updateAdvancedDefaults() {
+  function dedupeStrings(values: string[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const value of values) {
+      const trimmed = (value || "").trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }
+
+  function arraysEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
+  }
+
+  function buildBudabitRepoUrl(name: string): string | undefined {
+    if (!userPubkey || typeof window === "undefined") return undefined;
+    const platformRelays = [...PLATFORM_RELAYS];
+    const routeRelay = platformRelays[0] || defaultRelays[0] || advancedSettings.relays[0];
+    if (!routeRelay) return undefined;
+
+    const platformOrigin = (PLATFORM_URL || "").trim().replace(/\/$/, "") || window.location.origin;
+
+    const relays = dedupeStrings([
+      ...platformRelays,
+      ...advancedSettings.relays,
+      ...defaultRelays,
+      routeRelay,
+    ]);
+
+    try {
+      const naddr = nip19.naddrEncode({
+        kind: 30617,
+        pubkey: userPubkey,
+        identifier: name,
+        relays,
+      });
+      return `${platformOrigin}${makeGitPath(routeRelay, naddr)}`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function getProviderResult(provider: string) {
+    return (
+      nameAvailabilityResults?.results?.find((r) => r.provider === provider) ||
+      nameAvailabilityResults?.results?.find((r) => r.host === providerHost(provider))
+    );
+  }
+
+  function getProviderUrlDefaults(name: string) {
+    const ownerNpub = userPubkey ? nip19.npubEncode(userPubkey) : undefined;
+    const entries = selectedProviders.map((provider) => {
+      if (provider === "grasp") {
+        const primaryRelay = graspRelayUrls[0] || "";
+        const { httpOrigin } = deriveOrigins(primaryRelay);
+        const webUrl = httpOrigin && ownerNpub ? `${httpOrigin}/${ownerNpub}/${name}` : "";
+        const cloneUrl = webUrl ? `${webUrl}.git` : "";
+        return { provider, webUrl, cloneUrl };
+      }
+
+      const providerResult = getProviderResult(provider);
+      const username = providerResult?.username;
+      const host = providerResult?.host || providerHost(provider);
+      const webUrl = host && username ? `https://${host}/${username}/${name}` : "";
+      const cloneUrl = webUrl ? `${webUrl}.git` : "";
+      return { provider, webUrl, cloneUrl };
+    });
+
+    return entries;
+  }
+
+  function getCloneProviderOrder(entries: Array<{ provider: string; cloneUrl: string }>): string[] {
+    const byCloneUrl = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.cloneUrl) byCloneUrl.set(entry.cloneUrl, entry.provider);
+    }
+
+    const ordered = advancedSettings.cloneUrls
+      .map((url) => byCloneUrl.get((url || "").trim()) || "")
+      .filter(Boolean);
+
+    return dedupeStrings([...ordered, ...selectedProviders]);
+  }
+
+  function updateAdvancedDefaults() {
     const name = repoDetails.name?.trim();
     if (!name) return;
-    // Derive username and host from availability results for the selected provider
-    const providerResult =
-      nameAvailabilityResults?.results?.find((r) => r.provider === selectedProvider) ||
-      nameAvailabilityResults?.results?.find((r) => r.host === providerHost(selectedProvider));
-    const username = providerResult?.username;
-    const availabilityHost = providerResult?.host;
+    const ownerNpub = userPubkey ? nip19.npubEncode(userPubkey) : undefined;
+    const providerDefaults = getProviderUrlDefaults(name);
 
     // 1) webUrls (primary web URL default)
     if (!userEditedWebUrl) {
-      let url = "";
-      if (selectedProvider === "grasp") {
-        url = `https://gitworkshop.dev/${userPubkey ? nip19.npubEncode(userPubkey) : "[pubkey]"}/${name}`;
-      } else if (selectedProvider) {
-        const host = availabilityHost || providerHost(selectedProvider);
-        if (host && username) {
-          url = `https://${host}/${username}/${name}`;
-        }
-      }
-      if (url) {
-        if (advancedSettings.webUrls.length === 0) advancedSettings.webUrls = [url];
-        else advancedSettings.webUrls[0] = url;
+      const defaultWebUrls = dedupeStrings([
+        ownerNpub ? `https://gitworkshop.dev/${ownerNpub}/${name}` : "",
+        buildBudabitRepoUrl(name) || "",
+        ...providerDefaults.map((entry) => entry.webUrl),
+      ]);
+      if (!arraysEqual(advancedSettings.webUrls, defaultWebUrls)) {
+        advancedSettings.webUrls = defaultWebUrls;
       }
     }
 
     // 2) cloneUrls defaults
-    // If the user hasn't manually edited clone URLs, fully regenerate the list based on current inputs
     if (!userEditedCloneUrl) {
-      const host = availabilityHost || providerHost(selectedProvider);
-      const nostrUrl = userPubkey ? `nostr://${buildRepoKey(userPubkey, name)}` : undefined;
+      const defaultCloneUrls = dedupeStrings(providerDefaults.map((entry) => entry.cloneUrl));
+      if (!arraysEqual(advancedSettings.cloneUrls, defaultCloneUrls)) {
+        advancedSettings.cloneUrls = defaultCloneUrls;
+      }
+    }
 
-      if (selectedProvider === "grasp") {
-        advancedSettings.cloneUrls = nostrUrl ? [nostrUrl] : [];
-      } else {
-        // For non-GRASP: prefer HTTPS primary (when derivable), plus nostr secondary
-        const httpsUrl = host && username ? `https://${host}/${username}/${name}.git` : undefined;
-
-        if (httpsUrl) {
-          advancedSettings.cloneUrls = nostrUrl ? [httpsUrl, nostrUrl] : [httpsUrl];
-        } else {
-          // If HTTPS not derivable yet, avoid populating with transient nostr values
-          advancedSettings.cloneUrls = [];
-        }
+    if (!userEditedRelays) {
+      const defaultRelaySet = selectedProviders.includes("grasp")
+        ? dedupeStrings([...(defaultRelays || []), ...(graspRelayUrls || [])])
+        : dedupeStrings([...(defaultRelays || [])]);
+      if (!arraysEqual(advancedSettings.relays, defaultRelaySet)) {
+        advancedSettings.relays = defaultRelaySet;
       }
     }
   }
@@ -253,9 +329,13 @@
     cloneUrls: [] as string[],
   });
 
-  // Populate relays from defaultRelays if relays are empty and defaults are provided
+  // Populate relays from defaults before the user edits relay list
   $effect(() => {
-    if ((advancedSettings.relays?.length ?? 0) === 0 && (defaultRelays?.length ?? 0) > 0) {
+    if (
+      !userEditedRelays &&
+      (advancedSettings.relays?.length ?? 0) === 0 &&
+      (defaultRelays?.length ?? 0) > 0
+    ) {
       advancedSettings.relays = [...defaultRelays];
     }
   });
@@ -280,21 +360,33 @@
 
   // Check repository name availability across all providers
   async function checkNameAvailability(name: string) {
-    if (!name.trim() || tokens.length === 0 || !selectedProvider) {
+    if (!name.trim() || tokens.length === 0 || selectedProviders.length === 0) {
       nameAvailabilityResults = null;
       return;
     }
 
     isCheckingAvailability = true;
     try {
-      const results = await checkProviderRepoAvailability(
-        selectedProvider as string,
-        name,
-        tokens,
-        selectedProvider === "grasp" ? graspRelayUrls[0] : undefined,
-        userPubkey
+      const checks = await Promise.all(
+        selectedProviders.map((provider) =>
+          checkProviderRepoAvailability(
+            provider,
+            name,
+            tokens,
+            provider === "grasp" ? graspRelayUrls[0] : undefined,
+            userPubkey
+          )
+        )
       );
-      nameAvailabilityResults = results;
+
+      const merged = {
+        results: checks.flatMap((result) => result.results),
+        hasConflicts: checks.some((result) => result.hasConflicts),
+        availableProviders: dedupeStrings(checks.flatMap((result) => result.availableProviders)),
+        conflictProviders: dedupeStrings(checks.flatMap((result) => result.conflictProviders)),
+      };
+
+      nameAvailabilityResults = merged;
     } catch (error) {
       console.error("Error checking name availability:", error);
       nameAvailabilityResults = null;
@@ -366,7 +458,7 @@
   function nextStep() {
     if (currentStep === 1) {
       // Require provider selection (and valid GRASP relay when applicable)
-      if (selectedProvider && isValidGraspConfig()) {
+      if (selectedProviders.length > 0 && isValidGraspConfig()) {
         currentStep = 2;
       }
     } else if (currentStep === 2 && validateStep1()) {
@@ -388,9 +480,9 @@
   }
 
   // Provider selection handler
-  function handleProviderChange(provider: string) {
-    selectedProvider = provider;
-    if (provider !== "grasp") {
+  function handleProvidersChange(providers: string[]) {
+    selectedProviders = [...providers];
+    if (!selectedProviders.includes("grasp")) {
       try {
         window.dispatchEvent(new Event("nostr-git:clear-relay-override"));
         console.info("Cleared relay override (non-GRASP provider)");
@@ -401,6 +493,7 @@
     // Reset web/clone URL state so they reflect the new service
     advancedSettings.webUrls = [];
     advancedSettings.cloneUrls = [];
+    userEditedRelays = false;
     userEditedWebUrl = false;
     userEditedCloneUrl = false;
     // Auto re-check if a name is already entered
@@ -417,7 +510,7 @@
     const primary = urls[0] || "";
     const { wsOrigin } = deriveOrigins(primary);
     const relayTarget = wsOrigin || primary;
-    if (selectedProvider === "grasp" && relayTarget) {
+    if (selectedProviders.includes("grasp") && relayTarget) {
       try {
         window.dispatchEvent(
           new CustomEvent("nostr-git:set-relay-override", { detail: { relays: [relayTarget] } })
@@ -427,14 +520,19 @@
         console.warn("Failed to dispatch relay override event", err);
       }
     }
-    if (selectedProvider === "grasp" && repoDetails.name && repoDetails.name.trim().length > 0) {
+    if (
+      selectedProviders.includes("grasp") &&
+      repoDetails.name &&
+      repoDetails.name.trim().length > 0
+    ) {
       debouncedNameCheck(repoDetails.name);
     }
+    updateAdvancedDefaults();
   }
 
   // Validate relay URL for GRASP provider
   function isValidGraspConfig(): boolean {
-    if (selectedProvider !== "grasp") return true;
+    if (!selectedProviders.includes("grasp")) return true;
     const urls = graspRelayUrls || [];
     if (urls.length === 0) return false;
     return urls.every((u) => {
@@ -447,7 +545,13 @@
   async function startRepositoryCreation() {
     if (!validateStep1()) return;
 
-    if (!selectedProvider) return;
+    if (selectedProviders.length === 0) return;
+
+    const relayCount = advancedSettings.relays.filter((value) => value && value.trim()).length;
+    if (relayCount === 0) return;
+
+    const providerDefaults = getProviderUrlDefaults(repoDetails.name.trim());
+    const cloneProviderOrder = getCloneProviderOrder(providerDefaults);
 
     try {
       createdResult = null;
@@ -458,15 +562,19 @@
         gitignoreTemplate: advancedSettings.gitignoreTemplate,
         licenseTemplate: advancedSettings.licenseTemplate,
         defaultBranch: advancedSettings.defaultBranch,
-        provider: selectedProvider as string, // Pass the selected provider
-        relayUrls: selectedProvider === "grasp" ? graspRelayUrls : undefined, // Pass relay URLs for GRASP
-        relayUrl: selectedProvider === "grasp" ? graspRelayUrls[0] : undefined, // Primary relay for backward compatibility
+        provider: selectedProviders[0] as string,
+        providers: [...selectedProviders],
+        relayUrls: selectedProviders.includes("grasp") ? graspRelayUrls : undefined,
+        relayUrl: selectedProviders.includes("grasp") ? graspRelayUrls[0] : undefined,
         authorName: advancedSettings.authorName,
         authorEmail: advancedSettings.authorEmail,
         authorPubkey: userPubkey,
         maintainers: advancedSettings.maintainers,
         relays: advancedSettings.relays,
         tags: advancedSettings.tags,
+        webUrls: advancedSettings.webUrls.filter((v) => v && v.trim()),
+        cloneUrls: advancedSettings.cloneUrls.filter((v) => v && v.trim()),
+        cloneUrlOrder: cloneProviderOrder,
         webUrl: advancedSettings.webUrls.find((v) => v && v.trim()) || "",
         cloneUrl: advancedSettings.cloneUrls.find((v) => v && v.trim()) || "",
       });
@@ -543,6 +651,7 @@
 
   function handleRelaysChange(relays: string[]) {
     advancedSettings.relays = relays;
+    userEditedRelays = true;
   }
 
   function handleTagsChange(tags: string[]) {
@@ -561,8 +670,11 @@
 
   // When availability results arrive (e.g., we learned the username), try to fill defaults
   $effect(() => {
-    // Trigger whenever nameAvailabilityResults changes
     void nameAvailabilityResults;
+    void selectedProviders;
+    void graspRelayUrls;
+    void repoDetails.name;
+    void advancedSettings.relays;
     updateAdvancedDefaults();
   });
 
@@ -661,8 +773,8 @@
     <div class="px-6 pt-6 pb-16">
       {#if currentStep === 1}
         <StepChooseService
-          selectedProvider={selectedProvider as any}
-          onProviderChange={handleProviderChange as any}
+          selectedProviders={selectedProviders}
+          onProvidersChange={handleProvidersChange as any}
           disabledProviders={nameAvailabilityResults?.conflictProviders || []}
           relayUrls={graspRelayUrls}
           onRelayUrlsChange={handleRelayUrlsChange}
@@ -739,8 +851,11 @@
           <Button
             onclick={nextStep}
             disabled={(currentStep === 1 &&
-              (!selectedProvider || (selectedProvider === "grasp" && !isValidGraspConfig()))) ||
-              (currentStep === 2 && !validateStep1())}
+              (selectedProviders.length === 0 ||
+                (selectedProviders.includes("grasp") && !isValidGraspConfig()))) ||
+              (currentStep === 2 && !validateStep1()) ||
+              (currentStep === 3 &&
+                advancedSettings.relays.filter((value) => value && value.trim()).length === 0)}
             variant="git"
             class="btn btn-primary"
           >

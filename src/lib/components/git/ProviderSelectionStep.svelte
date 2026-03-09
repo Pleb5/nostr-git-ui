@@ -6,16 +6,16 @@
   const { Button, Card, CardContent } = useRegistry();
 
   interface Props {
-    selectedProvider?: string;
-    onProviderChange: (provider: string) => void;
+    selectedProviders: string[];
+    onProvidersChange: (providers: string[]) => void;
     disabledProviders?: string[];
     relayUrls?: string[];
     onRelayUrlsChange?: (urls: string[]) => void;
     graspServerOptions: string[];
   }
   const {
-    selectedProvider,
-    onProviderChange,
+    selectedProviders,
+    onProvidersChange,
     disabledProviders,
     relayUrls,
     onRelayUrlsChange,
@@ -35,6 +35,7 @@
       hasToken: boolean;
       disabled?: boolean;
       disabledReason?: string;
+      hasConflict?: boolean;
     }[]
   >([]);
 
@@ -106,33 +107,35 @@
     availableProviders = providers.map((provider) => {
       const conflict = (disabledProviders ?? []).includes(provider.id);
       const isGrasp = provider.id === "grasp";
-      const isDisabled = isGrasp ? false : conflict;
+      const isDisabled = false;
       return {
         ...provider,
         disabled: isDisabled,
         disabledReason: isDisabled ? "Repository name already exists" : undefined,
-        // Keep GRASP selectable regardless of name conflicts; others require token and no conflict
-        hasToken: isGrasp ? true : provider.hasToken && !isDisabled,
+        hasToken: isGrasp ? true : provider.hasToken,
+        hasConflict: conflict,
       };
     });
 
     // Auto-select first available provider if none selected
-    if (!selectedProvider && providers.some((p) => p.hasToken)) {
+    if (selectedProviders.length === 0 && providers.some((p) => p.hasToken)) {
       const firstAvailable = providers.find((p) => p.hasToken);
       if (firstAvailable) {
-        onProviderChange(firstAvailable.id);
+        onProvidersChange([firstAvailable.id]);
       }
     }
   }
 
-  function handleProviderSelect(providerId: string) {
-    onProviderChange(providerId);
+  function handleProviderToggle(providerId: string) {
+    const isSelected = selectedProviders.includes(providerId);
+    const next = isSelected
+      ? selectedProviders.filter((id) => id !== providerId)
+      : [...selectedProviders, providerId];
+    onProvidersChange(next);
   }
 
   function updateRelayUrls(next: string[]) {
-    const normalized = next
-      .map((u) => (u || "").trim().replace(/\/$/, ""))
-      .filter(Boolean);
+    const normalized = next.map((u) => (u || "").trim().replace(/\/$/, "")).filter(Boolean);
     graspRelayUrls = normalized;
     onRelayUrlsChange?.(normalized);
   }
@@ -173,19 +176,20 @@
   <div class="space-y-2">
     <h3 class="text-lg font-semibold text-foreground">Choose Git Service</h3>
     <p class="text-sm text-muted-foreground">
-      Select where you'd like to create your new repository. Only services with configured
-      authentication tokens are available.
+      Select one or more services where you'd like to create your new repository. Only services with
+      configured authentication tokens are available.
     </p>
   </div>
 
   <div class="grid gap-4">
     {#each availableProviders as provider (provider.id)}
       <Card
-        class="cursor-pointer transition-all duration-200 hover:shadow-md {selectedProvider ===
-        provider.id
+        class="cursor-pointer transition-all duration-200 hover:shadow-md {selectedProviders.includes(
+          provider.id
+        )
           ? 'ring-2 ring-accent border-accent'
           : ''} {!provider.hasToken ? 'opacity-50 cursor-not-allowed' : ''}"
-        onclick={() => provider.hasToken && handleProviderSelect(provider.id)}
+        onclick={() => provider.hasToken && handleProviderToggle(provider.id)}
       >
         <CardContent class="p-4">
           <div class="flex items-center space-x-4">
@@ -193,10 +197,10 @@
             <div class="flex-1">
               <div class="flex items-center space-x-2">
                 <h4 class="font-medium text-foreground">{provider.name}</h4>
-                {#if selectedProvider === provider.id}
+                {#if selectedProviders.includes(provider.id)}
                   <div class="w-2 h-2 bg-accent rounded-full"></div>
                 {/if}
-                {#if provider.disabled}
+                {#if provider.hasConflict}
                   <span
                     class="text-xs bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 px-2 py-1 rounded"
                     >Name Conflict</span
@@ -218,20 +222,33 @@
                 </p>
               {/if}
 
-              {#if provider.id === "grasp" && selectedProvider === "grasp"}
+              {#if provider.id === "grasp" && selectedProviders.includes("grasp")}
                 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                 <!-- Inline GRASP relay URL pills - fieldset used for semantic grouping with event stopping -->
-                <fieldset class="mt-3 pt-3 border-t border-border border-x-0 border-b-0 p-0 m-0" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+                <fieldset
+                  class="mt-3 pt-3 border-t border-border border-x-0 border-b-0 p-0 m-0"
+                  onclick={(e) => e.stopPropagation()}
+                  onkeydown={(e) => e.stopPropagation()}
+                >
                   <div class="flex flex-wrap items-center gap-1.5">
                     {#each graspRelayUrls as url, idx (idx)}
                       <span
-                        class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-accent/20 text-accent-foreground border border-accent/30 {!isValidRelayUrl(url) ? 'border-red-500 bg-red-500/10' : ''}"
+                        class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-accent/20 text-accent-foreground border border-accent/30 {!isValidRelayUrl(
+                          url
+                        )
+                          ? 'border-red-500 bg-red-500/10'
+                          : ''}"
                       >
-                        <span class="max-w-[180px] truncate" title={url}>{url.replace(/^wss?:\/\//, '')}</span>
+                        <span class="max-w-[180px] truncate" title={url}
+                          >{url.replace(/^wss?:\/\//, "")}</span
+                        >
                         <button
                           type="button"
                           class="ml-0.5 hover:text-destructive focus:outline-none"
-                          onclick={(e) => { e.stopPropagation(); removeRelayUrl(idx); }}
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            removeRelayUrl(idx);
+                          }}
                           title="Remove"
                         >
                           ✕
@@ -246,13 +263,21 @@
                         class="w-36 px-2 py-0.5 text-xs bg-background border border-input rounded-l-full focus:outline-none focus:ring-1 focus:ring-accent"
                         placeholder="wss://relay..."
                         bind:value={newGraspRelayUrl}
-                        onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitNewRelayUrl(); } }}
+                        onkeydown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            commitNewRelayUrl();
+                          }
+                        }}
                         onclick={(e) => e.stopPropagation()}
                       />
                       <button
                         type="button"
                         class="px-2 py-0.5 text-xs bg-accent text-accent-foreground rounded-r-full hover:bg-accent/80"
-                        onclick={(e) => { e.stopPropagation(); commitNewRelayUrl(); }}
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          commitNewRelayUrl();
+                        }}
                       >
                         +
                       </button>
@@ -261,27 +286,31 @@
 
                   {#if graspServerOptions.length > 0}
                     <div class="flex flex-wrap gap-1 mt-2">
-                      {#each graspServerOptions.filter(opt => !graspRelayUrls.includes(opt.trim().replace(/\/$/, ''))) as opt}
+                      {#each graspServerOptions.filter((opt) => !graspRelayUrls.includes(opt
+                              .trim()
+                              .replace(/\/$/, ""))) as opt}
                         <button
                           type="button"
                           class="px-2 py-0.5 text-xs rounded-full border border-dashed border-muted-foreground/50 text-muted-foreground hover:border-accent hover:text-accent"
                           onclick={(e) => {
                             e.stopPropagation();
-                            const trimmed = (opt || '').trim().replace(/\/$/, '');
+                            const trimmed = (opt || "").trim().replace(/\/$/, "");
                             if (trimmed && !graspRelayUrls.includes(trimmed)) {
                               updateRelayUrls([...graspRelayUrls, trimmed]);
                             }
                           }}
                           title="Add {opt}"
                         >
-                          + {opt.replace(/^wss?:\/\//, '')}
+                          + {opt.replace(/^wss?:\/\//, "")}
                         </button>
                       {/each}
                     </div>
                   {/if}
 
                   {#if graspRelayUrls.some((u) => u && !isValidRelayUrl(u))}
-                    <p class="text-xs text-destructive mt-1">URLs must start with ws:// or wss://</p>
+                    <p class="text-xs text-destructive mt-1">
+                      URLs must start with ws:// or wss://
+                    </p>
                   {:else if graspRelayUrls.length === 0}
                     <p class="text-xs text-muted-foreground mt-1">Add at least one relay URL</p>
                   {/if}
@@ -289,12 +318,12 @@
               {/if}
             </div>
             <div class="flex items-center">
-              {#if selectedProvider === provider.id}
+              {#if selectedProviders.includes(provider.id)}
                 <div class="w-4 h-4 bg-accent rounded-full flex items-center justify-center">
                   <div class="w-2 h-2 bg-accent-foreground rounded-full"></div>
                 </div>
               {:else}
-                <div class="w-4 h-4 border-2 border-muted-foreground rounded-full"></div>
+                <div class="w-4 h-4 border-2 border-muted-foreground rounded-sm"></div>
               {/if}
             </div>
           </div>
@@ -315,18 +344,22 @@
       </div>
       <Button variant="outline" size="sm">Go to Settings</Button>
     </div>
-  {:else if !selectedProvider}
+  {:else if selectedProviders.length === 0}
     <div class="text-center py-4">
-      <p class="text-sm text-muted-foreground">Please select a Git service to continue.</p>
+      <p class="text-sm text-muted-foreground">
+        Please select at least one Git service to continue.
+      </p>
     </div>
-  {:else if selectedProvider === "grasp"}
+  {:else if selectedProviders.includes("grasp") && selectedProviders.length === 1}
     <div class="bg-muted/50 rounded-lg p-4">
       <div class="flex items-center space-x-2">
         <div class="w-2 h-2 bg-green-500 rounded-full"></div>
         <p class="text-sm text-foreground">
           Ready to create repository on <strong>GRASP Relay</strong>
           {#if graspRelayUrls.length > 0}
-            <span class="text-muted-foreground">({graspRelayUrls.length} relay{graspRelayUrls.length > 1 ? 's' : ''})</span>
+            <span class="text-muted-foreground"
+              >({graspRelayUrls.length} relay{graspRelayUrls.length > 1 ? "s" : ""})</span
+            >
           {/if}
         </p>
       </div>
@@ -336,8 +369,12 @@
       <div class="flex items-center space-x-2">
         <div class="w-2 h-2 bg-green-500 rounded-full"></div>
         <p class="text-sm text-foreground">
-          Ready to create repository on <strong
-            >{availableProviders.find((p) => p.id === selectedProvider)?.name}</strong
+          Ready to create repository on
+          <strong
+            >{selectedProviders
+              .map((id) => availableProviders.find((p) => p.id === id)?.name)
+              .filter(Boolean)
+              .join(", ")}</strong
           >
         </p>
       </div>

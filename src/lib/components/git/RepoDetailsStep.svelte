@@ -137,6 +137,14 @@
     const target = event.target as HTMLInputElement;
     onReadmeChange(target.checked);
   }
+
+  function formatAvailabilityUsername(username: string): string {
+    if (!username) return "";
+    if (username.startsWith("npub1") && username.length > 24) {
+      return `${username.slice(0, 12)}...${username.slice(-8)}`;
+    }
+    return username;
+  }
 </script>
 
 <div class="space-y-6">
@@ -206,13 +214,17 @@
             <div class="space-y-2">
               {#each nameAvailabilityResults.results as result}
                 <div class="flex items-center justify-between text-sm">
-                  <div class="flex items-center space-x-2">
-                    <span class="font-medium capitalize">{result.provider}</span>
+                  <div class="flex items-center space-x-2 min-w-0">
+                    <span class="font-medium capitalize shrink-0">{result.provider}</span>
                     {#if result.username}
-                      <span class="text-gray-500 dark:text-gray-400">({result.username})</span>
+                      <span
+                        class="text-gray-500 dark:text-gray-400 min-w-0 truncate"
+                        title={result.username}
+                        >({formatAvailabilityUsername(result.username)})</span
+                      >
                     {/if}
                   </div>
-                  <div class="flex items-center space-x-1">
+                  <div class="flex items-center space-x-1 shrink-0">
                     {#if result.error}
                       <span class="text-yellow-600 dark:text-yellow-400" title={result.error}
                         >⚠ Check failed</span

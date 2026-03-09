@@ -241,6 +241,7 @@ function dedupeCloneUrls(urls: string[]): string[] {
     const trimmed = String(url || "").trim();
 
     if (!trimmed) continue;
+    if (trimmed.startsWith("nostr://") || trimmed.startsWith("nostr:")) continue;
 
     // Never persist relay origins as clone URLs.
     try {
@@ -284,6 +285,22 @@ function isSamePubkeyOwner(owner: string, userPubkey?: string): boolean {
   const userHex = pubkeyToHexOrNull(userPubkey);
   if (!ownerHex || !userHex) return false;
   return ownerHex === userHex;
+}
+
+function getLogicalRepoOwner(
+  sourceRepoId: string | undefined,
+  fallbackOwner: string | undefined
+): string {
+  const repoId = String(sourceRepoId || "").trim();
+  if (repoId) {
+    const slashIndex = repoId.indexOf("/");
+    if (slashIndex > 0) return repoId.slice(0, slashIndex);
+
+    const colonIndex = repoId.indexOf(":");
+    if (colonIndex > 0) return repoId.slice(0, colonIndex);
+  }
+
+  return String(fallbackOwner || "").trim();
 }
 
 /**
@@ -567,8 +584,9 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       // Create Repository Announcement event (kind 30617)
       // For same logical repo (same owner pubkey + same name), keep existing clone URLs
       // and append the newly created target clone URL.
+      const logicalOwner = getLogicalRepoOwner(originalRepo.sourceRepoId, originalRepo.owner);
       const sameLogicalRepo =
-        config.forkName === originalRepo.name && isSamePubkeyOwner(originalRepo.owner, userPubkey);
+        config.forkName === originalRepo.name && isSamePubkeyOwner(logicalOwner, userPubkey);
       const cloneUrlSeed = sameLogicalRepo
         ? [workerResult.forkUrl, ...(originalRepo.cloneUrls ?? [])]
         : [workerResult.forkUrl];
@@ -684,7 +702,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           owner: ownerForProbe,
           repoName: config.forkName,
           maxAttempts: 12,
-          delayMs: 1000,
+          delayMs: 1500,
         });
 
         updateProgress("push", "Pushing git data to GRASP Smart HTTP...", "running");

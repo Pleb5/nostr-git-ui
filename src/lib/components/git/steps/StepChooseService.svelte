@@ -2,27 +2,27 @@
   import ProviderSelectionStep from "../ProviderSelectionStep.svelte";
 
   interface Props {
-    selectedProvider: "github" | "gitlab" | "gitea" | "bitbucket" | "grasp" | null;
+    selectedProviders: string[];
     relayUrls?: string[];
     disabledProviders?: string[];
-    onProviderChange: (p: "github" | "gitlab" | "gitea" | "bitbucket" | "grasp") => void;
+    onProvidersChange: (providers: string[]) => void;
     onRelayUrlsChange?: (urls: string[]) => void;
     graspServerOptions?: string[];
   }
 
   const __props = $props();
-  const selectedProvider = $derived(__props.selectedProvider);
+  const selectedProviders = $derived(__props.selectedProviders || []);
   const relayUrls = $derived(__props.relayUrls);
   const disabledProviders = $derived(__props.disabledProviders ?? []);
-  const onProviderChange = $derived(__props.onProviderChange);
+  const onProvidersChange = $derived(__props.onProvidersChange);
   const onRelayUrlsChange = $derived(__props.onRelayUrlsChange);
   const graspServerOptions = $derived(__props.graspServerOptions ?? []);
 </script>
 
 <div class="space-y-4">
   <ProviderSelectionStep
-    selectedProvider={selectedProvider || undefined}
-    onProviderChange={onProviderChange as any}
+    selectedProviders={selectedProviders}
+    onProvidersChange={onProvidersChange as any}
     disabledProviders={disabledProviders}
     relayUrls={relayUrls || []}
     onRelayUrlsChange={onRelayUrlsChange as any}

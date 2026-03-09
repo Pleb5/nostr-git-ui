@@ -1,7 +1,7 @@
 <script lang="ts">
   import { commonHashtags } from "../../stores/hashtags";
   import { PeoplePicker } from "@nostr-git/ui";
-  import { Plus, Trash2, X, Hash, Globe, Users } from "@lucide/svelte";
+  import { Plus, Trash2, X, Hash, Globe, Users, ChevronUp, ChevronDown } from "@lucide/svelte";
 
   interface Props {
     gitignoreTemplate: string;
@@ -27,9 +27,7 @@
     getProfile?: (
       pubkey: string
     ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
-    searchProfiles?: (
-      query: string
-    ) => Promise<
+    searchProfiles?: (query: string) => Promise<
       Array<{
         pubkey: string;
         name?: string;
@@ -251,6 +249,14 @@
   ) {
     onChange((arr || []).map((item, i) => (i === index ? value : item)));
   }
+
+  function moveCloneUrl(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= cloneUrls.length) return;
+    const next = [...cloneUrls];
+    [next[index], next[target]] = [next[target], next[index]];
+    onCloneUrlsChange(next);
+  }
 </script>
 
 <div class="space-y-6">
@@ -346,40 +352,49 @@
         <fieldset>
           <legend class="block text-sm font-medium text-gray-300 mb-2"> Clone URLs </legend>
           <div class="space-y-2">
+            {#if cloneUrls.length === 0}
+              <p class="text-sm text-gray-400">
+                No clone URLs available for the selected providers yet.
+              </p>
+            {/if}
             {#each cloneUrls as url, index}
-              <div class="flex items-center space-x-2">
-                <input
-                  type="url"
-                  value={cloneUrls[index]}
-                  oninput={(e) =>
-                    updateItem(
-                      cloneUrls,
-                      index,
-                      (e.target as HTMLInputElement).value,
-                      onCloneUrlsChange
-                    )}
-                  placeholder="https://github.com/user/repo.git"
-                  class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:text-gray-100"
-                />
+              <div class="flex items-center gap-2">
                 <button
                   type="button"
-                  class="p-2 text-red-400 hover:text-red-300"
-                  aria-label="Remove clone URL"
-                  onclick={() => removeItem(cloneUrls, index, onCloneUrlsChange)}
+                  class="p-1 text-gray-400 hover:text-gray-200 disabled:opacity-40"
+                  aria-label="Move clone URL up"
+                  disabled={index === 0}
+                  onclick={() => moveCloneUrl(index, -1)}
                 >
-                  Remove
+                  <ChevronUp class="w-4 h-4" />
                 </button>
+                <button
+                  type="button"
+                  class="p-1 text-gray-400 hover:text-gray-200 disabled:opacity-40"
+                  aria-label="Move clone URL down"
+                  disabled={index === cloneUrls.length - 1}
+                  onclick={() => moveCloneUrl(index, 1)}
+                >
+                  <ChevronDown class="w-4 h-4" />
+                </button>
+                <input
+                  type="text"
+                  value={cloneUrls[index]}
+                  readonly
+                  class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm bg-gray-800/60 text-gray-100"
+                />
+                {#if index === 0}
+                  <span
+                    class="px-2 py-1 text-xs rounded bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                    >Primary</span
+                  >
+                {/if}
               </div>
             {/each}
-            <button
-              type="button"
-              class="px-3 py-2 text-blue-400 hover:text-blue-300"
-              onclick={() => addItem(cloneUrls, onCloneUrlsChange)}
-            >
-              Add clone URL
-            </button>
           </div>
-          <p class="mt-1 text-sm text-gray-400">Git clone URL(s) for the repository</p>
+          <p class="mt-1 text-sm text-gray-400">
+            Reorder to choose priority. The first URL is the primary clone URL.
+          </p>
         </fieldset>
 
         <!-- Tags -->

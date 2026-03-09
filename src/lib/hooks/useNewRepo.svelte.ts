@@ -418,6 +418,7 @@ export interface NewRepoConfig {
   authorEmail?: string;
   authorPubkey?: string;
   provider: string; // Git provider (github, gitlab, gitea, etc.)
+  providers?: string[]; // Optional multi-provider creation
   relayUrl?: string; // For GRASP provider (primary)
   relayUrls?: string[]; // For GRASP provider (multi-relay)
   // Author information
@@ -426,7 +427,10 @@ export interface NewRepoConfig {
   relays?: string[]; // Preferred relays for this repo
   tags?: string[]; // Repository tags/topics
   webUrl?: string; // Web browsing URL
+  webUrls?: string[]; // Preferred ordered web URLs
   cloneUrl?: string; // Git clone URL
+  cloneUrls?: string[]; // Preferred ordered clone URLs
+  cloneUrlOrder?: string[]; // Provider order for clone URL priority
 }
 
 export interface NewRepoResult {
@@ -441,6 +445,11 @@ export interface NewRepoResult {
     provider: string;
     webUrl: string;
   };
+  remoteRepos?: Array<{
+    url: string;
+    provider: string;
+    webUrl: string;
+  }>;
   announcementEvent: Omit<NostrEvent, "id" | "sig" | "pubkey" | "created_at">;
   stateEvent: Omit<NostrEvent, "id" | "sig" | "pubkey" | "created_at">;
 }
@@ -524,12 +533,61 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
   // Resolve the canonical repo key for this creation flow
   async function computeCanonicalKey(config: NewRepoConfig): Promise<string> {
     if (config.authorPubkey) {
-      const owner =
-        config.provider === "grasp" ? toNpubOrSelf(config.authorPubkey) : config.authorPubkey;
+      const providers =
+        config.providers && config.providers.length > 0 ? config.providers : [config.provider];
+      const usesGrasp = providers.includes("grasp") || config.provider === "grasp";
+      const owner = usesGrasp ? toNpubOrSelf(config.authorPubkey) : config.authorPubkey;
       // Use "owner:name" form which parseRepoId will normalize
       return parseRepoId(`${owner}:${config.name}`);
     }
     throw new Error("Could not get pubkey for GRASP canonical key");
+  }
+
+  function normalizeList(values: string[] | undefined): string[] {
+    if (!Array.isArray(values)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const value of values) {
+      const trimmed = String(value || "").trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }
+
+  function getSelectedProviders(config: NewRepoConfig): string[] {
+    const values = normalizeList(
+      config.providers && config.providers.length > 0 ? config.providers : [config.provider]
+    );
+    return values.length > 0 ? values : [config.provider];
+  }
+
+  function isProviderUrl(url: string, provider: string, relayUrls: string[]): boolean {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.host.toLowerCase();
+      if (provider === "github") return host === "github.com";
+      if (provider === "gitlab") return host === "gitlab.com";
+      if (provider === "bitbucket") return host === "bitbucket.org";
+      if (provider === "gitea") return host.includes("gitea");
+      if (provider === "grasp") {
+        const relayHosts = relayUrls
+          .map((relay) => normalizeGraspOrigins(relay).httpOrigin)
+          .map((origin) => {
+            try {
+              return new URL(origin).host.toLowerCase();
+            } catch {
+              return "";
+            }
+          })
+          .filter(Boolean);
+        return relayHosts.includes(host);
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   async function createRepository(config: NewRepoConfig): Promise<NewRepoResult | null> {
@@ -545,36 +603,34 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       // Compute canonical key up-front so all subsequent steps use it
       const canonicalKey = await computeCanonicalKey(config);
 
+      const selectedProviders = getSelectedProviders(config);
+      const includesGrasp = selectedProviders.includes("grasp");
+      const sanitizedRelays = sanitizeRelays(config.relays || []);
+
       // Step 1: Create local repository
       updateProgress("local", "Creating local repository...", "running");
       const localRepo = await createLocalRepo({ ...config }, canonicalKey);
       updateProgress("local", "Local repository created successfully", "completed");
-      // Step 4: Create NIP-34 events (use shared-types helpers)
-      // For GRASP, skip this since we already published events before remote creation
+
       let announcementEvent: any = undefined;
       let stateEvent: any = undefined;
+      let provisionalAnnouncementCreatedAt: number | undefined;
 
-      // Step 1.5: For GRASP only - publish events BEFORE creating remote
-      if (config.provider === "grasp") {
+      // Publish provisional GRASP events before creating remote repositories.
+      if (includesGrasp) {
         updateProgress("grasp-events", "Publishing GRASP announcement events...", "running");
 
         const primaryRelay =
           config.relayUrl ||
           (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls[0] : "");
-
-        const { wsOrigin } = normalizeGraspOrigins(primaryRelay || "");
-        const graspPubkey = userPubkey;
-
-        const aliases: string[] = [];
-        const extraRelayUrls = (config.relayUrls || [])
-          .map((u) => (u || "").trim())
-          .filter(Boolean);
-        for (const relay of [wsOrigin, ...extraRelayUrls]) {
-          if (relay) aliases.push(relay);
+        if (!primaryRelay) {
+          throw new Error("GRASP provider requires at least one relay URL");
         }
-        const defaultRepoRelays = ["wss://nos.lol/", "wss://relay.damus.io/"];
-        aliases.push(...defaultRepoRelays);
-        const relays = sanitizeRelays(aliases);
+
+        const graspPubkey = userPubkey;
+        if (!graspPubkey) {
+          throw new Error("GRASP provider requires user pubkey");
+        }
 
         const refs =
           localRepo?.initialCommit && config.defaultBranch
@@ -592,7 +648,149 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           ownerPubkey: graspPubkey || "",
           repoName: config.name,
           description: config.description || "",
-          relays,
+          relays: sanitizedRelays,
+          maintainers:
+            config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
+          hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
+          earliestUniqueCommit: localRepo?.initialCommit || undefined,
+          refs,
+          head: config.defaultBranch,
+        });
+
+        announcementEvent = graspEvents.announcementEvent;
+        stateEvent = graspEvents.stateEvent;
+        provisionalAnnouncementCreatedAt = announcementEvent.created_at;
+
+        await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
+        updateProgress("grasp-events", "GRASP state and announcement published", "completed");
+      }
+
+      // Step 2 and 3: Create and push remotes per provider.
+      const successfulRemoteRepos: Array<{ url: string; provider: string; webUrl: string }> = [];
+      const failedProviders: Array<{ provider: string; reason: string }> = [];
+
+      for (const provider of selectedProviders) {
+        const remoteStep = `remote-${provider}`;
+        const pushStep = `push-${provider}`;
+        const providerConfig: NewRepoConfig = {
+          ...config,
+          provider,
+          relayUrl: provider === "grasp" ? config.relayUrl : undefined,
+          relayUrls: provider === "grasp" ? config.relayUrls : undefined,
+        };
+
+        updateProgress(remoteStep, `Creating remote repository on ${provider}...`, "running");
+        try {
+          const remoteRepo = await createRemoteRepo(providerConfig);
+          updateProgress(remoteStep, `Remote repository created on ${provider}`, "completed");
+
+          if (!remoteRepo) continue;
+
+          if (provider === "grasp") {
+            updateProgress(
+              pushStep,
+              "Waiting for GRASP server to process announcement...",
+              "running"
+            );
+            const primaryRelay = providerConfig.relayUrl || providerConfig.relayUrls?.[0] || "";
+            if (!primaryRelay || !providerConfig.authorPubkey) {
+              throw new Error("GRASP relay URL and author pubkey are required before pushing");
+            }
+            await waitForGraspProvisioning({
+              relayUrl: primaryRelay,
+              userPubkey: providerConfig.authorPubkey,
+              owner: toNpubOrSelf(providerConfig.authorPubkey),
+              repoName: providerConfig.name,
+              maxAttempts: 12,
+              delayMs: 1500,
+            });
+          }
+
+          updateProgress(pushStep, `Pushing to ${provider}...`, "running");
+          await pushToRemote({ ...providerConfig }, remoteRepo, canonicalKey, localRepo);
+          updateProgress(pushStep, `Successfully pushed to ${provider}`, "completed");
+          successfulRemoteRepos.push(remoteRepo);
+        } catch (providerError) {
+          const reason =
+            providerError instanceof Error
+              ? providerError.message
+              : String(providerError || "Unknown error");
+          failedProviders.push({ provider, reason });
+          updateProgress(remoteStep, `Failed on ${provider}: ${reason}`, "error", reason);
+          updateProgress(pushStep, `Skipped push for ${provider}`, "completed");
+        }
+      }
+
+      if (successfulRemoteRepos.length === 0) {
+        const providerFailures = failedProviders
+          .map((failure) => `${failure.provider}: ${failure.reason}`)
+          .join("; ");
+        throw new Error(
+          `Failed to create repository on all selected providers (${providerFailures})`
+        );
+      }
+
+      const byProvider = new Map<string, { url: string; provider: string; webUrl: string }>();
+      for (const remoteRepo of successfulRemoteRepos) {
+        byProvider.set(remoteRepo.provider, remoteRepo);
+      }
+
+      const providerPriority = normalizeList([
+        ...(config.cloneUrlOrder || []),
+        ...selectedProviders,
+      ]);
+
+      const finalCloneUrls = normalizeList(
+        providerPriority.map((provider) => byProvider.get(provider)?.url || "").filter(Boolean)
+      );
+
+      const providerWebUrls = normalizeList(
+        providerPriority
+          .map((provider) => {
+            const remoteRepo = byProvider.get(provider);
+            if (!remoteRepo) return "";
+            return (remoteRepo.webUrl || remoteRepo.url || "").replace(/\.git$/, "");
+          })
+          .filter(Boolean)
+      );
+
+      const preservedWebUrls = normalizeList(
+        (config.webUrls || []).filter((url) => {
+          const trimmed = String(url || "").trim();
+          if (!trimmed) return false;
+          if (trimmed.includes("gitworkshop.dev")) return true;
+          if (trimmed.includes("/spaces/") && trimmed.includes("/git/")) return true;
+          return !selectedProviders.some((provider) =>
+            isProviderUrl(trimmed, provider, config.relayUrls || [])
+          );
+        })
+      );
+
+      const finalWebUrls = normalizeList([...providerWebUrls, ...preservedWebUrls]);
+
+      updateProgress("events", "Creating Nostr events...", "running");
+
+      const refs = localRepo?.initialCommit
+        ? [
+            {
+              type: "heads" as const,
+              name: config.defaultBranch || "master",
+              commit: localRepo.initialCommit,
+            },
+          ]
+        : undefined;
+
+      if (includesGrasp) {
+        const primaryRelay = config.relayUrl || config.relayUrls?.[0] || "";
+        const graspPubkey = userPubkey || config.authorPubkey || "";
+        const graspEvents = createGraspAnnouncementAndState({
+          relayUrl: primaryRelay,
+          ownerPubkey: graspPubkey,
+          repoName: config.name,
+          description: config.description || "",
+          relays: sanitizedRelays,
+          cloneUrls: finalCloneUrls,
+          webUrls: finalWebUrls,
           maintainers:
             config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
           hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
@@ -604,111 +802,66 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         announcementEvent = graspEvents.announcementEvent;
         stateEvent = graspEvents.stateEvent;
 
-        await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
-        updateProgress("grasp-events", "GRASP state and announcement published", "completed");
-      }
-
-      // Step 2: Create remote repository
-      updateProgress("remote", "Creating remote repository...", "running");
-      const remoteRepo = await createRemoteRepo(config);
-      if (remoteRepo) {
-        updateProgress("remote", "Remote repository created successfully", "completed");
+        if (
+          provisionalAnnouncementCreatedAt &&
+          announcementEvent.created_at <= provisionalAnnouncementCreatedAt
+        ) {
+          announcementEvent = {
+            ...announcementEvent,
+            created_at: provisionalAnnouncementCreatedAt + 1,
+          };
+        }
       } else {
-        updateProgress("remote", "Skipped remote repository creation", "completed");
-      }
-
-      // Step 3: Push to remote (if remote exists)
-      if (remoteRepo) {
-        // For GRASP, wait for the relay to process the announcement event
-        if (config.provider === "grasp") {
-          updateProgress("push", "Waiting for GRASP server to process announcement...", "running");
-          const primaryRelay =
-            config.relayUrl ||
-            (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls[0] : "");
-          if (!primaryRelay || !config.authorPubkey) {
-            throw new Error("GRASP relay URL and author pubkey are required before pushing");
-          }
-          await waitForGraspProvisioning({
-            relayUrl: primaryRelay,
-            userPubkey: config.authorPubkey,
-            owner: toNpubOrSelf(config.authorPubkey),
-            repoName: config.name,
-            maxAttempts: 12,
-            delayMs: 1000,
-          });
-        }
-
-        updateProgress("push", "Pushing to remote repository...", "running");
-        console.log("🚀 About to push with config:", {
-          name: config.name,
-          defaultBranch: config.defaultBranch,
-          localRepo: localRepo,
-        });
-        try {
-          await pushToRemote({ ...config }, remoteRepo, canonicalKey, localRepo);
-          updateProgress("push", "Successfully pushed to remote repository", "completed");
-        } catch (pushError) {
-          console.error("[CREATE REPO] Push failed:", pushError);
-          updateProgress(
-            "push",
-            `Push failed: ${pushError instanceof Error ? pushError.message : String(pushError)}`,
-            "error"
-          );
-          throw pushError;
-        }
-      }
-
-      if (config.provider !== "grasp") {
-        updateProgress("events", "Creating Nostr events...", "running");
-        // Derive clone and web URLs
-        const ensureNoGitSuffix = (url: string) => url?.replace(/\.git$/, "");
-        const cloneUrl = remoteRepo?.url || config.cloneUrl || "";
-        const webUrl = ensureNoGitSuffix(remoteRepo?.webUrl || config.webUrl || cloneUrl);
-
-        // Sanitize and use relays from config if provided
-        const sanitizedRelays =
-          config.relays && config.relays.length > 0 ? sanitizeRelays(config.relays) : [];
-
         announcementEvent = createAnnouncementEventShared({
           repoId: config.name,
           name: config.name,
           description: config.description || "",
-          web: webUrl ? [webUrl] : undefined,
-          clone: cloneUrl ? [cloneUrl] : undefined,
+          web: finalWebUrls.length > 0 ? finalWebUrls : undefined,
+          clone: finalCloneUrls.length > 0 ? finalCloneUrls : undefined,
           relays: sanitizedRelays,
           maintainers:
             config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
           hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
         });
 
-        const refs = localRepo?.initialCommit
-          ? [
-              {
-                type: "heads" as const,
-                name: config.defaultBranch || "master",
-                commit: localRepo.initialCommit,
-              },
-            ]
-          : undefined;
         stateEvent = createStateEventShared({
           repoId: config.name,
           refs,
           head: config.defaultBranch,
         });
-        updateProgress("events", "Nostr events created successfully", "completed");
+      }
 
-        // Step 5: Publish events (if handler provided)
-        if (onPublishEvent) {
-          updateProgress("publish", "Publishing to Nostr relays...", "running");
-          await onPublishEvent(announcementEvent);
+      updateProgress("events", "Nostr events created successfully", "completed");
+
+      if (onPublishEvent) {
+        updateProgress("publish", "Publishing to Nostr relays...", "running");
+        await onPublishEvent(announcementEvent);
+        if (!includesGrasp) {
           await onPublishEvent(stateEvent);
-          updateProgress("publish", "Successfully published to Nostr relays", "completed");
         }
-      } // End of non-GRASP event handling
+        updateProgress("publish", "Successfully published to Nostr relays", "completed");
+      }
+
+      if (failedProviders.length > 0) {
+        const warningMessage = failedProviders
+          .map((failure) => `${failure.provider}: ${failure.reason}`)
+          .join("; ");
+        updateProgress(
+          "providers-warning",
+          `Some providers failed and were excluded from final metadata (${warningMessage})`,
+          "completed"
+        );
+      }
+
+      const primaryRemoteProvider = providerPriority.find((provider) => byProvider.has(provider));
+      const remoteRepo =
+        (primaryRemoteProvider ? byProvider.get(primaryRemoteProvider) : undefined) ||
+        successfulRemoteRepos[0];
 
       const result: NewRepoResult = {
         localRepo,
         remoteRepo,
+        remoteRepos: successfulRemoteRepos,
         announcementEvent,
         stateEvent,
       };
