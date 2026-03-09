@@ -880,7 +880,13 @@ export class WorkerManager {
           // Phase 2: publish state event for each GRASP remote, then push
           const pushedRemotes: string[] = [];
           const skippedRemotes: string[] = [];
-          const pushErrors: Array<{ remote: string; url: string; error: string; code: string; stack: string }> = [];
+          const pushErrors: Array<{
+            remote: string;
+            url: string;
+            error: string;
+            code: string;
+            stack: string;
+          }> = [];
 
           for (const remote of graspRemotes) {
             try {
@@ -891,7 +897,12 @@ export class WorkerManager {
               const repoName = (parts[1] || "").replace(/\.git$/, "");
 
               // Publish state event with new SHA — GRASP relay must confirm before push
-              await params.publishStateEvent({ repoName, branch, commitSha: mergeCommitOid, relayUrl });
+              await params.publishStateEvent({
+                repoName,
+                branch,
+                commitSha: mergeCommitOid,
+                relayUrl,
+              });
 
               // Phase 3: push (unauthenticated smart HTTP — relay now has the state event)
               const pushResult = await this.execute<{ success?: boolean; error?: string }>(
@@ -955,8 +966,11 @@ export class WorkerManager {
           };
         }
       } catch (e: any) {
-        console.warn("[WorkerManager] GRASP two-phase merge failed, falling back to normal flow:", e);
-        // Fall through to normal single-call flow
+        console.error("[WorkerManager] GRASP two-phase merge failed:", e);
+        return {
+          success: false,
+          error: e?.message || "GRASP two-phase merge failed",
+        };
       }
     }
 

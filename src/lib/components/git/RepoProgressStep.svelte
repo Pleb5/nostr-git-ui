@@ -16,7 +16,14 @@
     onNavigateToRepo?: (result: NewRepoResult) => void;
   }
 
-  const { isCreating, progress, onRetry, onClose, createdRepoResult = null, onNavigateToRepo }: Props = $props();
+  const {
+    isCreating,
+    progress,
+    onRetry,
+    onClose,
+    createdRepoResult = null,
+    onNavigateToRepo,
+  }: Props = $props();
 
   const completedSteps = $derived(progress.filter((step) => step.completed).length);
   const totalSteps = $derived(progress.length);
@@ -151,7 +158,9 @@
 
   <!-- Action Buttons -->
   {#if !isCreating}
-    <div class="flex justify-end flex-wrap gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+    <div
+      class="flex justify-end flex-wrap gap-3 pt-4 border-t border-gray-200 dark:border-gray-700"
+    >
       {#if hasErrors && onRetry}
         <button
           onclick={onRetry}
