@@ -149,7 +149,7 @@ export async function waitForGraspProvisioning(params: {
   maxAttempts?: number;
   delayMs?: number;
 }): Promise<void> {
-  const { relayUrl, userPubkey, owner, repoName, maxAttempts = 12, delayMs = 1000 } = params;
+  const { relayUrl, userPubkey, owner, repoName, maxAttempts = 12, delayMs = 1500 } = params;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
