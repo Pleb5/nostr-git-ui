@@ -1,9 +1,17 @@
 import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
 import type { Token } from "$lib/stores/tokens";
 import { createRepoAnnouncementEvent, createRepoStateEvent } from "@nostr-git/core/events";
+import { nip19 } from "nostr-tools";
 import { tokens as tokensStore } from "$lib/stores/tokens";
 import { getGitServiceApi } from "@nostr-git/core/git";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
+import { checkGraspRepoExists } from "../utils/grasp-availability.js";
+import {
+  createGraspAnnouncementAndState,
+  publishGraspRepoEvents,
+  toNpubOrSelf,
+  waitForGraspProvisioning,
+} from "../utils/grasp-pipeline.js";
 
 // Types for fork configuration and progress
 export interface ForkConfig {
@@ -231,11 +239,51 @@ function dedupeCloneUrls(urls: string[]): string[] {
   const out: string[] = [];
   for (const url of urls) {
     const trimmed = String(url || "").trim();
-    if (!trimmed || seen.has(trimmed)) continue;
+
+    if (!trimmed) continue;
+
+    // Never persist relay origins as clone URLs.
+    try {
+      const parsed = new URL(trimmed);
+      const isBareOrigin = !parsed.pathname || parsed.pathname === "/";
+      const isRelayProtocol = parsed.protocol === "ws:" || parsed.protocol === "wss:";
+      if (isBareOrigin || isRelayProtocol) continue;
+    } catch {
+      // Keep non-URL forms as-is.
+    }
+
+    if (seen.has(trimmed)) continue;
     seen.add(trimmed);
     out.push(trimmed);
   }
   return out;
+}
+
+function pubkeyToHexOrNull(value?: string): string | null {
+  const raw = (value || "").trim();
+  if (!raw) return null;
+
+  if (/^[0-9a-f]{64}$/i.test(raw)) return raw.toLowerCase();
+
+  if (raw.startsWith("npub1")) {
+    try {
+      const decoded = nip19.decode(raw);
+      if (decoded.type === "npub" && typeof decoded.data === "string") {
+        return decoded.data.toLowerCase();
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function isSamePubkeyOwner(owner: string, userPubkey?: string): boolean {
+  const ownerHex = pubkeyToHexOrNull(owner);
+  const userHex = pubkeyToHexOrNull(userPubkey);
+  if (!ownerHex || !userHex) return false;
+  return ownerHex === userHex;
 }
 
 /**
@@ -399,21 +447,39 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         worker = workerInstance.worker;
       }
 
-      // Use just the fork name as directory path (browser virtual file system)
-      const destinationPath = config.forkName;
+      // Use fork name as default local directory path (browser virtual file system).
+      // For GRASP, this is overridden to a canonical owner/name path after getCurrentUser.
+      let destinationPath = config.forkName;
 
       // EventIO handles signing internally - no more signer registration needed!
       let workerResult: any;
+      let graspCurrentUser: string | undefined;
 
       if (provider === "grasp") {
         // EventIO will be configured by the worker internally
-        console.log("🔐 GRASP fork - EventIO handles signing internally (no more signer passing!)");
-
         // For GRASP, proceed directly without token retry
         const gitServiceApi = getGitServiceApi(provider as any, providerToken!, relayUrl);
         const userData = await gitServiceApi.getCurrentUser();
         const currentUser = userData.login;
+        graspCurrentUser = currentUser;
         updateProgress("user", `Current user: ${currentUser}`, "completed");
+
+        // Ensure worker local repo path is canonical (owner/name) so subsequent pushToRemote
+        // can resolve repoId -> dir correctly.
+        destinationPath = `${currentUser}/${config.forkName}`;
+
+        // Hard-block if target fork name already exists on the selected GRASP relay.
+        const probe = await checkGraspRepoExists({
+          relayUrl: relayUrl || "",
+          userPubkey: providerToken!,
+          owner: currentUser,
+          repoName: config.forkName,
+        });
+        if (probe.exists) {
+          throw new Error(
+            `FORK_EXISTS: A repository named "${config.forkName}" already exists on the selected GRASP relay. URL: ${probe.htmlUrl || "(unavailable)"}`
+          );
+        }
 
         // Step 3: Fork and clone repository using git-worker
         updateProgress("fork", "Creating fork and cloning repository...", "running");
@@ -486,27 +552,30 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         const ctx = `owner=${originalRepo.owner} repo=${originalRepo.name} forkName=${config.forkName} provider=${provider}`;
         throw new Error(`${workerResult.error || "Fork operation failed"} (${ctx})`);
       }
+
+      if (provider === "grasp" && relayUrl && userPubkey) {
+        const ownerNpub = toNpubOrSelf(userPubkey);
+        const baseHttp = relayUrl.replace(/^wss:\/\//i, "https://").replace(/^ws:\/\//i, "http://");
+        workerResult.forkUrl = `${baseHttp}/${ownerNpub}/${config.forkName}.git`;
+        workerResult.repoId = `${ownerNpub}/${config.forkName}`;
+      }
       updateProgress("fork", "Repository forked and cloned successfully", "completed");
 
       // Step 4: Create NIP-34 events
       updateProgress("events", "Creating Nostr events...", "running");
 
       // Create Repository Announcement event (kind 30617)
-      // For GRASP, ensure the relay URL is included in both relays and clone tags
-      const sameNameFork = config.forkName === originalRepo.name;
-      const cloneUrlSeed = sameNameFork
+      // For same logical repo (same owner pubkey + same name), keep existing clone URLs
+      // and append the newly created target clone URL.
+      const sameLogicalRepo =
+        config.forkName === originalRepo.name && isSamePubkeyOwner(originalRepo.owner, userPubkey);
+      const cloneUrlSeed = sameLogicalRepo
         ? [workerResult.forkUrl, ...(originalRepo.cloneUrls ?? [])]
         : [workerResult.forkUrl];
-      if (provider === "grasp" && relayUrl) {
-        cloneUrlSeed.push(relayUrl);
-      }
       const cloneUrls = dedupeCloneUrls(cloneUrlSeed);
 
       const requestedRelays = (config.relays || []).map((r) => r.trim()).filter(Boolean);
-      let relays = [...requestedRelays];
-      if (provider === "grasp" && relayUrl && !relays.includes(relayUrl)) {
-        relays.push(relayUrl);
-      }
+      const relays = [...requestedRelays];
 
       const rawMaintainers = [userPubkey, ...(config.maintainers || [])].filter(
         (value): value is string => Boolean(value && value.trim())
@@ -515,7 +584,26 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       const hashtags = (config.tags || []).map((tag) => tag.trim()).filter(Boolean);
 
-      const announcementEvent = createRepoAnnouncementEvent({
+      const branchCommits: Record<string, string> = workerResult.branchCommits || {};
+      const tagCommits: Record<string, string> = workerResult.tagCommits || {};
+      const refs = [
+        ...workerResult.branches
+          .map((branch: string) => ({
+            type: "heads" as const,
+            name: branch,
+            commit: branchCommits[branch],
+          }))
+          .filter((ref: { commit?: string }) => Boolean(ref.commit)),
+        ...workerResult.tags
+          .map((tag: string) => ({
+            type: "tags" as const,
+            name: tag,
+            commit: tagCommits[tag],
+          }))
+          .filter((ref: { commit?: string }) => Boolean(ref.commit)),
+      ];
+
+      let announcementEvent = createRepoAnnouncementEvent({
         repoId: workerResult.repoId,
         name: config.forkName,
         description:
@@ -530,23 +618,31 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           : {}),
       });
 
-      // Create Repository State event (kind 30618)
-      const stateEvent = createRepoStateEvent({
-        repoId: workerResult.repoId,
-        refs: [
-          ...workerResult.branches.map((branch: string) => ({
-            type: "heads" as const,
-            name: branch,
-            commit: "", // Will be filled by actual implementation
-          })),
-          ...workerResult.tags.map((tag: string) => ({
-            type: "tags" as const,
-            name: tag,
-            commit: "", // Will be filled by actual implementation
-          })),
-        ],
+      let stateEvent = createRepoStateEvent({
+        repoId: provider === "grasp" ? config.forkName : workerResult.repoId,
+        refs: refs.length > 0 ? refs : undefined,
         head: workerResult.defaultBranch,
       });
+
+      if (provider === "grasp") {
+        const graspEvents = createGraspAnnouncementAndState({
+          relayUrl: relayUrl || "",
+          ownerPubkey: userPubkey || providerToken || "",
+          repoName: config.forkName,
+          description:
+            originalRepo.description || `Fork of ${originalRepo.owner}/${originalRepo.name}`,
+          relays,
+          cloneUrls,
+          webUrls: [workerResult.forkUrl.replace(/\.git$/, "")],
+          maintainers: maintainers.length > 0 ? maintainers : undefined,
+          hashtags: hashtags.length > 0 ? hashtags : undefined,
+          earliestUniqueCommit: config.earliestUniqueCommit,
+          refs,
+          head: workerResult.defaultBranch,
+        });
+        announcementEvent = graspEvents.announcementEvent;
+        stateEvent = graspEvents.stateEvent;
+      }
 
       updateProgress("events", "Nostr events created successfully", "completed");
 
@@ -554,18 +650,58 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       if (onPublishEvent) {
         updateProgress("publish", "Publishing to Nostr relays...", "running");
         try {
-          await onPublishEvent(announcementEvent);
-          console.log("✅ Published repo announcement event");
-          await onPublishEvent(stateEvent);
-          console.log("✅ Published repo state event");
+          if (provider === "grasp") {
+            await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
+            console.log("✅ Published GRASP repo announcement and state events");
+          } else {
+            await onPublishEvent(announcementEvent);
+            console.log("✅ Published repo announcement event");
+            await onPublishEvent(stateEvent);
+            console.log("✅ Published repo state event");
+          }
           updateProgress("publish", "Successfully published to Nostr relays", "completed");
         } catch (publishError) {
           console.error("❌ Failed to publish Nostr events:", publishError);
+          if (provider === "grasp") {
+            throw publishError;
+          }
           const message =
             publishError instanceof Error ? publishError.message : String(publishError);
           warning = `Fork succeeded, but publishing Nostr events failed: ${message}`;
           updateProgress("publish", "Publishing to Nostr relays failed (non-fatal)", "completed");
         }
+      } else if (provider === "grasp") {
+        throw new Error("GRASP fork requires publishing repo announcement and state events");
+      }
+
+      if (provider === "grasp") {
+        // Allow relay to provision smart-http endpoint from announcement/state events.
+        updateProgress("publish", "Waiting for GRASP relay provisioning...", "running");
+        const ownerForProbe = graspCurrentUser || userPubkey || "";
+        await waitForGraspProvisioning({
+          relayUrl: relayUrl || "",
+          userPubkey: providerToken || "",
+          owner: ownerForProbe,
+          repoName: config.forkName,
+          maxAttempts: 12,
+          delayMs: 1000,
+        });
+
+        updateProgress("push", "Pushing git data to GRASP Smart HTTP...", "running");
+        const localRepoId = workerResult.localRepoId || workerResult.repoId;
+        const pushResult = await gitWorkerApi.pushToRemote({
+          repoId: localRepoId,
+          remoteUrl: workerResult.forkUrl,
+          branch: workerResult.defaultBranch,
+          token: providerToken,
+          provider,
+        });
+
+        if (!pushResult?.success) {
+          throw new Error(pushResult?.error || "Failed to push git data to GRASP repository");
+        }
+
+        updateProgress("push", "Git data pushed to GRASP successfully", "completed");
       }
 
       const result: ForkResult = {

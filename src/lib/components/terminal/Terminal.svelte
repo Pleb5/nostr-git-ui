@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
+  import { nip19 } from "nostr-tools";
   // Import xterm's CSS so the internal helper textarea is hidden and styling is applied
   import "@xterm/xterm/css/xterm.css";
   import { WorkerManager } from "../git/WorkerManager";
@@ -82,12 +83,12 @@
   let historyIdx = -1;
   // Track the branch the terminal operates on; initialized from defaultBranch prop
   let currentBranch = $state<string | undefined>(undefined);
-  
+
   // Initialize and sync with prop changes
   $effect(() => {
     cwd = initialCwd ?? "/";
   });
-  
+
   $effect(() => {
     currentBranch = defaultBranch;
   });
@@ -442,9 +443,13 @@
   // Resolve the canonical repoId used by the worker filesystem (owner:name)
   function getCanonicalRepoId(): string {
     try {
-      const owner = repoEvent?.pubkey;
+      const ownerRaw = repoEvent?.pubkey;
       const name = repoEvent ? parseRepoAnnouncementEvent(repoEvent).name : undefined;
-      if (owner && name) {
+      if (ownerRaw && name) {
+        const owner =
+          defaultProvider === "grasp" && !ownerRaw.startsWith("npub1")
+            ? nip19.npubEncode(ownerRaw)
+            : ownerRaw;
         return parseRepoId(`${owner}:${name}`);
       }
     } catch {}
@@ -452,21 +457,21 @@
   }
 
   async function handleGitRpc(op: string, params: any): Promise<any> {
-    console.log('[Terminal] handleGitRpc called:', { op, params });
+    console.log("[Terminal] handleGitRpc called:", { op, params });
     const mgr = await ensureWM();
-    console.log('[Terminal] WorkerManager ready:', mgr);
-    
+    console.log("[Terminal] WorkerManager ready:", mgr);
+
     if (op === "git.status") {
       try {
         const repoId = getCanonicalRepoId();
         const branch = params?.branch ?? currentBranch;
-        console.log('[Terminal] git.status params:', { repoId, branch });
+        console.log("[Terminal] git.status params:", { repoId, branch });
         if (!repoId) return { text: "error: git status requires repoId\n" };
-        
-        console.log('[Terminal] Calling mgr.getStatus...');
+
+        console.log("[Terminal] Calling mgr.getStatus...");
         const res = await mgr.getStatus({ repoId, branch });
-        console.log('[Terminal] mgr.getStatus result:', res);
-        
+        console.log("[Terminal] mgr.getStatus result:", res);
+
         if (res?.success === false) {
           return { text: `error: status failed: ${res?.error || "unknown"}\n` };
         }
@@ -477,7 +482,7 @@
             .join("\n");
         return { text: out.endsWith("\n") ? out : out + "\n" };
       } catch (e: any) {
-        console.error('[Terminal] git.status error:', e);
+        console.error("[Terminal] git.status error:", e);
         return { text: `error: status exception: ${e?.message || String(e)}\n` };
       }
     }
@@ -640,20 +645,20 @@
         let hostname: string;
         try {
           // Handle SSH URLs like git@github.com:owner/repo.git
-          if (remoteUrl.startsWith('git@')) {
+          if (remoteUrl.startsWith("git@")) {
             const match = remoteUrl.match(/git@([^:]+):/);
-            hostname = match ? match[1] : '';
+            hostname = match ? match[1] : "";
           } else {
             // Handle HTTPS URLs
             const urlObj = new URL(remoteUrl);
             hostname = urlObj.hostname;
           }
         } catch {
-          hostname = '';
+          hostname = "";
         }
         const tokens = await tokensStore.waitForInitialization();
         const matchingTokens = getTokensForHost(tokens, hostname);
-        
+
         // Determine which token to use (explicit token from params, or from token store)
         let pushResult;
         if (token) {
@@ -830,22 +835,20 @@
 
   async function ensureWorker() {
     if (worker) return;
-    
+
     const isDev = (import.meta as any)?.env?.DEV ?? false;
     const base =
       (import.meta as any)?.env?.BASE_URL ??
-      (document.querySelector('base')?.getAttribute('href') || '/');
-    const normalizedBase = String(base).endsWith('/')
-      ? String(base).slice(0, -1)
-      : String(base);
+      (document.querySelector("base")?.getAttribute("href") || "/");
+    const normalizedBase = String(base).endsWith("/") ? String(base).slice(0, -1) : String(base);
 
     // Always use URL constructor for proper Vite handling
     const workerUrl = isDev
-      ? new URL('./worker/cli.ts', import.meta.url)
-      : new URL(`${normalizedBase || ''}/_app/lib/terminal/worker/cli.js`, window.location.origin);
+      ? new URL("./worker/cli.ts", import.meta.url)
+      : new URL(`${normalizedBase || ""}/_app/lib/terminal/worker/cli.js`, window.location.origin);
 
-    console.debug('[terminal] creating worker at', workerUrl.toString());
-    
+    console.debug("[terminal] creating worker at", workerUrl.toString());
+
     try {
       const w = new Worker(workerUrl, { type: "module" });
 
@@ -866,24 +869,24 @@
         };
         const onMsg = (ev: MessageEvent) => {
           if (settled) return;
-          if (ev?.data?.type === 'ready') {
+          if (ev?.data?.type === "ready") {
             settled = true;
             clearTimeout(timer);
-            w.removeEventListener('message', onMsg as any);
+            w.removeEventListener("message", onMsg as any);
             resolve(true);
           }
         };
-        w.addEventListener('error', onError, { once: true });
-        w.addEventListener('messageerror', onError as any, { once: true });
-        w.addEventListener('message', onMsg as any);
+        w.addEventListener("error", onError, { once: true });
+        w.addEventListener("messageerror", onError as any, { once: true });
+        w.addEventListener("message", onMsg as any);
       });
-      
+
       if (!ok) {
         console.debug("[terminal] worker boot failed for", workerUrl);
         w.terminate();
         throw new Error(`Terminal worker failed to initialize: ${workerUrl}`);
       }
-      
+
       worker = w;
     } catch (e) {
       console.error("[terminal] failed to initialize worker", e);

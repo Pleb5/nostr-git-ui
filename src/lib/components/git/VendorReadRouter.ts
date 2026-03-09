@@ -13,6 +13,7 @@ import {
   filterValidCloneUrls,
   type ReadFallbackResult,
 } from "@nostr-git/core/utils";
+import { nip19 } from "nostr-tools";
 
 import type { Token } from "$lib/stores/tokens";
 import { tryTokensForHost, getTokensForHost } from "$lib/utils/tokenHelpers";
@@ -174,9 +175,7 @@ export class VendorReadRouter {
         }
 
         // All vendor URLs failed, fall back to git worker
-        console.warn(
-          `[VendorReadRouter] REST API failed, falling back to git`
-        );
+        console.warn(`[VendorReadRouter] REST API failed, falling back to git`);
         console.warn(
           `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listDirectory`
         );
@@ -268,9 +267,7 @@ export class VendorReadRouter {
         }
 
         // All vendor URLs failed, fall back to git worker
-        console.warn(
-          `[VendorReadRouter] REST API failed, falling back to git`
-        );
+        console.warn(`[VendorReadRouter] REST API failed, falling back to git`);
         console.warn(
           `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for getFileContent`
         );
@@ -328,22 +325,17 @@ export class VendorReadRouter {
 
       if (vendorUrls.length > 0) {
         console.log(`[VendorReadRouter] Trying REST API for listRefs...`);
-        const vendorResult = await withUrlFallback(
-          vendorUrls,
-          async (remoteUrl: string) => {
-            const vendor = this.getSupportedVendor(remoteUrl)!;
-            return await this.vendorListRefs({ vendor, remoteUrl });
-          }
-        );
+        const vendorResult = await withUrlFallback(vendorUrls, async (remoteUrl: string) => {
+          const vendor = this.getSupportedVendor(remoteUrl)!;
+          return await this.vendorListRefs({ vendor, remoteUrl });
+        });
 
         if (vendorResult.success && vendorResult.result) {
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { refs: vendorResult.result, fromVendor: true };
         }
 
-        console.warn(
-          `[VendorReadRouter] REST API failed, falling back to git`
-        );
+        console.warn(`[VendorReadRouter] REST API failed, falling back to git`);
         console.warn(
           `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listRefs`
         );
@@ -427,9 +419,7 @@ export class VendorReadRouter {
           return { ...vendorResult.result, fromVendor: true };
         }
 
-        console.warn(
-          `[VendorReadRouter] REST API failed, falling back to git`
-        );
+        console.warn(`[VendorReadRouter] REST API failed, falling back to git`);
         console.warn(
           `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listCommits`
         );
@@ -518,7 +508,13 @@ export class VendorReadRouter {
     repoKey?: string;
     cloneUrls: string[];
     branch: string;
-  }): Promise<{ success: boolean; count?: number; isEstimate?: boolean; fromVendor?: boolean; error?: string }> {
+  }): Promise<{
+    success: boolean;
+    count?: number;
+    isEstimate?: boolean;
+    fromVendor?: boolean;
+    error?: string;
+  }> {
     const branch = params.branch || "main";
     const remotes = this.getValidRemotes(params.cloneUrls);
 
@@ -530,7 +526,9 @@ export class VendorReadRouter {
         // For vendor APIs, we can't get exact count without pagination
         // Return a flag indicating this is an estimate based on loaded commits
         // The caller should use the commits they've already loaded as the count
-        console.log(`[VendorReadRouter] getCommitCount: vendor API available, returning estimate flag`);
+        console.log(
+          `[VendorReadRouter] getCommitCount: vendor API available, returning estimate flag`
+        );
         return {
           success: true,
           isEstimate: true,
@@ -585,7 +583,7 @@ export class VendorReadRouter {
       case "bitbucket":
         return this.vendorListDirectoryBitbucket({ vendor, remoteUrl, branch, path });
       case "grasp-rest":
-        return this.vendorListDirectoryGraspRest({ vendor, remoteUrl, branch, path });
+        return this.vendorListDirectoryGraspRest({ remoteUrl, branch, path });
       default:
         throw createUnknownError(`Unsupported vendor: ${vendor}`);
     }
@@ -607,13 +605,16 @@ export class VendorReadRouter {
       case "bitbucket":
         return this.vendorGetFileContentBitbucket({ vendor, remoteUrl, branch, path });
       case "grasp-rest":
-        return this.vendorGetFileContentGraspRest({ vendor, remoteUrl, branch, path });
+        return this.vendorGetFileContentGraspRest({ remoteUrl, branch, path });
       default:
         throw createUnknownError(`Unsupported vendor: ${vendor}`);
     }
   }
 
-  private async vendorListRefs(params: { vendor: SupportedVendor; remoteUrl: string }): Promise<VendorRef[]> {
+  private async vendorListRefs(params: {
+    vendor: SupportedVendor;
+    remoteUrl: string;
+  }): Promise<VendorRef[]> {
     switch (params.vendor) {
       case "github":
         return this.vendorListRefsGitHub(params.remoteUrl);
@@ -1131,16 +1132,16 @@ export class VendorReadRouter {
   // -------------------------
 
   private async vendorListDirectoryGraspRest(params: {
-    vendor: "grasp-rest";
     remoteUrl: string;
     branch: string;
     path: string;
   }): Promise<VendorDirectoryResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const ownerNpub = this.normalizeGraspOwner(owner);
     const apiBase = this.getApiBase("grasp-rest", host);
     const cleanPath = this.normalizeRepoPath(params.path);
 
-    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+    const url = `${apiBase}/repos/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(
       repo
     )}/tree/${encodeURIComponent(params.branch)}/${cleanPath ? encodeURIComponent(cleanPath) : ""}`;
 
@@ -1178,16 +1179,16 @@ export class VendorReadRouter {
   }
 
   private async vendorGetFileContentGraspRest(params: {
-    vendor: "grasp-rest";
     remoteUrl: string;
     branch: string;
     path: string;
   }): Promise<VendorFileContentResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const ownerNpub = this.normalizeGraspOwner(owner);
     const apiBase = this.getApiBase("grasp-rest", host);
     const filePath = this.normalizeRepoPath(params.path);
 
-    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+    const url = `${apiBase}/repos/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(
       repo
     )}/blob/${encodeURIComponent(params.branch)}/${encodeURIComponent(filePath)}`;
 
@@ -1217,13 +1218,14 @@ export class VendorReadRouter {
 
   private async vendorListRefsGraspRest(remoteUrl: string): Promise<VendorRef[]> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
+    const ownerNpub = this.normalizeGraspOwner(owner);
     const apiBase = this.getApiBase("grasp-rest", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
 
-    const branchesUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+    const branchesUrl = `${apiBase}/repos/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(
       repo
     )}/branches`;
-    const tagsUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`;
+    const tagsUrl = `${apiBase}/repos/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(repo)}/tags`;
 
     const [branchesJson, tagsJson] = await Promise.all([
       this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "grasp-rest", ctx }),
@@ -1254,18 +1256,18 @@ export class VendorReadRouter {
   }
 
   private async vendorListCommitsGraspRest(params: {
-    vendor: "grasp-rest";
     remoteUrl: string;
     branch: string;
     page?: number;
     perPage?: number;
   }): Promise<VendorCommitResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(params.remoteUrl);
+    const ownerNpub = this.normalizeGraspOwner(owner);
     const apiBase = this.getApiBase("grasp-rest", host);
     const page = params.page || 1;
     const perPage = params.perPage || 30;
 
-    const url = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+    const url = `${apiBase}/repos/${encodeURIComponent(ownerNpub)}/${encodeURIComponent(
       repo
     )}/commits?sha=${encodeURIComponent(params.branch)}&page=${page}&per_page=${perPage}`;
 
@@ -1561,7 +1563,12 @@ export class VendorReadRouter {
     return filterValidCloneUrls(cloneUrls);
   }
 
-  private ctx(parts: { op: string; remote?: string | null; branch?: string; path?: string }): string {
+  private ctx(parts: {
+    op: string;
+    remote?: string | null;
+    branch?: string;
+    path?: string;
+  }): string {
     const tokens: string[] = [];
     tokens.push(`op=${parts.op}`);
     if (parts.remote) tokens.push(`remote=${parts.remote}`);
@@ -1638,12 +1645,22 @@ export class VendorReadRouter {
     }
 
     // Generic fallback: try to find host and /owner/repo in string
-    const g = raw.match(/^(?:https?:\/\/|ssh:\/\/git@)([^\/:]+)[\/:]([^\/]+)\/([^\/.]+)(?:\.git)?/i);
+    const g = raw.match(
+      /^(?:https?:\/\/|ssh:\/\/git@)([^\/:]+)[\/:]([^\/]+)\/([^\/.]+)(?:\.git)?/i
+    );
     if (g) {
       return { host: g[1], owner: g[2], repo: g[3] };
     }
 
     throw createUnknownError(`Unable to parse clone URL: ${raw}`);
+  }
+
+  private normalizeGraspOwner(owner: string): string {
+    try {
+      return owner.startsWith("npub1") ? owner : nip19.npubEncode(owner);
+    } catch {
+      return owner;
+    }
   }
 
   private decodeBase64ToUtf8(base64: string): string {
@@ -1677,11 +1694,21 @@ export class VendorReadRouter {
     // If tokens exist for this host, retry across them; else attempt unauth for public repos
     if (matching.length > 0) {
       return await tryTokensForHost(tokens, params.host, async (token: string) => {
-        return await this.fetchJson({ url: params.url, vendor: params.vendor, token, ctx: params.ctx });
+        return await this.fetchJson({
+          url: params.url,
+          vendor: params.vendor,
+          token,
+          ctx: params.ctx,
+        });
       });
     }
 
-    return await this.fetchJson({ url: params.url, vendor: params.vendor, token: undefined, ctx: params.ctx });
+    return await this.fetchJson({
+      url: params.url,
+      vendor: params.vendor,
+      token: undefined,
+      ctx: params.ctx,
+    });
   }
 
   private async fetchTextWithOptionalTokenRetry(params: {
@@ -1695,11 +1722,21 @@ export class VendorReadRouter {
 
     if (matching.length > 0) {
       return await tryTokensForHost(tokens, params.host, async (token: string) => {
-        return await this.fetchText({ url: params.url, vendor: params.vendor, token, ctx: params.ctx });
+        return await this.fetchText({
+          url: params.url,
+          vendor: params.vendor,
+          token,
+          ctx: params.ctx,
+        });
       });
     }
 
-    return await this.fetchText({ url: params.url, vendor: params.vendor, token: undefined, ctx: params.ctx });
+    return await this.fetchText({
+      url: params.url,
+      vendor: params.vendor,
+      token: undefined,
+      ctx: params.ctx,
+    });
   }
 
   private vendorHeaders(vendor: SupportedVendor, token?: string): Record<string, string> {

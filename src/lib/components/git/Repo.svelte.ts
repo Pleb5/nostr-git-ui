@@ -25,6 +25,7 @@ import {
   createRepoAnnouncementEvent,
   createRepoStateEvent,
 } from "@nostr-git/core/events";
+import { nip19 } from "nostr-tools";
 import { parseRepoId } from "@nostr-git/core/utils";
 import { context } from "$lib/stores/context";
 import { toast } from "$lib/stores/toast";
@@ -347,7 +348,7 @@ export class Repo {
         this.name = this.#repo!.name!;
         this.description = this.#repo!.description!;
         // Compute canonical key from "pubkey:name" string (matches current @nostr-git/core signature)
-        const _owner = this.getOwnerPubkey();
+        const _owner = this.getCanonicalRepoOwner();
         this.key = parseRepoId(`${_owner}:${this.#repo!.name}`);
         this.commitManager.setRepoKeys({
           canonicalKey: this.key,
@@ -672,6 +673,27 @@ export class Repo {
     return (this.repoEvent?.pubkey || "").trim();
   }
 
+  private isGraspRepo(): boolean {
+    const cloneUrls = this.#repo?.clone || [];
+    return cloneUrls.some((url) => {
+      try {
+        return detectVendorFromUrl(url) === "grasp-rest";
+      } catch {
+        return /^wss?:\/\//i.test(String(url || ""));
+      }
+    });
+  }
+
+  private getCanonicalRepoOwner(): string {
+    const owner = this.getOwnerPubkey();
+    if (!owner || !this.isGraspRepo()) return owner;
+    try {
+      return owner.startsWith("npub1") ? owner : nip19.npubEncode(owner);
+    } catch {
+      return owner;
+    }
+  }
+
   /** Build a RepoCore context snapshot from current reactive state */
   #coreCtx(): RepoContext {
     return {
@@ -888,13 +910,16 @@ export class Repo {
     prCloneUrls: string[],
     tipCommitOid: string,
     targetBranch: string,
-    allCommitOids?: string[],
+    allCommitOids?: string[]
   ): Promise<import("@nostr-git/core/git").PRMergeAnalysisResult | null> {
     if (!this.repoEvent || !this.workerManager) return null;
     const repoId = this.key;
     const fallbackMain = this.branchManager.getMainBranch();
     // todo: what if branch name has "/" in it?
-    const effectiveBranch = typeof targetBranch === "string" ? targetBranch.split("/").pop() || fallbackMain : fallbackMain;
+    const effectiveBranch =
+      typeof targetBranch === "string"
+        ? targetBranch.split("/").pop() || fallbackMain
+        : fallbackMain;
     try {
       const result = await this.workerManager.analyzePRMerge({
         repoId,
@@ -969,20 +994,24 @@ export class Repo {
 
       // Check if REST API is available for this repo
       const hasVendorApi = this.vendorReadRouter?.hasVendorSupport(cloneUrls) ?? false;
-      
+
       // Check if current user is a maintainer
       const isMaintainer = this.viewerPubkey ? this.isAuthorized(this.viewerPubkey) : false;
 
-      console.log(`[Repo] #loadCommitsFromRepo: hasVendorApi=${hasVendorApi}, isMaintainer=${isMaintainer}`);
+      console.log(
+        `[Repo] #loadCommitsFromRepo: hasVendorApi=${hasVendorApi}, isMaintainer=${isMaintainer}`
+      );
 
       if (hasVendorApi && !isMaintainer) {
         // NON-MAINTAINER with REST API: Skip git clone entirely, use only REST API
-        console.log(`[Repo] Non-maintainer with REST API available - skipping git clone, using REST API only`);
+        console.log(
+          `[Repo] Non-maintainer with REST API available - skipping git clone, using REST API only`
+        );
         this.#loadingIds.clone = context.loading("Loading repository via API...");
-        
+
         // Load commits directly via REST API (CommitManager uses VendorReadRouter)
         await this.#loadCommits();
-        
+
         context.update(this.#loadingIds.clone, {
           type: "success",
           message: "Repository loaded via API",
@@ -990,32 +1019,37 @@ export class Repo {
         });
       } else if (hasVendorApi && isMaintainer) {
         // MAINTAINER with REST API: Load metadata via REST API first for fast UI, then clone in background
-        console.log(`[Repo] Maintainer with REST API available - loading via API first, then cloning in background`);
+        console.log(
+          `[Repo] Maintainer with REST API available - loading via API first, then cloning in background`
+        );
         this.#loadingIds.clone = context.loading("Loading repository...");
-        
+
         // First: Load commits immediately via REST API for fast UI response
         await this.#loadCommits();
-        
+
         context.update(this.#loadingIds.clone, {
           type: "success",
           message: "Repository loaded via API",
           duration: 2000,
         });
-        
+
         // Then: Clone in background for full git functionality (push, commit, etc.)
         // Fire-and-forget - don't block the UI
-        this.workerManager.smartInitializeRepo({
-          repoId,
-          cloneUrls,
-        }).then((result) => {
-          if (result.success) {
-            console.log(`[Repo] Background git clone completed for maintainer`);
-          } else {
-            console.warn(`[Repo] Background git clone failed:`, result.error);
-          }
-        }).catch((err) => {
-          console.warn(`[Repo] Background git clone error:`, err);
-        });
+        this.workerManager
+          .smartInitializeRepo({
+            repoId,
+            cloneUrls,
+          })
+          .then((result) => {
+            if (result.success) {
+              console.log(`[Repo] Background git clone completed for maintainer`);
+            } else {
+              console.warn(`[Repo] Background git clone failed:`, result.error);
+            }
+          })
+          .catch((err) => {
+            console.warn(`[Repo] Background git clone error:`, err);
+          });
       } else {
         // NO REST API: Use git clone as before
         this.#loadingIds.clone = context.loading("Initializing repository...");
@@ -1901,7 +1935,7 @@ export class Repo {
 
     // Pass the canonical repo key for addressable a-tags; name is used for NIP-34 d-tag (short id)
     return createRepoAnnouncementEvent({
-      repoId: parseRepoId(`${this.getOwnerPubkey()}:${repoData.name}`),
+      repoId: parseRepoId(`${this.getCanonicalRepoOwner()}:${repoData.name}`),
       name: repoData.name,
       description: repoData.description,
       // Support both legacy single URLs and new array format

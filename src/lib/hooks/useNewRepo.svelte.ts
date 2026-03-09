@@ -7,42 +7,56 @@ import {
 } from "@nostr-git/core/events";
 import { sanitizeRelays, parseRepoId } from "@nostr-git/core/utils";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
+import { checkGraspRepoExists } from "../utils/grasp-availability.js";
+import {
+  createGraspAnnouncementAndState,
+  normalizeGraspOrigins,
+  publishGraspRepoEvents,
+  toNpubOrSelf,
+  waitForGraspProvisioning,
+} from "../utils/grasp-pipeline.js";
 
-/**
- * Normalize GRASP URLs to ensure proper protocol handling.
- * Converts any input to both wsOrigin and httpOrigin with proper security.
- */
-function normalizeGraspOrigins(input: string): { wsOrigin: string; httpOrigin: string } {
+async function checkGraspRepoAvailability(
+  repoName: string,
+  relayUrl?: string,
+  userPubkey?: string
+): Promise<{ available: boolean; reason?: string; username?: string }> {
+  if (!relayUrl) {
+    return {
+      available: false,
+      reason: "GRASP relay URL is required to check repository availability",
+    };
+  }
+  if (!userPubkey) {
+    return {
+      available: false,
+      reason: "User pubkey is required to check GRASP repository availability",
+    };
+  }
+
   try {
-    // Parse the input URL
-    const url = new URL(input);
-    const host = url.host;
+    const username = toNpubOrSelf(userPubkey);
+    const probe = await checkGraspRepoExists({
+      relayUrl,
+      userPubkey,
+      owner: username,
+      repoName,
+    });
 
-    // Check if the input uses secure protocol (wss:// or https://)
-    const isSecure = url.protocol === "wss:" || url.protocol === "https:";
-
-    // Build origins with proper protocols based on input
-    const wsOrigin = isSecure ? `wss://${host}` : `ws://${host}`;
-    const httpOrigin = isSecure ? `https://${host}` : `http://${host}`;
-
-    return { wsOrigin, httpOrigin };
-  } catch (error) {
-    // Fallback for malformed URLs - try to extract host with regex
-    const hostMatch = input.match(/(?:ws|wss|http|https):\/\/([^\/]+)/);
-    if (hostMatch) {
-      const host = hostMatch[1];
-      // Check if input starts with secure protocol
-      const isSecure = input.startsWith("wss://") || input.startsWith("https://");
-      const wsOrigin = isSecure ? `wss://${host}` : `ws://${host}`;
-      const httpOrigin = isSecure ? `https://${host}` : `http://${host}`;
-      return { wsOrigin, httpOrigin };
+    if (probe.exists) {
+      return {
+        available: false,
+        reason: "Repository name already exists on this GRASP relay",
+        username,
+      };
     }
 
-    // Last resort - assume it's a hostname, default to secure
-    const host = input.replace(/^\/\//, "");
-    const wsOrigin = `wss://${host}`;
-    const httpOrigin = `https://${host}`;
-    return { wsOrigin, httpOrigin };
+    return { available: true, username };
+  } catch (error) {
+    return {
+      available: false,
+      reason: `Failed to check GRASP availability: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -105,7 +119,8 @@ export async function checkProviderRepoAvailability(
   provider: string,
   repoName: string,
   tokens: Token[],
-  relayUrl?: string
+  relayUrl?: string,
+  userPubkey?: string
 ): Promise<{
   results: Array<{
     provider: string;
@@ -119,20 +134,22 @@ export async function checkProviderRepoAvailability(
   availableProviders: string[];
   conflictProviders: string[];
 }> {
-  // Special-case GRASP: there is no conventional org/user namespace availability to check.
+  // GRASP checks availability against the selected relay and current npub namespace.
   if (provider === "grasp") {
+    const check = await checkGraspRepoAvailability(repoName, relayUrl, userPubkey);
     return {
       results: [
         {
           provider,
           host: relayUrl || "nostr-relay",
-          available: true,
-          reason: "Availability not enforced for GRASP relays",
+          available: check.available,
+          reason: check.reason,
+          username: check.username,
         },
       ],
-      hasConflicts: false,
-      availableProviders: ["grasp"],
-      conflictProviders: [],
+      hasConflicts: !check.available,
+      availableProviders: check.available ? ["grasp"] : [],
+      conflictProviders: check.available ? [] : ["grasp"],
     };
   }
 
@@ -166,19 +183,29 @@ export async function checkProviderRepoAvailability(
 
   // Try all tokens until one succeeds
   try {
-    console.log(`[checkProviderRepoAvailability] Trying tokens for ${provider} (host: ${defaultHost})`);
+    console.log(
+      `[checkProviderRepoAvailability] Trying tokens for ${provider} (host: ${defaultHost})`
+    );
     console.log(`[checkProviderRepoAvailability] Found ${matchingTokens.length} matching tokens`);
     matchingTokens.forEach((t, i) => {
-      const tokenPreview = t.token ? `${t.token.substring(0, 4)}...${t.token.substring(t.token.length - 4)}` : 'empty';
-      console.log(`[checkProviderRepoAvailability] Token ${i + 1}: host="${t.host}", token=${tokenPreview}, length=${t.token?.length || 0}`);
+      const tokenPreview = t.token
+        ? `${t.token.substring(0, 4)}...${t.token.substring(t.token.length - 4)}`
+        : "empty";
+      console.log(
+        `[checkProviderRepoAvailability] Token ${i + 1}: host="${t.host}", token=${tokenPreview}, length=${t.token?.length || 0}`
+      );
     });
 
     const result = await tryTokensForHost(
       tokens,
       defaultHost,
       async (token: string, host: string) => {
-        const tokenPreview = token ? `${token.substring(0, 4)}...${token.substring(token.length - 4)}` : 'empty';
-        console.log(`[checkProviderRepoAvailability] Attempting with token: ${tokenPreview} for host: ${host}`);
+        const tokenPreview = token
+          ? `${token.substring(0, 4)}...${token.substring(token.length - 4)}`
+          : "empty";
+        console.log(
+          `[checkProviderRepoAvailability] Attempting with token: ${tokenPreview} for host: ${host}`
+        );
         const api = getGitServiceApi(provider as any, token);
         console.log(`[checkProviderRepoAvailability] Calling getCurrentUser for ${provider}...`);
         let currentUser;
@@ -186,7 +213,10 @@ export async function checkProviderRepoAvailability(
           currentUser = await api.getCurrentUser();
           console.log(`[checkProviderRepoAvailability] getCurrentUser succeeded:`, currentUser);
         } catch (authError: any) {
-          console.error(`[checkProviderRepoAvailability] getCurrentUser failed:`, authError?.message || authError);
+          console.error(
+            `[checkProviderRepoAvailability] getCurrentUser failed:`,
+            authError?.message || authError
+          );
           throw authError;
         }
         const username = (currentUser as any).login || (currentUser as any).username || "me";
@@ -494,8 +524,10 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
   // Resolve the canonical repo key for this creation flow
   async function computeCanonicalKey(config: NewRepoConfig): Promise<string> {
     if (config.authorPubkey) {
+      const owner =
+        config.provider === "grasp" ? toNpubOrSelf(config.authorPubkey) : config.authorPubkey;
       // Use "owner:name" form which parseRepoId will normalize
-      return parseRepoId(`${config.authorPubkey}:${config.name}`);
+      return parseRepoId(`${owner}:${config.name}`);
     }
     throw new Error("Could not get pubkey for GRASP canonical key");
   }
@@ -530,117 +562,50 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           config.relayUrl ||
           (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls[0] : "");
 
-        // Compute GRASP-specific URLs and relays
-        const { wsOrigin, httpOrigin } = normalizeGraspOrigins(primaryRelay || "");
-
-        // Get pubkey for GRASP (from options)
+        const { wsOrigin } = normalizeGraspOrigins(primaryRelay || "");
         const graspPubkey = userPubkey;
 
-        // Build clone and web URLs if we have pubkey
-        let cloneUrl: string | undefined;
-        let webUrl: string | undefined;
-        if (graspPubkey) {
-          const npub = (await import("nostr-tools")).nip19.npubEncode(graspPubkey);
-          webUrl = `${httpOrigin}/${npub}/${config.name}`;
-          cloneUrl = `${webUrl}.git`;
-        }
-
-        // Build relay aliases: ensure GRASP relay(s) are present for metadata
         const aliases: string[] = [];
-
-        const primaryAliases: string[] = [];
-        if (wsOrigin) primaryAliases.push(wsOrigin);
-
         const extraRelayUrls = (config.relayUrls || [])
           .map((u) => (u || "").trim())
           .filter(Boolean);
-
         for (const relay of [wsOrigin, ...extraRelayUrls]) {
-          if (!relay) continue;
-          aliases.push(relay);
+          if (relay) aliases.push(relay);
         }
         const defaultRepoRelays = ["wss://nos.lol/", "wss://relay.damus.io/"];
         aliases.push(...defaultRepoRelays);
-        // Use sanitizeRelays to filter out invalid URLs and deduplicate
         const relays = sanitizeRelays(aliases);
-        // Compute canonical repo address '<npub>:<repo>' (ngit-compatible 'a' tag)
-        const ownerNpub = graspPubkey
-          ? (await import("nostr-tools")).nip19.npubEncode(graspPubkey)
-          : undefined;
-        const canonicalRepoId = ownerNpub ? `${ownerNpub}:${config.name}` : config.name;
 
-        // Create announcement event
-        announcementEvent = createAnnouncementEventShared({
-          repoId: canonicalRepoId,
-          name: config.name,
-          description: config.description || "",
-          web: webUrl ? [webUrl] : undefined,
-          clone: cloneUrl ? [cloneUrl] : undefined,
-          relays,
-          maintainers:
-            config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
-          hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
-          earliestUniqueCommit: localRepo?.initialCommit || undefined,
-        });
-        // Create state event
-        // Build ref names for NIP-34 state event
-        // The createRepoStateEvent function adds "refs/{type}/" prefix, so we only pass the branch name
-        const headRef = config.defaultBranch ? `refs/heads/${config.defaultBranch}` : undefined;
         const refs =
           localRepo?.initialCommit && config.defaultBranch
             ? [
                 {
                   type: "heads" as const,
-                  name: config.defaultBranch, // Just the branch name, createRepoStateEvent adds refs/heads/
+                  name: config.defaultBranch,
                   commit: localRepo.initialCommit,
                 },
               ]
             : undefined;
-        // For GRASP/ngit compatibility, the state event's d tag should be just the repo name
-        // (the "identifier"), not the full npub:name format. The npub:name format is for
-        // the announcement event's d tag and the "a" tag references.
-        stateEvent = createStateEventShared({
-          repoId: config.name, // Just the repo name for the d tag
+
+        const graspEvents = createGraspAnnouncementAndState({
+          relayUrl: primaryRelay || "",
+          ownerPubkey: graspPubkey || "",
+          repoName: config.name,
+          description: config.description || "",
+          relays,
+          maintainers:
+            config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
+          hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
+          earliestUniqueCommit: localRepo?.initialCommit || undefined,
           refs,
-          head: config.defaultBranch, // Just the branch name, not full refname
+          head: config.defaultBranch,
         });
-        // Ensure explicit HEAD/ref tags are present (ngit-compatible)
-        try {
-          stateEvent.tags = stateEvent.tags || [];
-          if (headRef && !stateEvent.tags.find((t: any[]) => t[0] === "HEAD")) {
-            stateEvent.tags.push(["HEAD", `ref: ${headRef}`]);
-          }
-          if (
-            localRepo?.initialCommit &&
-            headRef &&
-            !stateEvent.tags.find((t: any[]) => t[0] === "ref" && t[1] === headRef)
-          ) {
-            stateEvent.tags.push(["ref", headRef, localRepo.initialCommit]);
-          }
-        } catch {}
-        // Ensure app-level publisher sees the GRASP relay on both events: add a 'relays' tag mirroring repo relays
-        try {
-          const relaysTag = ["relays", ...relays] as unknown as string[];
-          // Avoid duplicate relays tag
-          if (!stateEvent.tags?.some((t: any[]) => t[0] === "relays")) {
-            stateEvent.tags = [...(stateEvent.tags || []), relaysTag];
-          }
-          announcementEvent.tags = announcementEvent.tags || [];
-          if (!announcementEvent.tags?.some((t: any[]) => t[0] === "relays")) {
-            announcementEvent.tags = [...(announcementEvent.tags || []), relaysTag];
-          }
-        } catch {}
-        // Publish ANNOUNCEMENT first (triggers server provisioning), then STATE
-        if (onPublishEvent) {
-          console.log("🔐 publishing announcementEvent (first)", announcementEvent);
-          await onPublishEvent(announcementEvent);
-          console.log("🔐 publishing stateEvent (second)", stateEvent);
-          await onPublishEvent(stateEvent);
-          updateProgress("grasp-events", "GRASP state and announcement published", "completed");
-        } else {
-          console.warn("⚠️ No onPublishEvent callback provided; GRASP events not published");
-          updateProgress("grasp-events", "Skipped event publishing (no callback)", "completed");
-        }
+
+        announcementEvent = graspEvents.announcementEvent;
+        stateEvent = graspEvents.stateEvent;
+
+        await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
+        updateProgress("grasp-events", "GRASP state and announcement published", "completed");
       }
 
       // Step 2: Create remote repository
@@ -657,7 +622,20 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         // For GRASP, wait for the relay to process the announcement event
         if (config.provider === "grasp") {
           updateProgress("push", "Waiting for GRASP server to process announcement...", "running");
-          await new Promise((resolve) => setTimeout(resolve, 10000)); // 10 second delay
+          const primaryRelay =
+            config.relayUrl ||
+            (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls[0] : "");
+          if (!primaryRelay || !config.authorPubkey) {
+            throw new Error("GRASP relay URL and author pubkey are required before pushing");
+          }
+          await waitForGraspProvisioning({
+            relayUrl: primaryRelay,
+            userPubkey: config.authorPubkey,
+            owner: toNpubOrSelf(config.authorPubkey),
+            repoName: config.name,
+            maxAttempts: 12,
+            delayMs: 1000,
+          });
         }
 
         updateProgress("push", "Pushing to remote repository...", "running");
@@ -671,7 +649,11 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           updateProgress("push", "Successfully pushed to remote repository", "completed");
         } catch (pushError) {
           console.error("[CREATE REPO] Push failed:", pushError);
-          updateProgress("push", `Push failed: ${pushError instanceof Error ? pushError.message : String(pushError)}`, "error");
+          updateProgress(
+            "push",
+            `Push failed: ${pushError instanceof Error ? pushError.message : String(pushError)}`,
+            "error"
+          );
           throw pushError;
         }
       }
@@ -856,7 +838,9 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
 
       // Handle GRASP separately (doesn't use token retry logic)
       if (config.provider === "grasp") {
-        console.log("🔐 Setting up GRASP repository creation with EventIO (no more signer passing!)");
+        console.log(
+          "🔐 Setting up GRASP repository creation with EventIO (no more signer passing!)"
+        );
 
         const primaryRelay =
           config.relayUrl ||
@@ -869,6 +853,11 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         // Normalize GRASP URLs to ensure proper protocol handling
         const { wsOrigin } = normalizeGraspOrigins(primaryRelay);
         console.log("🔐 Normalized GRASP URLs:", { wsOrigin });
+
+        const availability = await checkGraspRepoAvailability(config.name, wsOrigin, token);
+        if (!availability.available) {
+          throw new Error(availability.reason || "Repository name is not available");
+        }
 
         const result = await api.createRemoteRepo({
           provider: config.provider as any,
@@ -916,32 +905,28 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         }
       }
 
-      const result = await tryTokensForHost(
-        tokens,
-        providerHost,
-        async (token: string) => {
-          console.log("🚀 Checking repository name availability...");
-          const availability = await checkRepoAvailability(config, token);
-          if (!availability.available) {
-            throw new Error(availability.reason || "Repository name is not available");
-          }
-
-          const repoResult = await api.createRemoteRepo({
-            provider: config.provider as any,
-            token,
-            name: config.name,
-            description: config.description,
-            isPrivate: false, // Default to public for now
-          });
-
-          if (!repoResult.success) {
-            console.error("Remote repository creation failed:", repoResult.error);
-            throw new Error(`Remote repository creation failed: ${repoResult.error}`);
-          }
-
-          return repoResult;
+      const result = await tryTokensForHost(tokens, providerHost, async (token: string) => {
+        console.log("🚀 Checking repository name availability...");
+        const availability = await checkRepoAvailability(config, token);
+        if (!availability.available) {
+          throw new Error(availability.reason || "Repository name is not available");
         }
-      );
+
+        const repoResult = await api.createRemoteRepo({
+          provider: config.provider as any,
+          token,
+          name: config.name,
+          description: config.description,
+          isPrivate: false, // Default to public for now
+        });
+
+        if (!repoResult.success) {
+          console.error("Remote repository creation failed:", repoResult.error);
+          throw new Error(`Remote repository creation failed: ${repoResult.error}`);
+        }
+
+        return repoResult;
+      });
 
       console.log("🚀 API call completed, result:", result);
       console.log("🚀 Remote repository created successfully:", result);
@@ -956,7 +941,12 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
     }
   }
 
-  async function pushToRemote(config: NewRepoConfig, remoteRepo: any, canonicalKey?: string, localRepo?: any) {
+  async function pushToRemote(
+    config: NewRepoConfig,
+    remoteRepo: any,
+    canonicalKey?: string,
+    localRepo?: any
+  ) {
     console.log("🚀 Starting pushToRemote function...");
     console.log("🚀 pushToRemote canonicalKey:", canonicalKey);
     console.log("🚀 pushToRemote config:", config);
@@ -1008,7 +998,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
 
       // For GRASP, use direct push since we just created the local repo
       console.log("[NEW REPO] Using direct pushToRemote for GRASP");
-      
+
       // Create NIP-98 auth headers on main thread if callback is provided
       // Git push requires auth headers for TWO different URLs:
       // 1. GET /info/refs?service=git-receive-pack (discovery)
@@ -1016,7 +1006,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       let authHeaders: Record<string, string> | null = null;
       if (options.createAuthHeader) {
         console.log("[NEW REPO] Creating NIP-98 auth headers for GRASP push");
-        
+
         // Build the smart HTTP URL (same logic as worker)
         let smartUrl = pushUrl;
         try {
@@ -1025,17 +1015,17 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           if (!p.endsWith(".git")) p = p.endsWith("/") ? `${p.slice(0, -1)}.git` : `${p}.git`;
           smartUrl = `${u.protocol}//${u.host}${p}`;
         } catch {}
-        
+
         const infoRefsUrl = `${smartUrl}/info/refs?service=git-receive-pack`;
         const receivePackUrl = `${smartUrl}/git-receive-pack`;
-        
+
         console.log("[NEW REPO] Signing auth headers for URLs:", { infoRefsUrl, receivePackUrl });
-        
+
         const [infoRefsAuth, receivePackAuth] = await Promise.all([
-          options.createAuthHeader(infoRefsUrl, 'GET'),
-          options.createAuthHeader(receivePackUrl, 'POST'),
+          options.createAuthHeader(infoRefsUrl, "GET"),
+          options.createAuthHeader(receivePackUrl, "POST"),
         ]);
-        
+
         if (infoRefsAuth && receivePackAuth) {
           authHeaders = {
             [infoRefsUrl]: infoRefsAuth,
@@ -1043,79 +1033,13 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           };
           console.log("[NEW REPO] NIP-98 auth headers created successfully for both URLs");
         } else {
-          console.warn("[NEW REPO] Failed to create NIP-98 auth headers", { infoRefsAuth: !!infoRefsAuth, receivePackAuth: !!receivePackAuth });
-        }
-      }
-      
-      // CRITICAL: Publish updated repo state event (30618) before pushing
-      // This is the missing piece - GRASP servers need the state event with actual commit SHA
-      if (onPublishEvent && localRepo?.initialCommit) {
-        console.log("[NEW REPO] Publishing pre-push state event for GRASP");
-        
-        // Use the original GRASP relay URL (not derived from pushUrl)
-        const primaryRelay =
-          config.relayUrl ||
-          (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls[0] : "");
-        
-        if (!primaryRelay) {
-          console.error("[NEW REPO] No GRASP relay URL available for state event");
-          throw new Error("GRASP relay URL required for state event publishing");
-        }
-        
-        // Ensure it's a WebSocket URL
-        const { wsOrigin } = normalizeGraspOrigins(primaryRelay);
-        console.log(`[NEW REPO] Using original GRASP relay for state event: ${wsOrigin}`);
-        
-        try {
-          // Create updated state event with actual commit SHA
-          const headRef = config.defaultBranch ? `refs/heads/${config.defaultBranch}` : undefined;
-          const refs = localRepo.initialCommit && config.defaultBranch ? [
-            {
-              type: "heads" as const,
-              name: config.defaultBranch,
-              commit: localRepo.initialCommit,
-            },
-          ] : undefined;
-          
-          // Use just the repo name for GRASP/ngit compatibility (not npub:name format)
-          const updatedStateEvent = createStateEventShared({
-            repoId: config.name,
-            refs,
-            head: config.defaultBranch,
+          console.warn("[NEW REPO] Failed to create NIP-98 auth headers", {
+            infoRefsAuth: !!infoRefsAuth,
+            receivePackAuth: !!receivePackAuth,
           });
-          
-          // Ensure explicit HEAD/ref tags are present (cast to any to bypass strict typing)
-          if (headRef && !updatedStateEvent.tags.find((t: any[]) => t[0] === "HEAD")) {
-            (updatedStateEvent.tags as any[]).push(["HEAD", `ref: ${headRef}`]);
-          }
-          if (
-            localRepo.initialCommit &&
-            headRef &&
-            !updatedStateEvent.tags.find((t: any[]) => t[0] === "ref" && t[1] === headRef)
-          ) {
-            (updatedStateEvent.tags as any[]).push(["ref", headRef, localRepo.initialCommit]);
-          }
-          
-          // Add relays tag for the GRASP relay
-          const relaysTag = ["relays", wsOrigin];
-          if (!updatedStateEvent.tags?.some((t: any[]) => t[0] === "relays")) {
-            updatedStateEvent.tags = [...(updatedStateEvent.tags || []), relaysTag as any];
-          }
-          
-          console.log("[NEW REPO] Publishing updated state event with commit SHA:", localRepo.initialCommit.substring(0, 8));
-          console.log("[NEW REPO] Updated state event:", JSON.stringify(updatedStateEvent, null, 2));
-          await onPublishEvent(updatedStateEvent);
-          console.log("[NEW REPO] Pre-push state event published successfully");
-          
-          // Wait a moment for the relay to process the event before pushing
-          console.log("[NEW REPO] Waiting 2 seconds for state event to propagate...");
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-        } catch (stateError) {
-          console.warn("[NEW REPO] Failed to publish pre-push state event; proceeding anyway:", stateError);
         }
       }
-      
+
       const directPushResult = await api.pushToRemote({
         repoId: canonicalKey || config.name,
         remoteUrl: pushUrl,
@@ -1151,7 +1075,6 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         tokens,
         providerHost,
         async (token: string, host: string) => {
-
           // For other providers, use safePushToRemote for preflight checks
           // Note: requireUpToDate is false for new repo creation since we just created
           // both the local and remote repos - no need to check if remote is "up to date"

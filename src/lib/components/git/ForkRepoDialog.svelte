@@ -25,6 +25,8 @@
   import type { ForkResult, ForkConfig } from "../../hooks/useForkRepo.svelte";
   import { toast } from "../../stores/toast";
   import { validateGraspServerUrl } from "@nostr-git/core/events";
+  import { nip19 } from "nostr-tools";
+  import { checkGraspRepoExists } from "../../utils/grasp-availability.js";
   import {
     getGitServiceApi,
     getProviderCapabilities,
@@ -176,6 +178,20 @@
   }
 
   const parsedUrl = $derived(parseCloneUrl(cloneUrl));
+
+  function toDisplayOwner(owner: string): string {
+    if (!owner) return owner;
+    if (owner.startsWith("npub1")) return owner;
+    if (/^[0-9a-f]{64}$/i.test(owner)) {
+      try {
+        return nip19.npubEncode(owner.toLowerCase());
+      } catch {
+        return owner;
+      }
+    }
+    return owner;
+  }
+
   const originalRepo = $derived({
     owner: parsedUrl.owner,
     name: parsedUrl.name,
@@ -183,9 +199,10 @@
     cloneUrls: repo.clone || [], // Pass all clone URLs for cross-platform forking
     sourceRepoId: repo.repoId || "", // Pass the source repo's canonical ID for finding existing local clone
   });
-  const ownerDisplay = $derived.by(() => `${originalRepo.owner}/${originalRepo.name}`);
+  const ownerDisplayOwner = $derived.by(() => toDisplayOwner(originalRepo.owner));
+  const ownerDisplay = $derived.by(() => `${ownerDisplayOwner}/${originalRepo.name}`);
   const ownerIsNostr = $derived.by(() =>
-    /^(nostr:)?(npub|nprofile)1/i.test(originalRepo.owner || "")
+    /^(nostr:)?(npub|nprofile)1/i.test(ownerDisplayOwner || "")
   );
 
   // Determine default service based on hostname
@@ -201,12 +218,16 @@
   let forkName = $state("");
   let selectedService = $state("github.com");
   let isCheckingExistingFork = $state(false);
-  const forkOwnerDisplay = $derived.by(() => `${originalRepo.owner}/${forkName}`);
+  const forkOwnerDisplay = $derived.by(() => {
+    if (completedResult?.repoId) return completedResult.repoId;
+    return `${ownerDisplayOwner}/${forkName}`;
+  });
   let existingForkInfo = $state<
     | {
         exists: boolean;
         url?: string;
         message?: string;
+        warning?: boolean;
         service?: string;
         error?: string;
         isOwnRepo?: boolean; // True if user is trying to fork their own repo
@@ -592,7 +613,8 @@
 
   // Check for existing fork when service or fork name changes (debounced)
   $effect(() => {
-    const currentKey = `${selectedService}:${forkName.trim()}`;
+    const relayKey = selectedService === "grasp" ? relayUrl.trim() : "";
+    const currentKey = `${selectedService}:${forkName.trim()}:${relayKey}`;
 
     // Clear existing timeout
     if (checkTimeout) {
@@ -632,19 +654,75 @@
     }
 
     // Skip if this check is already outdated (user changed inputs)
-    const currentKey = `${selectedService}:${forkName.trim()}`;
+    const relayKey = selectedService === "grasp" ? relayUrl.trim() : "";
+    const currentKey = `${selectedService}:${forkName.trim()}:${relayKey}`;
     if (checkKey !== currentKey) {
       return;
     }
 
-    // For GRASP, skip remote fork existence checks (event-based system)
+    // For GRASP, check selected relay for an existing repo with the same name.
     if (selectedService === "grasp") {
-      existingForkInfo = {
-        exists: false,
-        service: "grasp",
-        message: "Fork existence check is not applicable for GRASP.",
-      };
-      lastCheckedKey = checkKey;
+      const relay = relayUrl.trim();
+      if (!relay) {
+        existingForkInfo = {
+          exists: false,
+          service: "grasp",
+          message: "Select a GRASP relay URL to check fork availability.",
+          warning: true,
+        };
+        lastCheckedKey = checkKey;
+        return;
+      }
+
+      if (!pubkey) {
+        existingForkInfo = {
+          exists: false,
+          service: "grasp",
+          error: "User pubkey is required for GRASP fork availability checks.",
+        };
+        return;
+      }
+
+      isCheckingExistingFork = true;
+      existingForkInfo = undefined;
+
+      try {
+        const probe = await checkGraspRepoExists({
+          relayUrl: relay,
+          userPubkey: pubkey,
+          owner: pubkey,
+          repoName: forkName.trim(),
+        });
+
+        if (!probe.exists) {
+          existingForkInfo = {
+            exists: false,
+            service: "grasp",
+          };
+          lastCheckedKey = checkKey;
+          return;
+        }
+
+        existingForkInfo = {
+          exists: true,
+          service: "grasp",
+          isOwnRepo: false,
+          forkName: forkName.trim(),
+          message: "A repository with this name already exists on the selected GRASP relay",
+          url: probe.htmlUrl,
+        };
+
+        lastCheckedKey = checkKey;
+      } catch (error) {
+        console.error("Error checking GRASP fork availability:", error);
+        existingForkInfo = {
+          exists: false,
+          service: "grasp",
+          error: error instanceof Error ? error.message : "Unknown error",
+        };
+      } finally {
+        isCheckingExistingFork = false;
+      }
       return;
     }
 
@@ -1578,15 +1656,15 @@
                   <span>Checking if fork already exists...</span>
                 </div>
               </div>
-            {:else if existingForkInfo && typeof existingForkInfo.exists !== "undefined"}
+            {:else if existingForkInfo && typeof existingForkInfo?.exists !== "undefined"}
               <div class="bg-gray-800 border border-gray-600 rounded-lg p-3">
                 <div class="flex items-start space-x-2 text-sm">
-                  {#if existingForkInfo.exists}
+                  {#if existingForkInfo?.exists}
                     <AlertCircle class="w-4 h-4 text-yellow-400 mt-0.5 flex-shrink-0" />
                     <div class="flex-1">
-                      <p class="text-yellow-400 font-medium mb-2">{existingForkInfo.message}</p>
+                      <p class="text-yellow-400 font-medium mb-2">{existingForkInfo?.message}</p>
 
-                      {#if existingForkInfo.isOwnRepo}
+                      {#if existingForkInfo?.isOwnRepo}
                         <!-- User is trying to fork their own repo -->
                         {@const providerLabel =
                           availableServices.find((s) => s.host === selectedService)?.label ||
@@ -1600,9 +1678,9 @@
                             <li>Clone to a new repository (loses fork relationship)</li>
                             <li>Work directly in the repository</li>
                           </ul>
-                          {#if existingForkInfo.url}
+                          {#if existingForkInfo?.url}
                             <a
-                              href={existingForkInfo.url}
+                              href={existingForkInfo?.url}
                               target="_blank"
                               rel="noopener noreferrer"
                               class="inline-flex items-center space-x-1 text-blue-400 hover:text-blue-300 mt-2"
@@ -1622,9 +1700,9 @@
                         <div class="text-gray-300 text-sm space-y-2">
                           <p>
                             <strong class="text-white">
-                              {existingForkInfo.forkName || "Your fork"}
+                              {existingForkInfo?.forkName || "Your fork"}
                             </strong>
-                            {#if existingForkInfo.forkName && existingForkInfo.forkName !== forkName && restrictions.namespaceRestriction}
+                            {#if existingForkInfo?.forkName && existingForkInfo?.forkName !== forkName && restrictions.namespaceRestriction}
                               <span class="text-gray-400">
                                 ({restrictions.namespaceRestriction})
                               </span>
@@ -1643,18 +1721,18 @@
                               <li>Remove the fork relationship and fork again</li>
                             {/if}
                           </ul>
-                          {#if existingForkInfo.url}
+                          {#if existingForkInfo?.url}
                             {@const settingsUrl = buildProviderUrl(
-                              existingForkInfo.url,
+                              existingForkInfo?.url,
                               restrictions.settingsUrlPattern
                             )}
                             {@const forkSettingsUrl = buildProviderUrl(
-                              existingForkInfo.url,
+                              existingForkInfo?.url,
                               restrictions.forkSettingsUrlPattern
                             )}
                             <div class="flex items-center gap-2 mt-2 flex-wrap">
                               <a
-                                href={existingForkInfo.url}
+                                href={existingForkInfo?.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 class="inline-flex items-center space-x-1 text-blue-400 hover:text-blue-300"
@@ -1691,10 +1769,15 @@
                         </div>
                       {/if}
                     </div>
+                  {:else if existingForkInfo?.warning}
+                    <AlertCircle class="w-4 h-4 text-yellow-400 mt-0.5 flex-shrink-0" />
+                    <p class="text-yellow-400">
+                      {existingForkInfo?.message || "Additional input required"}
+                    </p>
                   {:else}
                     <CheckCircle2 class="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
                     <p class="text-green-400">
-                      {existingForkInfo.message || "Repository name is available"}
+                      {existingForkInfo?.message || "Repository name is available"}
                     </p>
                   {/if}
                 </div>
@@ -1965,7 +2048,9 @@
             type="submit"
             form="fork-form"
             disabled={isForking ||
+              isCheckingExistingFork ||
               !!validationError ||
+              (selectedService === "grasp" && !relayUrl.trim()) ||
               !forkName.trim() ||
               availableServices.length === 0 ||
               existingForkInfo?.exists}

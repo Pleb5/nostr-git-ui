@@ -3,7 +3,7 @@
   import AdvancedSettingsStep from "./AdvancedSettingsStep.svelte";
   import RepoProgressStep from "./RepoProgressStep.svelte";
   import StepChooseService from "./steps/StepChooseService.svelte";
-  import { type Event as NostrEvent } from "nostr-tools";
+  import { nip19, type Event as NostrEvent } from "nostr-tools";
   import { useRegistry } from "../../useRegistry";
   import {
     useNewRepo,
@@ -191,7 +191,7 @@
     if (!userEditedWebUrl) {
       let url = "";
       if (selectedProvider === "grasp") {
-        url = `https://gitworkshop.dev/${userPubkey ?? "[pubkey]"}/${name}`;
+        url = `https://gitworkshop.dev/${userPubkey ? nip19.npubEncode(userPubkey) : "[pubkey]"}/${name}`;
       } else if (selectedProvider) {
         const host = availabilityHost || providerHost(selectedProvider);
         if (host && username) {
@@ -291,7 +291,8 @@
         selectedProvider as string,
         name,
         tokens,
-        selectedProvider === "grasp" ? graspRelayUrls[0] : undefined
+        selectedProvider === "grasp" ? graspRelayUrls[0] : undefined,
+        userPubkey
       );
       nameAvailabilityResults = results;
     } catch (error) {
