@@ -53,7 +53,7 @@ export const PermalinkNode = Node.create<PermalinkNodeOptions>({
       signer: () => {
         throw new Error("nostr.signEvent is not available");
       },
-      relays: ["wss://relay.damus.io"],
+      relays: ["wss://relay.sharegap.net"],
       spinnerComponent: Spinner,
     };
   },

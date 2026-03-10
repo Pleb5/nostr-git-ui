@@ -449,8 +449,46 @@ export class FileManager {
 
       return fileListingResult;
     } catch (error: any) {
-      // Preserve existing alternative-branch fallback, but only for likely-ref errors and root-ish listings
       const msg = error instanceof Error ? error.message : String(error);
+
+      // Handle stale local clone: "commit X is not available locally. Do a git fetch"
+      const looksLikeStaleClone = /is not available locally|do a git fetch/i.test(msg);
+      if (looksLikeStaleClone) {
+        console.log(`[FileManager] Stale clone detected, re-initializing repo for branch ${shortBranch}`);
+        try {
+          const cloneUrls = this.getCloneUrlsFromRepoEvent(repoEvent);
+          if (cloneUrls.length > 0) {
+            // Use smartInitializeRepo with forceUpdate to handle both fresh clones and stale repos
+            await this.workerManager.smartInitializeRepo({
+              repoId: repoKey,
+              cloneUrls,
+              forceUpdate: true,
+            });
+            // Retry after re-initialization
+            const retryRaw = await this.workerManager.listRepoFilesFromEvent({
+              repoEvent,
+              branch: shortBranch,
+              path,
+              repoKey,
+            });
+            const retryResult = toFileListingResult(retryRaw, shortBranch);
+            if (this.config.enableCaching && this.cacheManager) {
+              await this.cacheManager.set(
+                "file_listing",
+                cacheKey,
+                retryResult,
+                this.config.listingCacheTTL
+              );
+            }
+            return retryResult;
+          }
+        } catch (syncError) {
+          console.warn(`[FileManager] Re-init retry failed:`, syncError);
+          // Fall through to other error handling
+        }
+      }
+
+      // Preserve existing alternative-branch fallback, but only for likely-ref errors and root-ish listings
       const isRootish = !path || path === "/" || path === "";
       const looksLikeRefError = /could not find|unknown ref|not found.*ref|branch/i.test(msg);
 

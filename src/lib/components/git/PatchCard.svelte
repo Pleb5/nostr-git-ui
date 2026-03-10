@@ -113,7 +113,7 @@
     if (repo?.relays && repo.relays.length > 0) {
       return repo.relays[0];
     }
-    return "wss://relay.damus.io/";
+    return "wss://relay.sharegap.net/";
   });
 
   const commentRelays = $derived.by(() => {
@@ -228,7 +228,7 @@
   let isExpanded = $state(false);
   let isBookmarked = $state(false);
 
-  const noun = isPullRequest ? "Pull Request" : "Patch";
+  const noun = $derived(isPullRequest ? "Pull Request" : "Patch");
 
   // Copy to clipboard function
   const copyToClipboard = async (text: string, label: string) => {
