@@ -29,6 +29,7 @@
     isTogglingBookmark = false,
     watchRepo,
     isWatching = false,
+    canEditSettings,
   }: {
     repoClass: Repo;
     activeTab?: string;
@@ -43,10 +44,13 @@
     isTogglingBookmark?: boolean;
     watchRepo?: () => void | Promise<void>;
     isWatching?: boolean;
+    canEditSettings?: boolean;
   } = $props();
   const name = $derived.by(() => repoClass.name);
   const description = $derived.by(() => repoClass.description);
-  const canEdit = $derived.by(() => !!repoClass.editable);
+  const canEdit = $derived.by(() =>
+    typeof canEditSettings === "boolean" ? canEditSettings : !!repoClass.editable
+  );
 
   // Track clone URL errors from the Repo class
   // DISABLED: Returning false positives, needs investigation
