@@ -72,7 +72,7 @@
       return repo.relays[0];
     }
     // Fallback to a default relay if no relays available
-    return "wss://relay.damus.io/";
+    return "wss://relay.sharegap.net/";
   });
 
   const commentRelays = $derived.by(() => {

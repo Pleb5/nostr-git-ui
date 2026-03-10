@@ -559,7 +559,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           if (!relay) continue;
           aliases.push(relay);
         }
-        const defaultRepoRelays = ["wss://nos.lol/", "wss://relay.damus.io/"];
+        const defaultRepoRelays = ["wss://nos.lol/", "wss://relay.sharegap.net/"];
         aliases.push(...defaultRepoRelays);
         // Use sanitizeRelays to filter out invalid URLs and deduplicate
         const relays = sanitizeRelays(aliases);
