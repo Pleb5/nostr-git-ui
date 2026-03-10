@@ -22,6 +22,7 @@
   import { PeoplePicker } from "@nostr-git/ui";
   import { Repo } from "./Repo.svelte";
   import { nip19 } from "nostr-tools";
+  import { parseRepoId } from "@nostr-git/core/utils";
   import { commonHashtags } from "../../stores/hashtags";
 
   // Types for edit configuration and progress
@@ -44,6 +45,13 @@
     earliestUniqueCommit: string;
   }
 
+  interface SaveCompleteResult {
+    renamed: boolean;
+    previousName: string;
+    nextName: string;
+    relays: string[];
+  }
+
   // Component props
   interface Props {
     repo: Repo;
@@ -53,6 +61,7 @@
     isEditing?: boolean;
     canDelete?: boolean;
     onRequestDelete?: () => void;
+    onSaveComplete?: (result: SaveCompleteResult) => Promise<void> | void;
     getProfile?: (
       pubkey: string
     ) => Promise<{ name?: string; picture?: string; nip05?: string; display_name?: string } | null>;
@@ -76,6 +85,7 @@
     isEditing = false,
     canDelete = false,
     onRequestDelete,
+    onSaveComplete,
     getProfile,
     searchProfiles,
     searchRelays,
@@ -288,6 +298,7 @@
   let loadingCommits = $state(false);
   let commitSearchQuery = $state("");
   let showCommitDropdown = $state(false);
+  let earliestUniqueCommitTouched = $state(false);
 
   // Load refs when component mounts
   $effect(() => {
@@ -310,12 +321,18 @@
   // Auto-fill earliest unique commit from default branch's commitId when available
   $effect(() => {
     // Only set if empty and refs are loaded
-    if (!loadingRefs && !formData.earliestUniqueCommit?.trim() && formData.defaultBranch) {
+    if (
+      !loadingRefs &&
+      !earliestUniqueCommitTouched &&
+      !originalFormData.earliestUniqueCommit?.trim() &&
+      !formData.earliestUniqueCommit?.trim() &&
+      formData.defaultBranch
+    ) {
       const ref = availableRefs.find(
         (r) => r.type === "heads" && r.name === formData.defaultBranch
       );
       const commitId = ref?.commitId || "";
-      if (commitId && /^[a-f0-9]{40}$/.test(commitId)) {
+      if (commitId && /^[a-f0-9]{40}$/i.test(commitId)) {
         formData.earliestUniqueCommit = commitId;
       }
     }
@@ -468,6 +485,9 @@
       const next = extractCurrentValues();
       formData = cloneFormData(next);
       originalFormData = cloneFormData(next);
+      commitSearchQuery = "";
+      showCommitDropdown = false;
+      earliestUniqueCommitTouched = false;
     }
   });
 
@@ -543,7 +563,7 @@
     // Earliest unique commit validation (40-character hex)
     if (
       formData.earliestUniqueCommit.trim() &&
-      !formData.earliestUniqueCommit.match(/^[a-f0-9]{40}$/)
+      !formData.earliestUniqueCommit.match(/^[a-f0-9]{40}$/i)
     ) {
       errors.earliestUniqueCommit = "Must be a valid 40-character commit hash";
     }
@@ -615,10 +635,24 @@
       const cleanWebUrls = formData.webUrls.filter((w) => w.trim());
       const cleanCloneUrls = formData.cloneUrls.filter((c) => c.trim());
       const cleanHashtags = formData.hashtags.filter((h) => h.trim());
+      const previousName = originalFormData.name.trim();
+      const nextName = formData.name.trim();
+      const renamed = previousName !== nextName;
+
+      let targetRepositoryId = repo.key;
+      try {
+        const currentRepoId = parseRepoId(repo.key);
+        const currentOwner = currentRepoId.split("/")[0] || repo.repoEvent?.pubkey || "";
+        if (currentOwner) {
+          targetRepositoryId = parseRepoId(`${currentOwner}:${nextName}`);
+        }
+      } catch {
+        // pass
+      }
 
       // Create updated repository announcement event using all NIP-34 fields
       const updatedAnnouncementEvent = repo.createRepoAnnouncementEvent({
-        name: formData.name,
+        name: nextName,
         description: formData.description,
         cloneUrl: cleanCloneUrls[0] ?? "", // Primary clone URL
         webUrl: cleanWebUrls[0] ?? "", // Primary web URL
@@ -626,7 +660,7 @@
         maintainers: normalizedMaintainers,
         relays: cleanRelays,
         hashtags: cleanHashtags,
-        earliestUniqueCommit: formData.earliestUniqueCommit.trim() || undefined,
+        earliestUniqueCommit: formData.earliestUniqueCommit.trim().toLowerCase() || undefined,
         // Include all URLs in the event
         web: cleanWebUrls,
         clone: cleanCloneUrls,
@@ -646,7 +680,7 @@
         })) || [];
 
       const updatedStateEvent = repo.createRepoStateEvent({
-        repositoryId: repo.key,
+        repositoryId: targetRepositoryId,
         headBranch: formData.defaultBranch,
         branches: branchNames,
         refs: refs,
@@ -656,7 +690,18 @@
       await onPublishEvent(updatedAnnouncementEvent);
       await onPublishEvent(updatedStateEvent);
 
-      back();
+      if (onSaveComplete) {
+        await onSaveComplete({
+          renamed,
+          previousName,
+          nextName,
+          relays: cleanRelays,
+        });
+      }
+
+      if (!renamed || !onSaveComplete) {
+        back();
+      }
     } catch (error) {
       console.error("Failed to save repository changes:", error);
     }
@@ -691,7 +736,8 @@
       formData.description !== original.description ||
       formData.visibility !== original.visibility ||
       formData.defaultBranch !== original.defaultBranch ||
-      formData.earliestUniqueCommit !== original.earliestUniqueCommit;
+      formData.earliestUniqueCommit.trim().toLowerCase() !==
+        original.earliestUniqueCommit.trim().toLowerCase();
 
     const arraysChanged =
       JSON.stringify(norm(formData.maintainers)) !== JSON.stringify(norm(original.maintainers)) ||
@@ -1305,7 +1351,14 @@
               id="earliest-commit"
               type="text"
               bind:value={commitSearchQuery}
-              onfocus={() => (showCommitDropdown = availableCommits.length > 0)}
+              onfocus={() => {
+                commitSearchQuery = formData.earliestUniqueCommit || "";
+                showCommitDropdown = availableCommits.length > 0;
+              }}
+              oninput={() => {
+                earliestUniqueCommitTouched = true;
+                formData.earliestUniqueCommit = commitSearchQuery.trim();
+              }}
               onblur={() => setTimeout(() => (showCommitDropdown = false), 200)}
               disabled={isEditing || loadingCommits}
               autocomplete="off"
@@ -1326,8 +1379,9 @@
                   <button
                     type="button"
                     onclick={() => {
+                      earliestUniqueCommitTouched = true;
                       formData.earliestUniqueCommit = commit.oid;
-                      commitSearchQuery = "";
+                      commitSearchQuery = commit.oid;
                       showCommitDropdown = false;
                     }}
                     class="w-full text-left px-3 py-2 hover:bg-gray-700 border-b border-gray-700 last:border-b-0"
@@ -1363,8 +1417,10 @@
                 onclick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  earliestUniqueCommitTouched = true;
                   formData.earliestUniqueCommit = "";
-                  console.log("[EditRepoPanel] Cleared earliest commit");
+                  commitSearchQuery = "";
+                  showCommitDropdown = false;
                 }}
                 class="ml-2 text-red-400 hover:text-red-300 flex-shrink-0"
                 aria-label="Clear commit"
