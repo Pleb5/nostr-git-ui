@@ -461,6 +461,7 @@
       cs: "csharp",
       php: "php",
       html: "html",
+      svelte: "svelte",
       css: "css",
       scss: "scss",
       sass: "scss",
@@ -480,6 +481,10 @@
   const highlightCode = (content: string, language: string): string => {
     if (!content) return "";
     try {
+      if (language === "svelte") {
+        const result = hljs.highlightAuto(content, ["xml", "typescript", "javascript", "css"]);
+        return result.value;
+      }
       if (hljs.getLanguage(language)) {
         const result = hljs.highlight(content, { language, ignoreIllegals: true });
         return result.value;
@@ -936,7 +941,9 @@
 
             <!-- Line Content -->
             <div class="flex-1 px-1 py-1 font-mono text-sm whitespace-nowrap sm:px-2">
-              <pre class="whitespace-pre m-0 inline"><span class="hljs">{@html highlightCode(line.content, language)}</span></pre>
+              <pre class="whitespace-pre m-0 inline"><span class="hljs"
+                  >{@html highlightCode(line.content, language)}</span
+                ></pre>
             </div>
 
             <div class="w-8 px-1 py-1 shrink-0 opacity-0 hover:opacity-100 transition-opacity">

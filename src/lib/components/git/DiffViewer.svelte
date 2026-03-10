@@ -105,6 +105,7 @@
       cs: "csharp",
       php: "php",
       html: "html",
+      svelte: "svelte",
       css: "css",
       scss: "scss",
       sass: "scss",
@@ -124,6 +125,10 @@
   const highlightCode = (content: string, language: string): string => {
     if (!content) return "";
     try {
+      if (language === "svelte") {
+        const result = hljs.highlightAuto(content, ["xml", "typescript", "javascript", "css"]);
+        return result.value;
+      }
       if (hljs.getLanguage(language)) {
         const result = hljs.highlight(content, { language, ignoreIllegals: true });
         return result.value;
@@ -132,6 +137,17 @@
       return result.value;
     } catch (e) {
       return content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+  };
+
+  const getLineNumClass = (type: "add" | "del" | "normal") => {
+    switch (type) {
+      case "add":
+        return "bg-emerald-300 text-emerald-950 dark:bg-emerald-800/70 dark:text-emerald-100";
+      case "del":
+        return "bg-rose-300 text-rose-950 dark:bg-rose-800/70 dark:text-rose-100";
+      default:
+        return "bg-muted text-muted-foreground";
     }
   };
 
@@ -1097,197 +1113,214 @@
             <div class="mb-2">
               {#if "changes" in chunk}
                 <div class="text-xs text-muted-foreground mb-1">{chunk.content}</div>
-                {#each chunk.changes as change, i}
-                  {@const ln = i + 1}
-                  {@const currentFilePath = filePath}
-                  {@const lineComments = getCommentsForLine(change, currentFilePath)}
-                  {@const hasComments = lineComments.length > 0}
-                  {@const isAdd = change.type === "add"}
-                  {@const isDel = change.type === "del"}
-                  {@const isNormal = change.type === "normal"}
-                  {@const language = getFileLanguage(currentFilePath)}
-                  {@const leftLine = isDel
-                    ? (change.ln ?? null)
-                    : isNormal
-                      ? (change.ln1 ?? null)
-                      : null}
-                  {@const rightLine = isAdd
-                    ? (change.ln ?? null)
-                    : isNormal
-                      ? (change.ln2 ?? null)
-                      : null}
-                  {@const chunkOffset = fileChunkOffsets[fileIdx]?.[chunkIdx] ?? 0}
-                  {@const lineIndex = chunkOffset + i}
-                  {@const isSelected = isLineWithinSelection(currentFilePath, lineIndex)}
-                  {@const bgClass = isAdd
-                    ? "border-l-4 border-emerald-600 bg-emerald-200/70 dark:bg-emerald-900/50"
-                    : isDel
-                      ? "border-l-4 border-rose-600 bg-rose-200/70 dark:bg-rose-900/50"
-                      : "hover:bg-secondary/50"}
+                <div class="divide-y divide-border/60">
+                  {#each chunk.changes as change, i}
+                    {@const ln = i + 1}
+                    {@const currentFilePath = filePath}
+                    {@const lineComments = getCommentsForLine(change, currentFilePath)}
+                    {@const hasComments = lineComments.length > 0}
+                    {@const isAdd = change.type === "add"}
+                    {@const isDel = change.type === "del"}
+                    {@const isNormal = change.type === "normal"}
+                    {@const language = getFileLanguage(currentFilePath)}
+                    {@const leftLine = isDel
+                      ? (change.ln ?? null)
+                      : isNormal
+                        ? (change.ln1 ?? null)
+                        : null}
+                    {@const rightLine = isAdd
+                      ? (change.ln ?? null)
+                      : isNormal
+                        ? (change.ln2 ?? null)
+                        : null}
+                    {@const chunkOffset = fileChunkOffsets[fileIdx]?.[chunkIdx] ?? 0}
+                    {@const lineIndex = chunkOffset + i}
+                    {@const isSelected = isLineWithinSelection(currentFilePath, lineIndex)}
+                    {@const bgClass = isAdd
+                      ? "border-l-4 border-emerald-600 bg-emerald-200/70 dark:bg-emerald-900/50"
+                      : isDel
+                        ? "border-l-4 border-rose-600 bg-rose-200/70 dark:bg-rose-900/50"
+                        : "hover:bg-secondary/50"}
 
-                  <div class="w-full">
-                    <div
-                      class={`flex group pl-2 pt-1 ${bgClass} w-full ${
-                        isSelected ? "diff-line-selected" : ""
-                      }`}
-                      style="min-width: max-content;"
-                      data-diff-index={lineIndex}
-                      data-file-path={currentFilePath}
-                      data-line-left={leftLine ?? ""}
-                      data-line-right={rightLine ?? ""}
-                    >
-                      <div class="flex shrink-0 text-foreground select-none">
-                        {#if showLineNumbers}
-                          <span class="w-8 text-right pr-2">
-                            <span
-                              class="block cursor-pointer"
-                              style="touch-action: none;"
-                              id={diffAnchors[currentFilePath] && leftLine
-                                ? `diff-${diffAnchors[currentFilePath]}L${leftLine}`
-                                : undefined}
-                            >
-                              {leftLine ?? ""}
-                            </span>
-                          </span>
-                          <span class="w-8 text-right pr-2 border-r border-border mr-2">
-                            <span
-                              class="block cursor-pointer"
-                              style="touch-action: none;"
-                              id={diffAnchors[currentFilePath] && rightLine
-                                ? `diff-${diffAnchors[currentFilePath]}R${rightLine}`
-                                : undefined}
-                            >
-                              {rightLine ?? ""}
-                            </span>
-                          </span>
-                        {/if}
-                      </div>
-                      <span class="font-mono whitespace-pre px-2 flex-shrink-0">
-                        <span class="hljs">{@html highlightCode(change.content, language)}</span>
-                      </span>
+                    <div class="w-full">
                       <div
-                        class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        class={`flex group ${bgClass} w-full ${
+                          isSelected ? "diff-line-selected" : ""
+                        }`}
+                        style="min-width: max-content;"
+                        data-diff-index={lineIndex}
+                        data-file-path={currentFilePath}
+                        data-line-left={leftLine ?? ""}
+                        data-line-right={rightLine ?? ""}
                       >
-                        {#if enablePermalinks}
+                        <div class="flex shrink-0 text-foreground select-none">
+                          {#if showLineNumbers}
+                            <div
+                              class="w-10 shrink-0 px-1 py-0.5 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs border-r border-border flex items-center justify-end {getLineNumClass(
+                                change.type
+                              )}"
+                            >
+                              <span
+                                class="block cursor-pointer"
+                                style="touch-action: none;"
+                                id={diffAnchors[currentFilePath] && leftLine
+                                  ? `diff-${diffAnchors[currentFilePath]}L${leftLine}`
+                                  : undefined}
+                              >
+                                {leftLine ?? ""}
+                              </span>
+                            </div>
+                            <div
+                              class="w-10 shrink-0 px-1 py-0.5 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs border-r border-border flex items-center justify-end {getLineNumClass(
+                                change.type
+                              )}"
+                            >
+                              <span
+                                class="block cursor-pointer"
+                                style="touch-action: none;"
+                                id={diffAnchors[currentFilePath] && rightLine
+                                  ? `diff-${diffAnchors[currentFilePath]}R${rightLine}`
+                                  : undefined}
+                              >
+                                {rightLine ?? ""}
+                              </span>
+                            </div>
+                          {/if}
+                        </div>
+                        <div
+                          class="flex flex-1 items-center px-1 py-0.5 font-mono text-[13px] leading-4 whitespace-nowrap sm:px-2"
+                        >
+                          <pre class="whitespace-pre m-0 inline-block align-middle"><span
+                              class="hljs">{@html highlightCode(change.content, language)}</span
+                            ></pre>
+                        </div>
+                        <div
+                          class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        >
+                          {#if enablePermalinks}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onclick={(event) => {
+                                event.stopPropagation();
+                                selectedFilePath = currentFilePath;
+                                selectedStartIndex = lineIndex;
+                                selectedEndIndex = lineIndex;
+                                openPermalinkMenuAt(event.clientX, event.clientY);
+                              }}
+                            >
+                              <Share class="h-4 w-4" />
+                            </Button>
+                          {/if}
                           <Button
                             variant="ghost"
                             size="icon"
-                            onclick={(event) => {
-                              event.stopPropagation();
-                              selectedFilePath = currentFilePath;
-                              selectedStartIndex = lineIndex;
-                              selectedEndIndex = lineIndex;
-                              openPermalinkMenuAt(event.clientX, event.clientY);
-                            }}
+                            onclick={() => toggleCommentBox(ln, fileIdx, chunkIdx)}
                           >
-                            <Share class="h-4 w-4" />
+                            <MessageSquare class="h-4 w-4" />
                           </Button>
-                        {/if}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onclick={() => toggleCommentBox(ln, fileIdx, chunkIdx)}
-                        >
-                          <MessageSquare class="h-4 w-4" />
-                        </Button>
+                        </div>
                       </div>
-                    </div>
 
-                    {#if hasComments}
-                      <div
-                        class="bg-secondary/30 border-l-4 border-primary ml-10 pl-4 py-2 space-y-3"
-                      >
-                        {#each lineComments as c}
-                          <div id={`comment-${c.id}`} data-event={c.id} class="flex gap-2">
-                            <Avatar class="h-8 w-8">
-                              <AvatarImage src={c.author.avatar} alt={c.author.name} />
-                              <AvatarFallback
-                                >{c.author.name.slice(0, 2).toUpperCase()}</AvatarFallback
-                              >
-                            </Avatar>
-                            <div class="flex-1">
-                              <div class="flex items-center gap-2">
-                                <span class="font-medium text-sm">{c.author.name}</span>
-                                <span class="text-xs" style="color: hsl(var(--muted-foreground));">
-                                  {formatDistanceToNow(new Date(c.createdAt), {
-                                    addSuffix: true,
-                                  })}
-                                </span>
-                              </div>
-                              <div class="mt-1 text-muted-foreground text-sm">
-                                {#if Markdown}
-                                  <Markdown
-                                    content={c.content}
-                                    event={c.rawEvent as any}
-                                    variant="comment"
-                                  />
-                                {:else}
-                                  <RichText content={c.content} prose={false} />
-                                {/if}
+                      {#if hasComments}
+                        <div
+                          class="bg-secondary/30 border-l-4 border-primary ml-10 pl-4 py-2 space-y-3"
+                        >
+                          {#each lineComments as c}
+                            <div id={`comment-${c.id}`} data-event={c.id} class="flex gap-2">
+                              <Avatar class="h-8 w-8">
+                                <AvatarImage src={c.author.avatar} alt={c.author.name} />
+                                <AvatarFallback
+                                  >{c.author.name.slice(0, 2).toUpperCase()}</AvatarFallback
+                                >
+                              </Avatar>
+                              <div class="flex-1">
+                                <div class="flex items-center gap-2">
+                                  <span class="font-medium text-sm">{c.author.name}</span>
+                                  <span
+                                    class="text-xs"
+                                    style="color: hsl(var(--muted-foreground));"
+                                  >
+                                    {formatDistanceToNow(new Date(c.createdAt), {
+                                      addSuffix: true,
+                                    })}
+                                  </span>
+                                </div>
+                                <div class="mt-1 text-muted-foreground text-sm">
+                                  {#if Markdown}
+                                    <Markdown
+                                      content={c.content}
+                                      event={c.rawEvent as any}
+                                      variant="comment"
+                                    />
+                                  {:else}
+                                    <RichText content={c.content} prose={false} />
+                                  {/if}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        {/each}
-                      </div>
-                    {/if}
-                    {#if selectedLine === ln && selectedFileIdx === fileIdx && selectedChunkIdx === chunkIdx}
-                      <div class="bg-secondary/20 border-l-4 border-primary ml-10 pl-4 py-2">
-                        <div class="flex gap-2">
-                          <Avatar class="h-8 w-8">
-                            <AvatarFallback>ME</AvatarFallback>
-                          </Avatar>
-                          <div class="flex-1 space-y-2">
-                            <Textarea
-                              bind:value={newComment}
-                              placeholder="Add a comment..."
-                              class="min-h-[60px] resize-none"
-                              disabled={isSubmitting}
-                            />
-                            <div class="flex justify-end gap-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onclick={() => {
-                                  selectedLine = null;
-                                  selectedFileIdx = null;
-                                  selectedChunkIdx = null;
-                                }}
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if selectedLine === ln && selectedFileIdx === fileIdx && selectedChunkIdx === chunkIdx}
+                        <div class="bg-secondary/20 border-l-4 border-primary ml-10 pl-4 py-2">
+                          <div class="flex gap-2">
+                            <Avatar class="h-8 w-8">
+                              <AvatarFallback>ME</AvatarFallback>
+                            </Avatar>
+                            <div class="flex-1 space-y-2">
+                              <Textarea
+                                bind:value={newComment}
+                                placeholder="Add a comment..."
+                                class="min-h-[60px] resize-none"
                                 disabled={isSubmitting}
-                              >
-                                Cancel
-                              </Button>
-                              <Button
-                                size="sm"
-                                class="gap-1 bg-git hover:bg-git-hover"
-                                disabled={!newComment.trim() ||
-                                  isSubmitting ||
-                                  !rootEvent ||
-                                  !onComment ||
-                                  !currentPubkey}
-                                onclick={() => {
-                                  const filePath = file.to || file.from || "unknown";
-                                  const lineNum = isAdd
-                                    ? (change.ln ?? null)
-                                    : isNormal
-                                      ? (change.ln2 ?? change.ln1 ?? null)
-                                      : (change.ln ?? null);
-                                  submitComment(ln, fileIdx, chunkIdx, filePath, lineNum);
-                                }}
-                              >
-                                {#if isSubmitting}
-                                  <Loader2 class="h-3.5 w-3.5 animate-spin" />
-                                {:else}
-                                  <MessageSquare class="h-3.5 w-3.5" />
-                                {/if}
-                                Comment
-                              </Button>
+                              />
+                              <div class="flex justify-end gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onclick={() => {
+                                    selectedLine = null;
+                                    selectedFileIdx = null;
+                                    selectedChunkIdx = null;
+                                  }}
+                                  disabled={isSubmitting}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  class="gap-1 bg-git hover:bg-git-hover"
+                                  disabled={!newComment.trim() ||
+                                    isSubmitting ||
+                                    !rootEvent ||
+                                    !onComment ||
+                                    !currentPubkey}
+                                  onclick={() => {
+                                    const filePath = file.to || file.from || "unknown";
+                                    const lineNum = isAdd
+                                      ? (change.ln ?? null)
+                                      : isNormal
+                                        ? (change.ln2 ?? change.ln1 ?? null)
+                                        : (change.ln ?? null);
+                                    submitComment(ln, fileIdx, chunkIdx, filePath, lineNum);
+                                  }}
+                                >
+                                  {#if isSubmitting}
+                                    <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                                  {:else}
+                                    <MessageSquare class="h-3.5 w-3.5" />
+                                  {/if}
+                                  Comment
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
               {:else}
                 <div class="text-xs text-muted-foreground italic">(Non-text chunk)</div>
               {/if}
@@ -1319,6 +1352,12 @@
 </div>
 
 <style>
+  pre {
+    margin: 0;
+    font-family:
+      ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+
   :global(.hljs) {
     background: transparent !important;
     color: inherit !important;

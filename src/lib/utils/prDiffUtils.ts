@@ -28,7 +28,7 @@ export function prChangeToParseDiffFile(change: PrChangeInput): parseDiff.File {
     const changes: parseDiff.Change[] = []
 
     for (const patch of hunk.patches || []) {
-      const content = (patch.line || "").replace(/^[\+\-\s]/, "") || ""
+      const content = (patch.line || "").replace(/^[\+\-]/, "") || ""
       const t = patch.type
 
       if (t === "+") {
