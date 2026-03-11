@@ -1,27 +1,27 @@
 <script lang="ts">
-  import { z } from "zod"
-  import { CircleAlert, GitBranch, ChevronRight, Loader2, GitFork } from "@lucide/svelte"
-  import { useRegistry } from "../../useRegistry"
-  import { createPullRequestEvent } from "@nostr-git/core/events"
-  import type { PullRequestEvent } from "@nostr-git/core/events"
-  import { X, Plus } from "@lucide/svelte"
-  import type { Repo } from "./Repo.svelte"
+  import { z } from "zod";
+  import { CircleAlert, GitBranch, ChevronRight, Loader2, GitFork } from "@lucide/svelte";
+  import { useRegistry } from "../../useRegistry";
+  import { createPullRequestEvent } from "@nostr-git/core/events";
+  import type { PullRequestEvent } from "@nostr-git/core/events";
+  import { X, Plus } from "@lucide/svelte";
+  import type { Repo } from "./Repo.svelte";
 
-  const { Button, Input, Textarea, Label, Checkbox } = useRegistry()
+  const { Button, Input, Textarea, Label, Checkbox } = useRegistry();
 
   interface Props {
-    repo: Repo
-    onPRCreated: (pr: PullRequestEvent) => Promise<void>
+    repo: Repo;
+    onPRCreated: (pr: PullRequestEvent) => Promise<void>;
   }
 
-  let { repo, onPRCreated }: Props = $props()
+  let { repo, onPRCreated }: Props = $props();
 
-  const cloneUrls = $derived(repo.cloneUrls ?? [])
+  const cloneUrls = $derived(repo.cloneUrls ?? []);
   const targetBranches = $derived(
     (repo.refs || []).filter((r) => r.type === "heads").map((r) => ({ name: r.name }))
-  )
+  );
 
-  const back = () => history.back()
+  const back = () => history.back();
 
   const prSchema = z.object({
     subject: z.string().min(1, "Subject is required"),
@@ -30,126 +30,160 @@
     targetBranch: z.string().min(1, "Target branch is required"),
     cloneUrls: z.array(z.string()).min(1, "At least one clone URL is required"),
     labels: z.array(z.string()).default([]),
-  })
+  });
 
-  let subject = $state("")
-  let content = $state("")
-  let sourceBranch = $state("")
-  let targetBranch = $state("")
-  let fromFork = $state(false)
-  let cloneUrlsText = $state("")
-  let labels = $state<string[]>([])
-  let customLabels = $state<string[]>([])
-  let newLabel = $state("")
-  let errors = $state<Record<string, string>>({})
-  let isSubmitting = $state(false)
-  let sourceBranches = $state<Array<{ name: string }>>([])
-  let sourceBranchesLoading = $state(false)
+  let subject = $state("");
+  let content = $state("");
+  let sourceBranch = $state("");
+  let targetBranch = $state("");
+  let fromFork = $state(false);
+  let cloneUrlsText = $state("");
+  let labels = $state<string[]>([]);
+  let customLabels = $state<string[]>([]);
+  let newLabel = $state("");
+  let errors = $state<Record<string, string>>({});
+  let isSubmitting = $state(false);
+  let sourceBranches = $state<Array<{ name: string }>>([]);
+  let sourceBranchesLoading = $state(false);
   let prPreview = $state<{
-    success: boolean
-    error?: string
-    commits: Array<{ oid: string; message: string; author?: { name?: string } }>
-    commitOids: string[]
-    filesChanged: string[]
-    mergeBase?: string
-  } | null>(null)
-  let previewLoading = $state(false)
+    success: boolean;
+    error?: string;
+    commits: Array<{ oid: string; message: string; author?: { name?: string } }>;
+    commitOids: string[];
+    tipCommit?: string;
+    filesChanged: string[];
+    mergeBase?: string;
+  } | null>(null);
+  let previewLoading = $state(false);
 
-  const commonLabels = ["enhancement", "bug", "documentation", "ready-for-review"]
+  const commonLabels = ["enhancement", "bug", "documentation", "ready-for-review"];
 
   // Source branches: from repo.refs when same-repo, from fork when fromFork
   $effect(() => {
     if (!fromFork) {
-      sourceBranches = targetBranches
-      sourceBranchesLoading = false
-      return
+      sourceBranches = targetBranches;
+      sourceBranchesLoading = false;
+      return;
     }
-    const urls = cloneUrlsText.split(/\n/).map((s) => s.trim()).filter(Boolean)
+    const urls = cloneUrlsText
+      .split(/\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (urls.length === 0 || !repo.workerManager) {
-      sourceBranches = []
-      sourceBranchesLoading = false
-      return
+      sourceBranches = [];
+      sourceBranchesLoading = false;
+      return;
     }
-    let cancelled = false
-    sourceBranchesLoading = true
-    repo.workerManager.listBranchesFromUrls({ cloneUrls: urls }).then((res) => {
-      if (cancelled) return
-      sourceBranches = (res?.branches || []).map((name) => ({ name }))
-      sourceBranchesLoading = false
-    }).catch(() => {
-      if (cancelled) return
-      sourceBranches = []
-      sourceBranchesLoading = false
-    })
-    return () => { cancelled = true }
-  })
+    let cancelled = false;
+    sourceBranchesLoading = true;
+    repo.workerManager
+      .listBranchesFromUrls({ cloneUrls: urls })
+      .then((res) => {
+        if (cancelled) return;
+        sourceBranches = (res?.branches || []).map((name) => ({ name }));
+        sourceBranchesLoading = false;
+      })
+      .catch(() => {
+        if (cancelled) return;
+        sourceBranches = [];
+        sourceBranchesLoading = false;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   // Fetch PR preview when both branches selected.
   // For same-repo PRs, source === target is invalid. For fork PRs, both can have the same name (e.g. main→main).
   $effect(() => {
-    const sameNameInvalid = !fromFork && sourceBranch === targetBranch
+    const sameNameInvalid = !fromFork && sourceBranch === targetBranch;
     if (!repo.workerManager || !sourceBranch || !targetBranch || sameNameInvalid) {
-      prPreview = null
-      return
+      prPreview = null;
+      return;
     }
-    let cancelled = false
-    previewLoading = true
-    prPreview = null
-    const targetUrls = cloneUrls
-    const sourceUrls = fromFork ? cloneUrlsText.split(/\n/).map((s) => s.trim()).filter(Boolean) : []
-    const cloneUrlsForPreview = fromFork ? targetUrls : targetUrls
+    let cancelled = false;
+    previewLoading = true;
+    prPreview = null;
+    const targetUrls = cloneUrls;
+    const sourceUrls = fromFork
+      ? cloneUrlsText
+          .split(/\n/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const cloneUrlsForPreview = fromFork ? targetUrls : targetUrls;
     if (fromFork && sourceUrls.length === 0) {
-      prPreview = { success: false, error: "Enter fork clone URL to preview", commits: [], commitOids: [], filesChanged: [] }
-      previewLoading = false
-      return
+      prPreview = {
+        success: false,
+        error: "Enter fork clone URL to preview",
+        commits: [],
+        commitOids: [],
+        filesChanged: [],
+      };
+      previewLoading = false;
+      return;
     }
-    repo.workerManager.getPRPreview({
-      repoId: repo.key,
-      sourceBranch,
-      targetBranch,
-      cloneUrls: cloneUrlsForPreview,
-      sourceCloneUrls: fromFork ? sourceUrls : undefined,
-    }).then((result) => {
-      if (cancelled) return
-      prPreview = result
-      previewLoading = false
-    }).catch((err) => {
-      if (cancelled) return
-      prPreview = { success: false, error: err?.message, commits: [], commitOids: [], filesChanged: [] }
-      previewLoading = false
-    })
-    return () => { cancelled = true }
-  })
+    repo.workerManager
+      .getPRPreview({
+        repoId: repo.key,
+        sourceBranch,
+        targetBranch,
+        cloneUrls: cloneUrlsForPreview,
+        sourceCloneUrls: fromFork ? sourceUrls : undefined,
+      })
+      .then((result) => {
+        if (cancelled) return;
+        prPreview = result;
+        previewLoading = false;
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        prPreview = {
+          success: false,
+          error: err?.message,
+          commits: [],
+          commitOids: [],
+          filesChanged: [],
+        };
+        previewLoading = false;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   function handleLabelToggle(label: string) {
     if (labels.includes(label)) {
-      labels = labels.filter((l) => l !== label)
+      labels = labels.filter((l) => l !== label);
     } else {
-      labels = [...labels, label]
+      labels = [...labels, label];
     }
   }
 
   function handleAddCustomLabel() {
-    const trimmed = newLabel.trim()
+    const trimmed = newLabel.trim();
     if (trimmed && !customLabels.includes(trimmed) && !commonLabels.includes(trimmed)) {
-      customLabels = [...customLabels, trimmed]
-      labels = [...labels, trimmed]
-      newLabel = ""
+      customLabels = [...customLabels, trimmed];
+      labels = [...labels, trimmed];
+      newLabel = "";
     }
   }
 
   function handleRemoveCustomLabel(label: string) {
-    customLabels = customLabels.filter((l) => l !== label)
-    labels = labels.filter((l) => l !== label)
+    customLabels = customLabels.filter((l) => l !== label);
+    labels = labels.filter((l) => l !== label);
   }
 
   async function onFormSubmit(e: Event) {
-    e.preventDefault()
-    errors = {}
-    isSubmitting = true
+    e.preventDefault();
+    errors = {};
+    isSubmitting = true;
     const urls = fromFork
-      ? cloneUrlsText.split(/\n/).map((s) => s.trim()).filter(Boolean)
-      : cloneUrls
+      ? cloneUrlsText
+          .split(/\n/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : cloneUrls;
     const result = prSchema.safeParse({
       subject,
       content,
@@ -157,19 +191,26 @@
       targetBranch,
       cloneUrls: urls.length ? urls : cloneUrls,
       labels,
-    })
+    });
     if (!result.success) {
       for (const err of result.error.errors) {
-        const path = err.path[0]
-        if (path) errors[path as string] = err.message
+        const path = err.path[0];
+        if (path) errors[path as string] = err.message;
       }
-      isSubmitting = false
-      return
+      isSubmitting = false;
+      return;
     }
     if (!prPreview?.success || !prPreview.commitOids?.length) {
-      errors.general = "Please wait for commits to load, or ensure the source branch has commits not in the target."
-      isSubmitting = false
-      return
+      errors.general =
+        "Please wait for commits to load, or ensure the source branch has commits not in the target.";
+      isSubmitting = false;
+      return;
+    }
+    const tipCommitOid = prPreview.tipCommit || prPreview.commitOids[0];
+    if (!tipCommitOid) {
+      errors.general = "Unable to determine PR tip commit";
+      isSubmitting = false;
+      return;
     }
     try {
       const prEvent = createPullRequestEvent({
@@ -177,19 +218,19 @@
         repoAddr: repo.address,
         subject: result.data.subject,
         labels: result.data.labels,
-        commits: prPreview.commitOids,
+        tipCommitOid,
         clone: result.data.cloneUrls,
         branchName: result.data.targetBranch,
         mergeBase: prPreview.mergeBase,
         recipients: [repo.repoEvent?.pubkey ?? ""],
-      })
-      await onPRCreated(prEvent)
-      back()
+      });
+      await onPRCreated(prEvent);
+      back();
     } catch (error) {
-      console.error(error)
-      errors.general = error instanceof Error ? error.message : String(error)
+      console.error(error);
+      errors.general = error instanceof Error ? error.message : String(error);
     } finally {
-      isSubmitting = false
+      isSubmitting = false;
     }
   }
 </script>
@@ -215,7 +256,8 @@
         bind:value={cloneUrlsText}
         class="mt-1 font-mono text-sm"
         rows={2}
-        placeholder="https://github.com/you/your-fork.git" />
+        placeholder="https://github.com/you/your-fork.git"
+      />
       <p class="mt-1 text-xs text-muted-foreground">
         Your fork's clone URL. Source branches will be loaded from here.
       </p>
@@ -315,7 +357,8 @@
       id="pr-subject"
       bind:value={subject}
       class="mt-1"
-      placeholder="Brief description of the PR" />
+      placeholder="Brief description of the PR"
+    />
     {#if errors.subject}
       <div class="mt-1 text-sm text-red-500">{errors.subject}</div>
     {/if}
@@ -328,7 +371,8 @@
       bind:value={content}
       class="mt-1"
       rows={6}
-      placeholder="Describe the changes. Markdown supported." />
+      placeholder="Describe the changes. Markdown supported."
+    />
     <p class="mt-1 text-xs text-muted-foreground">Supports Markdown</p>
   </div>
 
@@ -337,13 +381,19 @@
     <div class="grid grid-cols-2 gap-2">
       {#each commonLabels as label}
         <label class="flex items-center space-x-2">
-          <Checkbox checked={labels.includes(label)} onCheckedChange={() => handleLabelToggle(label)} />
+          <Checkbox
+            checked={labels.includes(label)}
+            onCheckedChange={() => handleLabelToggle(label)}
+          />
           <span>{label}</span>
         </label>
       {/each}
       {#each customLabels as label}
         <label class="flex items-center space-x-2 rounded">
-          <Checkbox checked={labels.includes(label)} onCheckedChange={() => handleLabelToggle(label)} />
+          <Checkbox
+            checked={labels.includes(label)}
+            onCheckedChange={() => handleLabelToggle(label)}
+          />
           <span>{label}</span>
           <button type="button" class="text-red-500" onclick={() => handleRemoveCustomLabel(label)}>
             <X size={14} />
@@ -351,8 +401,15 @@
         </label>
       {/each}
       <div class="flex gap-2">
-        <Input placeholder="Add label" bind:value={newLabel} class="flex-1" onkeydown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddCustomLabel())} />
-        <Button type="button" variant="outline" onclick={handleAddCustomLabel}><Plus size={14} /></Button>
+        <Input
+          placeholder="Add label"
+          bind:value={newLabel}
+          class="flex-1"
+          onkeydown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddCustomLabel())}
+        />
+        <Button type="button" variant="outline" onclick={handleAddCustomLabel}
+          ><Plus size={14} /></Button
+        >
       </div>
     </div>
   </div>

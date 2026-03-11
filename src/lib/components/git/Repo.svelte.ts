@@ -909,8 +909,7 @@ export class Repo {
   async getPRMergeAnalysis(
     prCloneUrls: string[],
     tipCommitOid: string,
-    targetBranch: string,
-    allCommitOids?: string[]
+    targetBranch: string
   ): Promise<import("@nostr-git/core/git").PRMergeAnalysisResult | null> {
     if (!this.repoEvent || !this.workerManager) return null;
     const repoId = this.key;
@@ -923,7 +922,6 @@ export class Repo {
         targetCloneUrls: this.cloneUrls,
         tipCommitOid,
         targetBranch: effectiveBranch,
-        allCommitOids: allCommitOids,
       });
       return result;
     } catch (err) {

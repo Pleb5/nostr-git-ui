@@ -607,7 +607,6 @@ export class WorkerManager {
     targetCloneUrls?: string[];
     tipCommitOid: string;
     targetBranch?: string;
-    allCommitOids?: string[];
   }): Promise<any> {
     await this.initialize();
     // PR analysis can require multiple remote fetch attempts; allow 50% more than default timeout.
