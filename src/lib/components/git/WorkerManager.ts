@@ -610,7 +610,8 @@ export class WorkerManager {
     allCommitOids?: string[];
   }): Promise<any> {
     await this.initialize();
-    return this.execute("analyzePRMerge", params);
+    // PR analysis can require multiple remote fetch attempts; allow 50% more than default timeout.
+    return this.execute("analyzePRMerge", params, { timeoutMs: 45000 });
   }
 
   /**
@@ -806,6 +807,7 @@ export class WorkerManager {
     mergeCommitMessage?: string;
     fastForward?: boolean;
     userPubkey?: string;
+    skipPush?: boolean;
     /**
      * Called after the merge commit is created but before the git push.
      * Must publish a Nostr state event (kind 30618) with the new branch → SHA mapping to the
@@ -837,6 +839,7 @@ export class WorkerManager {
       mergeCommitMessage: params.mergeCommitMessage,
       fastForward: params.fastForward,
       userPubkey: params.userPubkey,
+      skipPush: params.skipPush,
     };
 
     // ── Two-phase flow for GRASP remotes ──────────────────────────────────────
@@ -976,6 +979,14 @@ export class WorkerManager {
 
     // ── Normal single-call flow (non-GRASP or no publishStateEvent callback) ──
     return this.execute("mergePRAndPush", baseParams, { timeoutMs: 120000 });
+  }
+
+  /**
+   * List configured git remotes for local repository clone.
+   */
+  async listRemotes(params: { repoId: string }): Promise<Array<{ remote: string; url: string }>> {
+    await this.initialize();
+    return this.execute("listRemotes", params);
   }
 
   /**

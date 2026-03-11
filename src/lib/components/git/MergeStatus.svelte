@@ -80,7 +80,7 @@
       case "up-to-date":
         return "This patch has already been applied to the target branch.";
       case "diverged":
-        return 'The target branch has diverged from remote. Use "Reset Repo" to sync with remote, or force push may be required after merge.';
+        return 'The target branch has diverged from remote. Use "Reset Repo" to sync with remote before merging.';
       case "error":
         return `Unable to analyze merge: ${result.errorMessage || "Unknown error"}`;
       default:
@@ -188,7 +188,6 @@
               <p class="font-medium text-yellow-800 mb-2">Recommended Actions:</p>
               <ul class="text-sm text-yellow-700 space-y-1">
                 <li>• Use the "Reset Repo" button to sync with remote (discards local changes)</li>
-                <li>• Or proceed with merge and use force push to update remote</li>
               </ul>
             </div>
             {#if result.targetCommit}

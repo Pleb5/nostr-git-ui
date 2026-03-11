@@ -915,11 +915,7 @@ export class Repo {
     if (!this.repoEvent || !this.workerManager) return null;
     const repoId = this.key;
     const fallbackMain = this.branchManager.getMainBranch();
-    // todo: what if branch name has "/" in it?
-    const effectiveBranch =
-      typeof targetBranch === "string"
-        ? targetBranch.split("/").pop() || fallbackMain
-        : fallbackMain;
+    const effectiveBranch = typeof targetBranch === "string" ? targetBranch : fallbackMain;
     try {
       const result = await this.workerManager.analyzePRMerge({
         repoId,
@@ -932,7 +928,7 @@ export class Repo {
       return result;
     } catch (err) {
       console.error("[Repo] getPRMergeAnalysis failed:", err);
-      return null;
+      throw err;
     }
   }
 
@@ -2032,6 +2028,8 @@ export class Repo {
     mode?: PushFanoutMode;
     allowForce?: boolean;
     confirmDestructive?: boolean;
+    remoteUrls?: string[];
+    userPubkey?: string;
   }): Promise<PushFanoutResult> {
     this.assertEditable("push changes");
 
@@ -2059,7 +2057,10 @@ export class Repo {
     const isPushRemote = (u: string): boolean =>
       /^https?:\/\//i.test(u) || /^wss?:\/\//i.test(u) || /^ssh:\/\//i.test(u) || /^git@/i.test(u);
 
-    const cloneUrls = cloneUrlsRaw.filter(isPushRemote);
+    const selectedUrls = new Set((params?.remoteUrls || []).map((u) => String(u || "").trim()));
+    const cloneUrls = cloneUrlsRaw
+      .filter(isPushRemote)
+      .filter((u) => selectedUrls.size === 0 || selectedUrls.has(u));
 
     if (cloneUrls.length === 0) {
       throw new UserActionableError(
@@ -2108,7 +2109,10 @@ export class Repo {
       // Acquire token per host when possible (best-effort). GRASP/wss remotes may not require tokens.
       let token: string | undefined = undefined;
 
-      const looksLikeGrasp = provider === "grasp" || /^wss?:\/\//i.test(remoteUrl);
+      const looksLikeGrasp =
+        provider === "grasp" ||
+        /^wss?:\/\//i.test(remoteUrl) ||
+        /relay\.ngit\.dev|gitnostr\.com|grasp/i.test(remoteUrl);
       if (!looksLikeGrasp) {
         if (!host) {
           results.push({
@@ -2136,6 +2140,11 @@ export class Repo {
           });
           continue;
         }
+      }
+
+      if (looksLikeGrasp) {
+        provider = "grasp";
+        token = params?.userPubkey || this.viewerPubkey || undefined;
       }
 
       try {
