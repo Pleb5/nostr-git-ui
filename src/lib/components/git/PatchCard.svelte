@@ -72,38 +72,39 @@
 
   const isPullRequest = $derived(event.kind === GIT_PULL_REQUEST);
 
-  const { id, title, description, baseBranch, commitCount, createdAt, commitHash, diff, author } = $derived.by(() => {
-    if (isPullRequest) {
-      const parsed = parsePullRequestEvent(event as PullRequestEvent);
+  const { id, title, description, baseBranch, commitCount, createdAt, commitHash, diff, author } =
+    $derived.by(() => {
+      if (isPullRequest) {
+        const parsed = parsePullRequestEvent(event as PullRequestEvent);
+        return {
+          id: parsed.id,
+          title: parsed.subject,
+          description: parsed.content,
+          baseBranch: parsed.branchName || "",
+          commitCount: parsed.tipCommitOid ? 1 : 0,
+          createdAt: parsed.createdAt,
+          commitHash: parsed.tipCommitOid,
+          author: parsed.author as { pubkey: string; name?: string },
+        };
+      }
+
+      const parsed = parseGitPatchFromEvent(event as PatchEvent);
       return {
         id: parsed.id,
-        title: parsed.subject,
-        description: parsed.content,
-        baseBranch: parsed.commits[0],
-        commitCount: parsed.commits.length,
+        title: parsed.title,
+        description: parsed.description,
+        baseBranch: parsed.baseBranch,
+        commitCount: parsed.commitCount,
         createdAt: parsed.createdAt,
-        commitHash: parsed.commits[0],
-        author: parsed.author as {pubkey: string; name?: string},
+        commitHash: parsed.commitHash,
+        diff: parsed.diff,
+        author: parsed.author,
       };
-    }
+    });
 
-    const parsed = parseGitPatchFromEvent(event as PatchEvent);
-    return {
-      id: parsed.id,
-      title: parsed.title,
-      description: parsed.description,
-      baseBranch: parsed.baseBranch,
-      commitCount: parsed.commitCount,
-      createdAt: parsed.createdAt,
-      commitHash: parsed.commitHash,
-      diff: parsed.diff,
-      author: parsed.author,
-    };
-
-  });
-  
-
-  const displayTitle = $derived(title && typeof title === "string" && title.trim().length > 0 ? title.trim() : "Untitled");
+  const displayTitle = $derived(
+    title && typeof title === "string" && title.trim().length > 0 ? title.trim() : "Untitled"
+  );
 
   // Create relay URL for EventActions
   const relayUrl = $derived.by(() => {
@@ -490,7 +491,13 @@
           noTooltip={false}
           children={() => {}}
         />
-        <EventActions event={event} url={relayUrl} noun={noun} customActions={undefined} />
+        <EventActions
+          event={event}
+          url={relayUrl}
+          noun={noun}
+          relays={commentRelays}
+          customActions={undefined}
+        />
         <MessageSquare class="h-4 w-4 text-muted-foreground" />
         <span class="text-sm text-muted-foreground">{comments?.length ?? 0}</span>
       </div>

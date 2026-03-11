@@ -1,47 +1,35 @@
 <script lang="ts">
-  import type { Repo } from "./Repo.svelte"
-  import type { StatusEvent } from "@nostr-git/core/events"
+  import type { Repo } from "./Repo.svelte";
+  import type { StatusEvent } from "@nostr-git/core/events";
   import {
     GIT_STATUS_OPEN,
     GIT_STATUS_DRAFT,
     GIT_STATUS_CLOSED,
     GIT_STATUS_APPLIED,
-  } from "@nostr-git/core/events"
-  import {
-    CircleCheck,
-    CircleDot,
-    Clock,
-    GitMerge,
-    AlertCircle,
-    X,
-  } from "@lucide/svelte"
-  import { Button } from "../ui/button"
-  import { Textarea } from "../ui/textarea"
-  import { Label } from "../ui/label"
-  import { Input } from "../ui/input"
-  import {
-    Card,
-    CardContent,
-    CardHeader,
-    CardTitle,
-  } from "../ui/card"
-  import { Badge } from "../ui/badge"
-  import { Separator } from "../ui/separator"
-  import { ProfileLink } from "../ui/profile"
+  } from "@nostr-git/core/events";
+  import { CircleCheck, CircleDot, Clock, AlertCircle, X } from "@lucide/svelte";
+  import { Button } from "../ui/button";
+  import { Textarea } from "../ui/textarea";
+  import { Label } from "../ui/label";
+  import { Input } from "../ui/input";
+  import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+  import { Badge } from "../ui/badge";
+  import { Separator } from "../ui/separator";
+  import { ProfileLink } from "../ui/profile";
 
-  type StatusState = "open" | "draft" | "closed" | "merged" | "resolved"
+  type StatusState = "open" | "draft" | "closed" | "applied" | "resolved";
 
   interface StatusProps {
-    repo: Repo
-    rootId: string
-    rootKind: 1621 | 1617 | 1618
-    rootAuthor: string
-    statusEvents?: StatusEvent[]
-    actorPubkey?: string
-    compact?: boolean
-    onPublish?: (event: StatusEvent) => Promise<any>
-    ProfileComponent?: any
-    isMirrored?: boolean
+    repo: Repo;
+    rootId: string;
+    rootKind: 1621 | 1617 | 1618;
+    rootAuthor: string;
+    statusEvents?: StatusEvent[];
+    actorPubkey?: string;
+    compact?: boolean;
+    onPublish?: (event: StatusEvent) => Promise<any>;
+    ProfileComponent?: any;
+    isMirrored?: boolean;
   }
 
   const {
@@ -55,246 +43,262 @@
     onPublish,
     ProfileComponent = ProfileLink,
     isMirrored = false,
-  }: StatusProps = $props()
+  }: StatusProps = $props();
 
   // Authority check
   const isAuthorized = $derived.by(() => {
-    if (!actorPubkey) return false
-    const maintainers = repo.maintainers || []
-    return actorPubkey === rootAuthor || maintainers.includes(actorPubkey)
-  })
+    if (!actorPubkey) return false;
+    const maintainers = repo.maintainers || [];
+    return actorPubkey === rootAuthor || maintainers.includes(actorPubkey);
+  });
 
   // Determine current status
   const maintainerSet = $derived.by(() => {
-    const maintainers = repo.maintainers || []
-    const owner = (repo as any).repoEvent?.pubkey
-    return new Set([...maintainers, owner].filter(Boolean))
-  })
+    const maintainers = repo.maintainers || [];
+    const owner = (repo as any).repoEvent?.pubkey;
+    return new Set([...maintainers, owner].filter(Boolean));
+  });
 
   const authorizedEvents = $derived.by(() => {
     // For mirrored issues, all status events are considered authorized
     // since they represent the actual state from the original platform
     if (isMirrored) {
-      return statusEvents
+      return statusEvents;
     }
-    
-    return statusEvents.filter(
-      (e) => e.pubkey === rootAuthor || maintainerSet.has(e.pubkey)
-    )
-  })
+
+    return statusEvents.filter((e) => e.pubkey === rootAuthor || maintainerSet.has(e.pubkey));
+  });
 
   const suggestedEvents = $derived.by(() => {
     // For mirrored issues, there are no suggestions since all events are authorized
     if (isMirrored) {
-      return []
+      return [];
     }
-    
-    return statusEvents.filter(
-      (e) => e.pubkey !== rootAuthor && !maintainerSet.has(e.pubkey)
-    )
-  })
+
+    return statusEvents.filter((e) => e.pubkey !== rootAuthor && !maintainerSet.has(e.pubkey));
+  });
 
   const currentStatusEvent = $derived.by(() => {
-    if (authorizedEvents.length === 0) return undefined
+    if (authorizedEvents.length === 0) return undefined;
     // Sort by created_at descending
-    return [...authorizedEvents].sort((a, b) => b.created_at - a.created_at)[0]
-  })
+    return [...authorizedEvents].sort((a, b) => b.created_at - a.created_at)[0];
+  });
 
   const currentState = $derived.by((): StatusState => {
-    if (!currentStatusEvent) return "open"
+    if (!currentStatusEvent) return "open";
     switch (currentStatusEvent.kind) {
       case GIT_STATUS_OPEN:
-        return "open"
+        return "open";
       case GIT_STATUS_DRAFT:
-        return "draft"
+        return "draft";
       case GIT_STATUS_CLOSED:
-        return "closed"
+        return "closed";
       case GIT_STATUS_APPLIED:
-        return rootKind === 1617 ? "merged" : "resolved"
+        return rootKind === 1621 ? "resolved" : "applied";
       default:
-        return "open"
+        return "open";
     }
-  })
+  });
 
   // History sorted by recency
   const history = $derived.by(() => {
-    return [...authorizedEvents].sort((a, b) => b.created_at - a.created_at)
-  })
+    return [...authorizedEvents].sort((a, b) => b.created_at - a.created_at);
+  });
 
   const suggestions = $derived.by(() => {
-    return [...suggestedEvents].sort((a, b) => b.created_at - a.created_at)
-  })
+    return [...suggestedEvents].sort((a, b) => b.created_at - a.created_at);
+  });
 
   // UI state
-  let showEditor = $state(false)
-  let selectedState = $state<StatusState>("open")
-  let statusNote = $state("")
-  let mergeCommit = $state("")
-  let appliedCommits = $state("")
-  let isPublishing = $state(false)
-  let lastPublishTime = $state(0)
-  let publishError = $state("")
+  let showEditor = $state(false);
+  let selectedState = $state<StatusState>("open");
+  let statusNote = $state("");
+  let mergeCommit = $state("");
+  let appliedCommits = $state("");
+  let isPublishing = $state(false);
+  let lastPublishTime = $state(0);
+  let publishError = $state("");
 
   // Rate limit (3 seconds cooldown)
-  const COOLDOWN_MS = 3000
+  const COOLDOWN_MS = 3000;
   const canPublish = $derived.by(() => {
-    return Date.now() - lastPublishTime > COOLDOWN_MS
-  })
+    return Date.now() - lastPublishTime > COOLDOWN_MS;
+  });
 
   // UI: show/hide history
-  let showHistory = $state(false)
-  const pastCount = $derived.by(() => Math.max(history.length - 1, 0))
+  let showHistory = $state(false);
+  const pastCount = $derived.by(() => Math.max(history.length - 1, 0));
 
   // Reset form when editor is closed
   $effect(() => {
     if (!showEditor) {
-      selectedState = currentState
-      statusNote = ""
-      mergeCommit = ""
-      appliedCommits = ""
-      publishError = ""
+      selectedState = currentState;
+      statusNote = "";
+      mergeCommit = "";
+      appliedCommits = "";
+      publishError = "";
     }
-  })
+  });
 
   const getStateIcon = (state: StatusState) => {
     switch (state) {
       case "open":
-        return { icon: CircleDot, color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200" }
+        return {
+          icon: CircleDot,
+          color: "text-emerald-600",
+          bg: "bg-emerald-50",
+          border: "border-emerald-200",
+        };
       case "draft":
-        return { icon: Clock, color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200" }
+        return {
+          icon: Clock,
+          color: "text-amber-600",
+          bg: "bg-amber-50",
+          border: "border-amber-200",
+        };
       case "closed":
-        return { icon: X, color: "text-rose-600", bg: "bg-rose-50", border: "border-rose-200" }
-      case "merged":
-        return { icon: GitMerge, color: "text-indigo-600", bg: "bg-indigo-50", border: "border-indigo-200" }
+        return { icon: X, color: "text-rose-600", bg: "bg-rose-50", border: "border-rose-200" };
+      case "applied":
+        return {
+          icon: CircleCheck,
+          color: "text-sky-600",
+          bg: "bg-sky-50",
+          border: "border-sky-200",
+        };
       case "resolved":
-        return { icon: CircleCheck, color: "text-sky-600", bg: "bg-sky-50", border: "border-sky-200" }
+        return {
+          icon: CircleCheck,
+          color: "text-sky-600",
+          bg: "bg-sky-50",
+          border: "border-sky-200",
+        };
     }
-  }
+  };
 
   const stateToKind = (state: StatusState): number => {
     switch (state) {
       case "open":
-        return GIT_STATUS_OPEN
+        return GIT_STATUS_OPEN;
       case "draft":
-        return GIT_STATUS_DRAFT
+        return GIT_STATUS_DRAFT;
       case "closed":
-        return GIT_STATUS_CLOSED
-      case "merged":
+        return GIT_STATUS_CLOSED;
+      case "applied":
       case "resolved":
-        return GIT_STATUS_APPLIED
+        return GIT_STATUS_APPLIED;
     }
-  }
+  };
 
   const kindToState = (kind: number): StatusState => {
     switch (kind) {
       case GIT_STATUS_OPEN:
-        return "open"
+        return "open";
       case GIT_STATUS_DRAFT:
-        return "draft"
+        return "draft";
       case GIT_STATUS_CLOSED:
-        return "closed"
+        return "closed";
       case GIT_STATUS_APPLIED:
-        return rootKind === 1617 ? "merged" : "resolved"
+        return rootKind === 1621 ? "resolved" : "applied";
       default:
-        return "open"
+        return "open";
     }
-  }
+  };
 
   /** For mirrored status events (from import): get original_date and whether to show "imported by" */
   function getStatusDisplayInfo(event: StatusEvent): {
-    isMirrored: boolean
-    displayDate: Date
+    isMirrored: boolean;
+    displayDate: Date;
   } {
+    console.log("[Status] getStatusDisplayInfo", event);
 
-    console.log("[Status] getStatusDisplayInfo", event)
-
-    const tags = (event.tags || []) as Array<[string, string]>
-    const hasImported = tags.some((t) => t[0] === "imported")
-    const originalDateTag = tags.find((t) => t[0] === "original_date")?.[1]
-    const isMirrored = !!(hasImported && originalDateTag)
-    const sec = originalDateTag ? parseInt(originalDateTag, 10) : NaN
-    const displayDate = isMirrored && !Number.isNaN(sec)
-      ? new Date(sec * 1000)
-      : new Date((event.created_at ?? 0) * 1000)
+    const tags = (event.tags || []) as Array<[string, string]>;
+    const hasImported = tags.some((t) => t[0] === "imported");
+    const originalDateTag = tags.find((t) => t[0] === "original_date")?.[1];
+    const isMirrored = !!(hasImported && originalDateTag);
+    const sec = originalDateTag ? parseInt(originalDateTag, 10) : NaN;
+    const displayDate =
+      isMirrored && !Number.isNaN(sec)
+        ? new Date(sec * 1000)
+        : new Date((event.created_at ?? 0) * 1000);
     return {
       isMirrored,
       displayDate,
-    }
+    };
   }
 
   const getDefaultCommit = async (): Promise<string> => {
     try {
-      const history = await repo.getCommitHistory({ depth: 1 })
-      return history?.[0]?.oid || ""
+      const history = await repo.getCommitHistory({ depth: 1 });
+      return history?.[0]?.oid || "";
     } catch (e) {
-      console.error("Failed to get default commit:", e)
-      return ""
+      console.error("Failed to get default commit:", e);
+      return "";
     }
-  }
+  };
 
   const handlePublish = async () => {
     if (!canPublish) {
-      publishError = "Please wait before publishing again"
-      return
+      publishError = "Please wait before publishing again";
+      return;
     }
 
-    if (isPublishing) return
+    if (isPublishing) return;
 
-    console.log("[Status] Publishing status", { selectedState, rootId, rootKind })
+    console.log("[Status] Publishing status", { selectedState, rootId, rootKind });
 
-    isPublishing = true
-    publishError = ""
+    isPublishing = true;
+    publishError = "";
 
     try {
-      const kind = stateToKind(selectedState)
-      const repoEvent = (repo as any).repoEvent
-      const repoAddr = repoEvent ? `${repoEvent.kind}:${repoEvent.pubkey}:${repoEvent.tags.find((t: string[]) => t[0] === 'd')?.[1] || ''}` : ""
-      const relays = repo.relays || []
-      const repoEuc = repoEvent?.tags?.find((t: string[]) => t[0] === "r" && t[2] === "euc")?.[1]
+      const kind = stateToKind(selectedState);
+      const repoEvent = (repo as any).repoEvent;
+      const repoAddr = repoEvent
+        ? `${repoEvent.kind}:${repoEvent.pubkey}:${repoEvent.tags.find((t: string[]) => t[0] === "d")?.[1] || ""}`
+        : "";
+      const relays = repo.relays || [];
+      const repoEuc = repoEvent?.tags?.find((t: string[]) => t[0] === "r" && t[2] === "euc")?.[1];
 
       // Build tags
-      const tags: string[][] = [
-        ["e", rootId, "", "root"],
-      ]
+      const tags: string[][] = [["e", rootId, "", "root"]];
 
       if (repoAddr) {
-        const relayHint = relays[0] || ""
-        tags.push(["a", repoAddr, relayHint])
+        const relayHint = relays[0] || "";
+        tags.push(["a", repoAddr, relayHint]);
       }
 
       if (repoEuc) {
-        tags.push(["r", repoEuc])
+        tags.push(["r", repoEuc]);
       }
 
-      // Add merge metadata for 1631 (merged/resolved)
+      // Add merge metadata for 1631 (applied/resolved)
       if (kind === GIT_STATUS_APPLIED) {
-        let commitSha = mergeCommit.trim()
+        let commitSha = mergeCommit.trim();
         if (!commitSha) {
-          commitSha = await getDefaultCommit()
+          commitSha = await getDefaultCommit();
         }
 
         if (commitSha) {
-          tags.push(["merge-commit", commitSha])
-          tags.push(["r", commitSha])
+          tags.push(["merge-commit", commitSha]);
+          tags.push(["r", commitSha]);
         }
 
         const commits = appliedCommits
           .split(",")
           .map((s) => s.trim())
-          .filter(Boolean)
+          .filter(Boolean);
 
         if (commits.length > 0) {
-          tags.push(["applied-as-commits", ...commits])
-          commits.forEach((c) => tags.push(["r", c]))
+          tags.push(["applied-as-commits", ...commits]);
+          commits.forEach((c) => tags.push(["r", c]));
         } else if (commitSha) {
           // Default to merge commit if no applied commits specified
-          tags.push(["applied-as-commits", commitSha])
+          tags.push(["applied-as-commits", commitSha]);
         }
       }
 
       // Add recipients
-      const recipients = [actorPubkey, rootAuthor, repoEvent?.pubkey].filter(Boolean) as string[]
-      recipients.forEach((p) => tags.push(["p", p]))
+      const recipients = [actorPubkey, rootAuthor, repoEvent?.pubkey].filter(Boolean) as string[];
+      recipients.forEach((p) => tags.push(["p", p]));
 
       const statusEvent: any = {
         kind,
@@ -304,59 +308,58 @@
         pubkey: actorPubkey!,
         id: "",
         sig: "",
-      }
+      };
 
-      console.log("[Status] Publishing status event", statusEvent)
+      console.log("[Status] Publishing status event", statusEvent);
 
       if (onPublish) {
-        await onPublish(statusEvent)
+        await onPublish(statusEvent);
       }
 
-      lastPublishTime = Date.now()
-      showEditor = false
+      lastPublishTime = Date.now();
+      showEditor = false;
 
-      console.log("[Status] Status published successfully")
+      console.log("[Status] Status published successfully");
     } catch (error) {
-      console.error("[Status] Failed to publish status:", error)
-      publishError = error instanceof Error ? error.message : "Failed to publish status"
+      console.error("[Status] Failed to publish status:", error);
+      publishError = error instanceof Error ? error.message : "Failed to publish status";
     } finally {
-      isPublishing = false
+      isPublishing = false;
     }
-  }
+  };
 
   const handleAdopt = async (suggestion: StatusEvent) => {
     if (!canPublish) {
-      publishError = "Please wait before publishing again"
-      return
+      publishError = "Please wait before publishing again";
+      return;
     }
 
-    console.log("[Status] Adopting suggestion", suggestion)
+    console.log("[Status] Adopting suggestion", suggestion);
 
-    const state = kindToState(suggestion.kind)
-    selectedState = state
-    statusNote = suggestion.content || ""
+    const state = kindToState(suggestion.kind);
+    selectedState = state;
+    statusNote = suggestion.content || "";
 
     // Extract merge metadata if present
-    const mergeCommitTag = suggestion.tags.find((t) => t[0] === "merge-commit")
+    const mergeCommitTag = suggestion.tags.find((t) => t[0] === "merge-commit");
     if (mergeCommitTag) {
-      mergeCommit = mergeCommitTag[1] || ""
+      mergeCommit = mergeCommitTag[1] || "";
     }
 
-    const appliedTag = suggestion.tags.find((t) => t[0] === "applied-as-commits")
+    const appliedTag = suggestion.tags.find((t) => t[0] === "applied-as-commits");
     if (appliedTag) {
-      appliedCommits = appliedTag.slice(1).join(", ")
+      appliedCommits = appliedTag.slice(1).join(", ");
     }
 
-    await handlePublish()
-  }
+    await handlePublish();
+  };
 
   const availableStates = $derived.by((): StatusState[] => {
-    if (rootKind === 1617) {
-      return ["open", "draft", "merged", "closed"]
-    } else {
-      return ["open", "draft", "resolved", "closed"]
+    if (rootKind === 1621) {
+      return ["open", "draft", "resolved", "closed"];
     }
-  })
+    return ["open", "draft", "applied", "closed"];
+  });
 </script>
 
 {#if compact}
@@ -386,7 +389,10 @@
         {#snippet currentStatusBadge()}
           {@const { icon: Icon, color, bg, border } = getStateIcon(currentState)}
           <div class="flex flex-col sm:flex-row sm:items-center gap-2 min-w-0 flex-1">
-            <Badge variant="outline" class={`${bg} ${border} ${color} gap-1 text-xs sm:text-sm w-fit`}>
+            <Badge
+              variant="outline"
+              class={`${bg} ${border} ${color} gap-1 text-xs sm:text-sm w-fit`}
+            >
               <Icon class="h-3 w-3 sm:h-4 sm:w-4" />
               {currentState.charAt(0).toUpperCase() + currentState.slice(1)}
             </Badge>
@@ -405,7 +411,12 @@
 
         <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
           {#if isAuthorized}
-            <Button size="sm" variant="outline" onclick={() => (showEditor = !showEditor)} class="w-full sm:w-auto text-xs sm:text-sm">
+            <Button
+              size="sm"
+              variant="outline"
+              onclick={() => (showEditor = !showEditor)}
+              class="w-full sm:w-auto text-xs sm:text-sm"
+            >
               {showEditor ? "Cancel" : "Change Status"}
             </Button>
           {/if}
@@ -414,8 +425,13 @@
             variant="outline"
             onclick={() => (showHistory = !showHistory)}
             disabled={pastCount === 0}
-            class="w-full sm:w-auto text-xs sm:text-sm whitespace-normal sm:whitespace-nowrap">
-            {pastCount === 0 ? "No History" : showHistory ? "Hide History" : `Show History (${pastCount})`}
+            class="w-full sm:w-auto text-xs sm:text-sm whitespace-normal sm:whitespace-nowrap"
+          >
+            {pastCount === 0
+              ? "No History"
+              : showHistory
+                ? "Hide History"
+                : `Show History (${pastCount})`}
           </Button>
         </div>
       </div>
@@ -433,7 +449,8 @@
                     size="sm"
                     variant={selectedState === state ? "default" : "outline"}
                     onclick={() => (selectedState = state)}
-                    class="gap-1">
+                    class="gap-1"
+                  >
                     <Icon class="h-3 w-3" />
                     {state.charAt(0).toUpperCase() + state.slice(1)}
                   </Button>
@@ -450,10 +467,11 @@
               bind:value={statusNote}
               placeholder="Add a note about this status change..."
               rows={3}
-              class="mt-1 text-sm resize-none" />
+              class="mt-1 text-sm resize-none"
+            />
           </div>
 
-          {#if selectedState === "merged" || selectedState === "resolved"}
+          {#if selectedState === "applied" || selectedState === "resolved"}
             <div class="space-y-2 rounded border border-border/50 bg-background p-2 sm:p-3">
               <p class="text-[10px] sm:text-xs text-muted-foreground">
                 Merge metadata (optional, defaults to current HEAD)
@@ -464,34 +482,43 @@
                   id="merge-commit"
                   bind:value={mergeCommit}
                   placeholder="Leave empty for HEAD"
-                  class="mt-1 text-xs h-9 sm:h-10" />
+                  class="mt-1 text-xs h-9 sm:h-10"
+                />
               </div>
               <div>
-                <Label for="applied-commits" class="text-[10px] sm:text-xs">Applied Commits (comma-separated)</Label>
+                <Label for="applied-commits" class="text-[10px] sm:text-xs"
+                  >Applied Commits (comma-separated)</Label
+                >
                 <Input
                   id="applied-commits"
                   bind:value={appliedCommits}
                   placeholder="sha1, sha2, sha3..."
-                  class="mt-1 text-xs h-9 sm:h-10" />
+                  class="mt-1 text-xs h-9 sm:h-10"
+                />
               </div>
             </div>
           {/if}
 
           {#if publishError}
-            <div class="rounded bg-destructive/10 p-2 text-[10px] sm:text-xs text-destructive break-words">
+            <div
+              class="rounded bg-destructive/10 p-2 text-[10px] sm:text-xs text-destructive break-words"
+            >
               {publishError}
             </div>
           {/if}
 
           <div class="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
             <span class="text-[10px] sm:text-xs text-muted-foreground text-center sm:text-left">
-              {canPublish ? "" : `Wait ${Math.ceil((COOLDOWN_MS - (Date.now() - lastPublishTime)) / 1000)}s`}
+              {canPublish
+                ? ""
+                : `Wait ${Math.ceil((COOLDOWN_MS - (Date.now() - lastPublishTime)) / 1000)}s`}
             </span>
             <Button
               size="sm"
               onclick={handlePublish}
               disabled={isPublishing || !canPublish}
-              class="w-full sm:w-auto text-xs sm:text-sm min-h-[36px] sm:min-h-0">
+              class="w-full sm:w-auto text-xs sm:text-sm min-h-[36px] sm:min-h-0"
+            >
               {isPublishing ? "Publishing..." : "Publish Status"}
             </Button>
           </div>
@@ -512,12 +539,16 @@
                   <Icon class={`mt-0.5 h-3 w-3 ${color} flex-shrink-0`} />
                   <div class="flex-1 min-w-0">
                     <div class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
-                      <span class="font-medium">{state.charAt(0).toUpperCase() + state.slice(1)}</span>
+                      <span class="font-medium"
+                        >{state.charAt(0).toUpperCase() + state.slice(1)}</span
+                      >
                       <span class="text-muted-foreground flex items-center gap-1 flex-wrap">
                         <span>by</span>
                         <ProfileComponent pubkey={event.pubkey} />
                         <span class="hidden sm:inline">•</span>
-                        <span class="break-all sm:break-normal">{info.displayDate.toLocaleString()}</span>
+                        <span class="break-all sm:break-normal"
+                          >{info.displayDate.toLocaleString()}</span
+                        >
                       </span>
                     </div>
                     {#if event.content}
@@ -543,17 +574,23 @@
                 {@const state = kindToState(event.kind)}
                 {@const { icon: Icon, color } = getStateIcon(state)}
                 {@const info = getStatusDisplayInfo(event)}
-                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 rounded border border-border/50 bg-muted/20 p-2">
+                <div
+                  class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 rounded border border-border/50 bg-muted/20 p-2"
+                >
                   <div class="flex items-start gap-2 text-[10px] sm:text-xs min-w-0 flex-1">
                     <Icon class={`mt-0.5 h-3 w-3 ${color} flex-shrink-0`} />
                     <div class="flex-1 min-w-0">
                       <div class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
-                        <span class="font-medium">{state.charAt(0).toUpperCase() + state.slice(1)}</span>
+                        <span class="font-medium"
+                          >{state.charAt(0).toUpperCase() + state.slice(1)}</span
+                        >
                         <span class="text-muted-foreground flex items-center gap-1 flex-wrap">
                           <span>by</span>
                           <ProfileComponent pubkey={event.pubkey} />
                           <span class="hidden sm:inline">•</span>
-                          <span class="break-all sm:break-normal">{info.displayDate.toLocaleString()}</span>
+                          <span class="break-all sm:break-normal"
+                            >{info.displayDate.toLocaleString()}</span
+                          >
                         </span>
                       </div>
                       {#if event.content}
@@ -566,7 +603,8 @@
                     variant="ghost"
                     onclick={() => handleAdopt(event)}
                     disabled={!canPublish || isPublishing}
-                    class="w-full sm:w-auto text-xs sm:text-sm min-h-[32px] sm:min-h-0 flex-shrink-0">
+                    class="w-full sm:w-auto text-xs sm:text-sm min-h-[32px] sm:min-h-0 flex-shrink-0"
+                  >
                     Adopt
                   </Button>
                 </div>
