@@ -30,6 +30,8 @@
     watchRepo,
     isWatching = false,
     canEditSettings,
+    updateRepoState,
+    hasRepoStateUpdate = false,
   }: {
     repoClass: Repo;
     activeTab?: string;
@@ -45,6 +47,8 @@
     watchRepo?: () => void | Promise<void>;
     isWatching?: boolean;
     canEditSettings?: boolean;
+    updateRepoState?: () => void | Promise<void>;
+    hasRepoStateUpdate?: boolean;
   } = $props();
   const name = $derived.by(() => repoClass.name);
   const description = $derived.by(() => repoClass.description);
@@ -103,14 +107,22 @@
       </div>
     </div>
   {/if}
-  <div class="flex flex-col gap-2 mb-4">
-    <h1 class="text-xl sm:text-2xl font-bold flex items-center gap-2 min-w-0">
-      <GitBranch class="h-5 w-5 sm:h-6 sm:w-6 flex-shrink-0" />
-      <button onclick={overviewRepo} class="truncate text-left" title={name}>
-        {name}
-      </button>
+  <div class="flex flex-col gap-4 mb-5">
+    <h1
+      class="text-xl sm:text-2xl font-bold flex flex-col items-start gap-3 min-w-0 sm:flex-row sm:items-center"
+      style="margin-bottom:0.75rem;"
+    >
+      <div class="flex min-w-0 items-center gap-2">
+        <GitBranch class="h-5 w-5 sm:h-6 sm:w-6 flex-shrink-0" />
+        <button onclick={overviewRepo} class="truncate text-left" title={name}>
+          {name}
+        </button>
+      </div>
+      <div class="w-full min-w-0 sm:ml-3 sm:w-auto" style="margin-top:0.25rem;">
+        <BranchSelector repo={repoClass} />
+      </div>
     </h1>
-    <div class="flex items-center flex-wrap gap-2 sm:gap-3">
+    <div class="flex items-center flex-wrap gap-2 sm:gap-3" style="margin-top:0.5rem;">
       {#if bookmarkRepo}
         <Button
           variant={isBookmarked ? "default" : "outline"}
@@ -169,9 +181,24 @@
           <span class="hidden sm:inline">Settings</span>
         </Button>
       {/if}
-      <div class="flex-shrink-0 min-w-0 sm:ml-auto">
-        <BranchSelector repo={repoClass} />
-      </div>
+      {#if updateRepoState}
+        <div class="ml-auto flex-shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            class={cn(
+              "gap-1 sm:gap-2 px-2 sm:px-3",
+              hasRepoStateUpdate &&
+                "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/30"
+            )}
+            onclick={updateRepoState}
+            title="Update published repo state"
+          >
+            <AlertTriangle class="h-4 w-4 {hasRepoStateUpdate ? 'text-amber-500' : ''}" />
+            <span class="hidden sm:inline">Update state</span>
+          </Button>
+        </div>
+      {/if}
     </div>
   </div>
   {#if description}
@@ -183,7 +210,7 @@
       {/if}
     </div>
   {/if}
-  <nav class={cn("bg-muted text-muted-foreground rounded-md w-full")}>
+  <nav class={cn("bg-muted text-muted-foreground rounded-md w-full")} style="margin-top:1rem;">
     <div class="flex overflow-x-auto scrollbar-hide">
       <div class="w-full flex justify-evenly gap-1 m-1 min-w-max">
         {@render children?.(activeTab)}
