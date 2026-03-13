@@ -7,6 +7,7 @@
     Settings,
     Bookmark,
     AlertTriangle,
+    LoaderCircle,
     Bell,
     X,
   } from "@lucide/svelte";
@@ -32,6 +33,7 @@
     canEditSettings,
     updateRepoState,
     hasRepoStateUpdate = false,
+    isCheckingRepoStateUpdate = false,
   }: {
     repoClass: Repo;
     activeTab?: string;
@@ -49,6 +51,7 @@
     canEditSettings?: boolean;
     updateRepoState?: () => void | Promise<void>;
     hasRepoStateUpdate?: boolean;
+    isCheckingRepoStateUpdate?: boolean;
   } = $props();
   const name = $derived.by(() => repoClass.name);
   const description = $derived.by(() => repoClass.description);
@@ -192,10 +195,19 @@
                 "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/30"
             )}
             onclick={updateRepoState}
-            title="Update published repo state"
+            disabled={isCheckingRepoStateUpdate}
+            title={isCheckingRepoStateUpdate
+              ? "Checking for updates..."
+              : "Update published repo state"}
           >
-            <AlertTriangle class="h-4 w-4 {hasRepoStateUpdate ? 'text-amber-500' : ''}" />
-            <span class="hidden sm:inline">Update state</span>
+            {#if isCheckingRepoStateUpdate}
+              <LoaderCircle class="h-4 w-4 animate-spin" />
+            {:else}
+              <AlertTriangle class="h-4 w-4 {hasRepoStateUpdate ? 'text-amber-500' : ''}" />
+            {/if}
+            <span class="hidden sm:inline">
+              {isCheckingRepoStateUpdate ? "Checking..." : "Update state"}
+            </span>
           </Button>
         </div>
       {/if}
