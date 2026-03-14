@@ -18,19 +18,23 @@
     useImportRepo,
     type ImportProgress,
     type ImportResult,
+    type ImportRemoteTarget,
     IMPORT_PHASES,
     IMPORT_PHASE_LABELS,
     type ImportPhase,
   } from "../../hooks/useImportRepo.svelte";
   import { tokens } from "../../stores/tokens.js";
+  import { graspServersStore } from "../../stores/graspServers.js";
   import {
     parseRepoUrl,
     DEFAULT_RELAYS,
-    validateTokenPermissions,
+    getGitServiceApi,
     getGitServiceApiFromUrl,
     checkRepoOwnership,
   } from "@nostr-git/core";
   import { tryTokensForHost } from "../../utils/tokenHelpers.js";
+  import { matchesHost } from "../../utils/tokenMatcher.js";
+  import { checkGraspRepoExists } from "../../utils/grasp-availability.js";
   import { AllTokensFailedError, TokenNotFoundError } from "../../utils/tokenErrors.js";
   import { toast } from "../../stores/toast";
   import type { Token } from "../../stores/tokens.js";
@@ -39,11 +43,16 @@
 
   interface Props {
     pubkey: string;
+    workerApi?: any;
     onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>; // Optional - works with all signers
     eventIO?: EventIO;
     onFetchEvents?: (filters: import("@nostr-git/core").NostrFilter[]) => Promise<NostrEvent[]>;
     onClose: () => void;
     onPublishEvent?: (event: NostrEvent) => Promise<void>;
+    onRollbackPublishedRepoEvents?: (params: {
+      repoName: string;
+      relays: string[];
+    }) => Promise<void>;
     onImportComplete?: (result: ImportResult) => void;
     onNavigateToRepo?: (result: ImportResult) => void; // Optional callback to navigate to the imported repo
     defaultRelays?: string[];
@@ -51,11 +60,13 @@
 
   const {
     pubkey,
+    workerApi,
     onSignEvent,
     eventIO,
     onFetchEvents,
     onClose,
     onPublishEvent,
+    onRollbackPublishedRepoEvents,
     onImportComplete,
     onNavigateToRepo,
     defaultRelays = DEFAULT_RELAYS.default.slice(0, 2),
@@ -69,6 +80,7 @@
   // Initialize the useImportRepo hook
   const importState = useImportRepo({
     userPubkey: pubkey,
+    workerApi,
     onSignEvent,
     eventIO,
     onFetchEvents,
@@ -88,6 +100,7 @@
       onImportComplete?.(result);
     },
     onPublishEvent,
+    onRollbackPublishedRepoEvents,
   });
 
   // Step management (1: URL + Token + Date, 2: Preview + Config, 3: Progress)
@@ -99,14 +112,13 @@
   let repoUrl = $state("");
   let selectedHost = $state<string | null>(null);
   let sinceDate = $state<Date | undefined>(undefined);
+  let sourceToken = $state<string | null>(null);
   let tokenValidated = $state(false);
   let isValidatingToken = $state(false);
   let tokenValidationError = $state<string | undefined>();
-  let validatedToken = $state<string | null>(null);
-  // Use a regular variable (not $state) to avoid reactivity issues in cleanup
-  let validationAbortController: AbortController | null = null;
-  // Track which URL/host we're currently validating to prevent redundant calls
-  let validatingForUrl: string | null = null;
+  let validatedForUrl = $state<string | null>(null);
+  let validationTimer: ReturnType<typeof setTimeout> | null = null;
+  let sourceValidationRunId = 0;
 
   // Form state - Step 2
   let repoMetadata = $state<{
@@ -116,13 +128,34 @@
     htmlUrl: string;
     isOwner: boolean;
   } | null>(null);
-  let forkName = $state("");
   let selectedRelays = $state<string[]>([...defaultRelays]);
   let announceRepo = $state(true); // Always enabled
-  let forkRepo = $state(false);
   let mirrorIssues = $state(true);
   let mirrorPullRequests = $state(true);
   let mirrorComments = $state(true);
+
+  type ImportTargetStatus = "checking" | "ready" | "failed" | "unsupported" | "no-token";
+  type ImportTargetOption = {
+    id: string;
+    label: string;
+    provider: "github" | "gitlab" | "gitea" | "bitbucket" | "grasp";
+    host?: string;
+    relayUrl?: string;
+    status: ImportTargetStatus;
+    detail?: string;
+    validatedToken?: string;
+    existsAlready?: boolean;
+    existingRemoteUrl?: string;
+    existingWebUrl?: string;
+  };
+
+  let importTargets = $state<ImportTargetOption[]>([]);
+  let selectedImportTargetIds = $state<string[]>([]);
+  let initializedTargetSelection = $state(false);
+  let targetPreflightRunId = 0;
+  let graspServerOptions = $state<string[]>([]);
+  let graspRelayUrls = $state<string[]>([]);
+  let newGraspRelayUrl = $state("");
 
   // UI state
   let validationError = $state<string | undefined>();
@@ -134,207 +167,570 @@
     tokenList = t;
   });
 
+  graspServersStore.subscribe((urls) => {
+    graspServerOptions = urls;
+    if (graspRelayUrls.length === 0 && urls.length > 0) {
+      graspRelayUrls = [...urls];
+    }
+  });
+
   async function waitForTokens(): Promise<Token[]> {
     return await tokens.waitForInitialization();
   }
 
+  function normalizeRelayUrl(value: string): string {
+    return (value || "").trim().replace(/\/+$/, "");
+  }
+
+  function normalizeTokenHostForTarget(host: string): string {
+    const normalized = (host || "").trim().toLowerCase();
+    if (normalized === "api.github.com") return "github.com";
+    return normalized;
+  }
+
+  function inferProvider(host: string, token: string): ImportTargetOption["provider"] | null {
+    const normalizedHost = host.toLowerCase();
+    const normalizedToken = token.toLowerCase();
+
+    if (normalizedHost.includes("github")) return "github";
+    if (normalizedHost.includes("gitlab")) return "gitlab";
+    if (normalizedHost.includes("gitea") || normalizedHost === "codeberg.org") return "gitea";
+    if (normalizedHost.includes("bitbucket")) return "bitbucket";
+
+    if (normalizedToken.startsWith("github_pat_") || normalizedToken.startsWith("ghp_")) {
+      return "github";
+    }
+    if (normalizedToken.startsWith("glpat-")) return "gitlab";
+
+    return null;
+  }
+
+  function providerLabel(provider: ImportTargetOption["provider"]): string {
+    if (provider === "github") return "GitHub";
+    if (provider === "gitlab") return "GitLab";
+    if (provider === "gitea") return "Gitea";
+    if (provider === "bitbucket") return "Bitbucket";
+    return "GRASP";
+  }
+
+  function getProviderBaseUrl(
+    provider: ImportTargetOption["provider"],
+    host?: string
+  ): string | undefined {
+    if (!host || provider === "grasp") return undefined;
+    const normalizedHost = host.toLowerCase();
+
+    if (provider === "github") {
+      if (normalizedHost === "github.com") return undefined;
+      return `https://${host}/api/v3`;
+    }
+    if (provider === "gitlab") {
+      if (normalizedHost === "gitlab.com") return undefined;
+      return `https://${host}/api/v4`;
+    }
+    if (provider === "gitea") {
+      return `https://${host}/api/v1`;
+    }
+    if (provider === "bitbucket") {
+      if (normalizedHost === "bitbucket.org") return undefined;
+      return `https://${host}/api/2.0`;
+    }
+    return undefined;
+  }
+
+  function upsertGraspRelay(url: string) {
+    const normalized = normalizeRelayUrl(url);
+    if (!normalized) return;
+    if (!graspRelayUrls.includes(normalized)) {
+      graspRelayUrls = [...graspRelayUrls, normalized];
+      initializedTargetSelection = false;
+    }
+  }
+
+  function removeGraspRelay(index: number) {
+    graspRelayUrls = graspRelayUrls.filter((_, i) => i !== index);
+    initializedTargetSelection = false;
+  }
+
+  function commitNewGraspRelay() {
+    if (!newGraspRelayUrl.trim()) return;
+    upsertGraspRelay(newGraspRelayUrl);
+    newGraspRelayUrl = "";
+  }
+
+  const targetRepoName = $derived.by(() => {
+    if (!repoMetadata) return "";
+    return repoMetadata.name;
+  });
+
+  function buildImportTargets(): ImportTargetOption[] {
+    const targetMap = new Map<string, ImportTargetOption>();
+
+    const tokenByHost = new Map<string, string>();
+    for (const entry of tokenList) {
+      const normalizedHost = normalizeTokenHostForTarget(entry.host);
+      if (!normalizedHost) continue;
+      if (!tokenByHost.has(normalizedHost)) tokenByHost.set(normalizedHost, entry.token);
+    }
+
+    for (const [host, sampleToken] of tokenByHost.entries()) {
+      const provider = inferProvider(host, sampleToken);
+      if (!provider) {
+        targetMap.set(`unsupported:${host}`, {
+          id: `unsupported:${host}`,
+          label: `${host}`,
+          provider: "github",
+          host,
+          status: "unsupported",
+          detail: "Could not infer provider from token host",
+        });
+        continue;
+      }
+
+      targetMap.set(`git:${host}`, {
+        id: `git:${host}`,
+        label: `${providerLabel(provider)} (${host})`,
+        provider,
+        host,
+        status: "checking",
+      });
+    }
+
+    graspRelayUrls.forEach((relayUrl, index) => {
+      const normalized = normalizeRelayUrl(relayUrl);
+      if (!normalized) return;
+      targetMap.set(`grasp:${normalized}`, {
+        id: `grasp:${normalized}`,
+        label: `GRASP (${normalized.replace(/^wss?:\/\//, "")})`,
+        provider: "grasp",
+        relayUrl: normalized,
+        status: "checking",
+        detail: index === 0 ? "Primary relay" : undefined,
+      });
+    });
+
+    return Array.from(targetMap.values());
+  }
+
+  function isNotFoundError(error: unknown): boolean {
+    const anyError = error as any;
+    const message = error instanceof Error ? error.message : String(error || "");
+    const lowered = message.toLowerCase();
+    const statusCode = anyError?.statusCode ?? anyError?.status ?? anyError?.context?.statusCode;
+    return statusCode === 404 || lowered.includes("404") || lowered.includes("not found");
+  }
+
+  function toFriendlyTargetPreflightError(error: unknown, host: string): string {
+    const classify = (message: string): string => {
+      const normalized = message.toLowerCase();
+      if (normalized.includes("404") || normalized.includes("not found")) {
+        return "Repository not found or token has no access";
+      }
+      if (
+        normalized.includes("401") ||
+        normalized.includes("unauthorized") ||
+        normalized.includes("bad credentials")
+      ) {
+        return "Invalid token credentials";
+      }
+      if (normalized.includes("403") || normalized.includes("forbidden")) {
+        return "Token lacks required repository permissions";
+      }
+      return "Token could not access this host";
+    };
+
+    if (error instanceof TokenNotFoundError) {
+      return `No token found for ${host}`;
+    }
+
+    if (error instanceof AllTokensFailedError) {
+      const reasons = Array.from(new Set(error.errors.map((entry) => classify(entry.message))));
+      return `No usable token for ${host} (${reasons.join(", ")})`;
+    }
+
+    if (error instanceof Error) {
+      return classify(error.message);
+    }
+
+    return `No usable token for ${host}`;
+  }
+
+  async function runTargetPreflight() {
+    if (currentStep !== 2 || !repoMetadata || !targetRepoName) return;
+
+    const currentRun = ++targetPreflightRunId;
+    const seeds = buildImportTargets();
+    importTargets = seeds;
+
+    const nextTargets: ImportTargetOption[] = await Promise.all(
+      seeds.map(async (target) => {
+        if (target.status === "unsupported") return target;
+
+        if (target.provider === "grasp") {
+          if (!target.relayUrl) {
+            return { ...target, status: "failed" as const, detail: "Missing relay URL" };
+          }
+          try {
+            const probe = await checkGraspRepoExists({
+              relayUrl: target.relayUrl,
+              userPubkey: pubkey,
+              owner: pubkey,
+              repoName: targetRepoName,
+            });
+            if (probe.exists) {
+              const existingWebUrl = probe.htmlUrl;
+              const existingRemoteUrl = existingWebUrl
+                ? existingWebUrl.endsWith(".git")
+                  ? existingWebUrl
+                  : `${existingWebUrl.replace(/\/+$/, "")}.git`
+                : undefined;
+              return {
+                ...target,
+                status: "ready" as const,
+                detail: "Repository exists, will push to existing destination",
+                existsAlready: true,
+                existingWebUrl,
+                existingRemoteUrl,
+              };
+            }
+            return {
+              ...target,
+              status: "ready" as const,
+              detail: target.detail || "Relay available",
+            };
+          } catch (error) {
+            return {
+              ...target,
+              status: "failed" as const,
+              detail: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
+
+        if (!target.host) {
+          return { ...target, status: "failed" as const, detail: "Missing host" };
+        }
+
+        const normalizedTargetHost = normalizeTokenHostForTarget(target.host);
+
+        try {
+          const token = await tryTokensForHost(
+            tokenList,
+            (tokenHost: string) => {
+              const normalizedTokenHost = normalizeTokenHostForTarget(tokenHost);
+              return (
+                matchesHost(normalizedTokenHost, normalizedTargetHost) ||
+                matchesHost(normalizedTargetHost, normalizedTokenHost)
+              );
+            },
+            async (candidateToken: string, matchedHost: string) => {
+              const api = getGitServiceApi(
+                target.provider,
+                candidateToken,
+                getProviderBaseUrl(target.provider, target.host)
+              );
+
+              const user = await api.getCurrentUser();
+              const username = user.login || (user as any).username;
+              if (!username) {
+                throw new Error("Unable to determine token user");
+              }
+
+              const repoNameForHost = targetRepoName;
+
+              try {
+                const existingRepo = await api.getRepo(username, repoNameForHost);
+                return {
+                  token: candidateToken,
+                  detail: "Repository exists, will push to existing destination",
+                  existsAlready: true,
+                  existingRemoteUrl: existingRepo.cloneUrl,
+                  existingWebUrl: existingRepo.htmlUrl,
+                };
+              } catch (error) {
+                if (isNotFoundError(error)) {
+                  return {
+                    token: candidateToken,
+                    detail: `Ready (${normalizeTokenHostForTarget(matchedHost)})`,
+                    existsAlready: false,
+                  };
+                }
+                throw error;
+              }
+            }
+          );
+
+          return {
+            ...target,
+            status: "ready" as const,
+            validatedToken: token.token,
+            detail: token.detail,
+            existsAlready: token.existsAlready,
+            existingRemoteUrl: token.existingRemoteUrl,
+            existingWebUrl: token.existingWebUrl,
+          };
+        } catch (error) {
+          if (error instanceof TokenNotFoundError) {
+            return { ...target, status: "no-token" as const, detail: "No token for host" };
+          }
+          return {
+            ...target,
+            status: "failed" as const,
+            detail: toFriendlyTargetPreflightError(error, target.host),
+          };
+        }
+      })
+    );
+
+    if (currentRun !== targetPreflightRunId) return;
+
+    importTargets = nextTargets;
+    const readyTargets = nextTargets.filter((target) => target.status === "ready");
+
+    selectedImportTargetIds = selectedImportTargetIds.filter((id) =>
+      readyTargets.some((target) => target.id === id)
+    );
+
+    if (!initializedTargetSelection) {
+      const readyGitTargets = readyTargets
+        .filter((target) => target.provider !== "grasp")
+        .map((target) => target.id);
+      const readyGraspTargets = readyTargets
+        .filter((target) => target.provider === "grasp")
+        .map((target) => target.id);
+
+      selectedImportTargetIds = [
+        ...readyGitTargets,
+        ...(readyGraspTargets.length > 0 ? [readyGraspTargets[0]] : []),
+      ];
+      initializedTargetSelection = true;
+    }
+  }
+
   // Detect provider from URL
   $effect(() => {
-    if (repoUrl) {
-      try {
-        const parsed = parseRepoUrl(repoUrl);
-        selectedHost = parsed.host;
-      } catch {
-        selectedHost = null;
-      }
+    const trimmed = repoUrl.trim();
+    if (!trimmed) {
+      selectedHost = null;
+      return;
+    }
+
+    try {
+      const parsed = parseRepoUrl(trimmed);
+      selectedHost = parsed.host;
+    } catch {
+      selectedHost = null;
     }
   });
 
   // Validate URL
   function validateUrl(url: string): string | undefined {
-    if (!url.trim()) {
+    const trimmed = url.trim();
+
+    if (!trimmed) {
       return "Repository URL is required";
     }
 
+    let parsedUrl: URL;
     try {
-      parseRepoUrl(url);
+      parsedUrl = new URL(trimmed);
+    } catch {
+      return "Repository URL must start with https:// or http://";
+    }
+
+    if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+      return "Repository URL must use https:// or http://";
+    }
+
+    const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
+    if (pathSegments.length < 2) {
+      return "Repository URL must include owner and repo (https://host/owner/repo)";
+    }
+
+    try {
+      parseRepoUrl(trimmed);
       return undefined;
     } catch (err) {
       return err instanceof Error ? err.message : "Invalid repository URL format";
     }
   }
 
-  // Validate token for host - tries all tokens until one succeeds
-  async function validateToken() {
-    if (!selectedHost || !repoUrl) {
-      tokenValidationError = "Please enter a valid repository URL first";
+  interface SourceAccessResult {
+    token: string;
+    ownership: Awaited<ReturnType<typeof checkRepoOwnership>>;
+  }
+
+  function toFriendlySourceAccessError(error: unknown, host: string): string {
+    if (error instanceof TokenNotFoundError) {
+      return `No token found for ${host}. Please add one in settings.`;
+    }
+
+    const classify = (message: string): string => {
+      const normalized = message.toLowerCase();
+      if (normalized.includes("404") || normalized.includes("not found")) {
+        return "Repository not found or token has no access";
+      }
+      if (
+        normalized.includes("401") ||
+        normalized.includes("unauthorized") ||
+        normalized.includes("bad credentials")
+      ) {
+        return "Invalid token credentials";
+      }
+      if (normalized.includes("403") || normalized.includes("forbidden")) {
+        return "Token lacks required repository permissions";
+      }
+      return "Token could not access this repository";
+    };
+
+    if (error instanceof AllTokensFailedError) {
+      const reasons = Array.from(new Set(error.errors.map((entry) => classify(entry.message))));
+      return `None of your tokens for ${host} can access this repository (${reasons.join(", ")}).`;
+    }
+
+    if (error instanceof Error) {
+      return classify(error.message);
+    }
+
+    return "Unable to access source repository with available tokens";
+  }
+
+  async function resolveSourceAccess(
+    parsed: ReturnType<typeof parseRepoUrl>
+  ): Promise<SourceAccessResult> {
+    const allTokens = await waitForTokens();
+    const normalizedRepoUrl = repoUrl.trim();
+    const normalizedSourceHost = normalizeTokenHostForTarget(parsed.host);
+
+    return await tryTokensForHost(
+      allTokens,
+      (tokenHost: string) => {
+        const normalizedTokenHost = normalizeTokenHostForTarget(tokenHost);
+        return (
+          matchesHost(normalizedTokenHost, normalizedSourceHost) ||
+          matchesHost(normalizedSourceHost, normalizedTokenHost)
+        );
+      },
+      async (candidateToken: string) => {
+        const api = getGitServiceApiFromUrl(normalizedRepoUrl, candidateToken);
+        const ownership = await checkRepoOwnership(api, parsed.owner, parsed.repo);
+        return { token: candidateToken, ownership };
+      }
+    );
+  }
+
+  async function validateSourceToken() {
+    const runId = ++sourceValidationRunId;
+    const urlError = validateUrl(repoUrl);
+    if (urlError) {
+      if (runId === sourceValidationRunId) {
+        tokenValidationError = urlError;
+        tokenValidated = false;
+        sourceToken = null;
+        validatedForUrl = null;
+      }
       return;
     }
 
-    // Prevent concurrent validations for the same URL
-    if (isValidatingToken && validatingForUrl === repoUrl) {
+    let parsed: ReturnType<typeof parseRepoUrl>;
+    try {
+      parsed = parseRepoUrl(repoUrl.trim());
+    } catch (error) {
+      if (runId === sourceValidationRunId) {
+        tokenValidationError =
+          error instanceof Error ? error.message : "Invalid repository URL format";
+        tokenValidated = false;
+        sourceToken = null;
+        validatedForUrl = null;
+      }
       return;
     }
 
-    // Cancel any previous validation
-    if (validationAbortController) {
-      validationAbortController.abort();
+    if (runId === sourceValidationRunId) {
+      isValidatingToken = true;
+      tokenValidationError = undefined;
     }
-
-    const currentController = new AbortController();
-    validationAbortController = currentController;
-    const abortSignal = currentController.signal;
-
-    isValidatingToken = true;
-    validatingForUrl = repoUrl;
-    // Don't set tokenValidated = false here - let the reset effect handle it
-    // Only set tokenValidated = true when validation succeeds
-    tokenValidationError = undefined;
-    validatedToken = null;
 
     try {
-      const allTokens = await waitForTokens();
-
-      // Check if validation was aborted
-      if (abortSignal.aborted) {
-        return;
-      }
-
-      // Try to parse the repo URL to test permissions against the actual repo
-      let testRepo: { owner: string; repo: string } | undefined;
-      try {
-        if (repoUrl) {
-          const parsed = parseRepoUrl(repoUrl);
-          testRepo = { owner: parsed.owner, repo: parsed.repo };
-        }
-      } catch {
-        // URL not fully parseable yet - will validate without test repo
-      }
-
-      // Create API URL for provider detection
-      const apiUrl = repoUrl || `https://${selectedHost}/test/repo`;
-
-      // Try all tokens until one succeeds
-      try {
-        const validToken = await tryTokensForHost(
-          allTokens,
-          selectedHost,
-          async (token: string) => {
-            // Check if validation was aborted
-            if (abortSignal.aborted) {
-              throw new Error("Validation aborted");
-            }
-
-            // Create API instance and validate token permissions
-            const api = getGitServiceApiFromUrl(apiUrl, token);
-            const validationResult = await validateTokenPermissions(api, testRepo);
-
-            if (!validationResult.valid) {
-              throw new Error(
-                validationResult.error || "Token is invalid or has insufficient permissions"
-              );
-            }
-
-            if (!validationResult.hasRead) {
-              throw new Error(
-                "Token does not have read permissions. Please ensure your token has the necessary scopes."
-              );
-            }
-
-            // Token is valid and has read permissions
-            return token;
-          }
-        );
-
-        // Check if validation was aborted before updating state
-        if (abortSignal.aborted) {
-          return;
-        }
-
-        // Store the validated token
-        validatedToken = validToken;
-        tokenValidated = true;
-        tokenValidationError = undefined;
-        lastValidatedUrl = repoUrl;
-      } catch (err) {
-        // Don't update state if validation was aborted
-        if (abortSignal.aborted) {
-          return;
-        }
-
-        if (err instanceof TokenNotFoundError) {
-          tokenValidationError = `No token found for ${selectedHost}. Please add a token in settings.`;
-        } else if (err instanceof AllTokensFailedError) {
-          const errorMessages = err.errors
-            .map((e: Error, i: number) => `Token ${i + 1}: ${e.message}`)
-            .join("; ");
-          tokenValidationError = `All tokens failed for ${selectedHost}. Errors: ${errorMessages}`;
-        } else {
-          tokenValidationError = err instanceof Error ? err.message : "Failed to validate token";
-        }
-        // Don't set tokenValidated = false here - it will prevent the effect from re-running
-        // The user can manually re-validate if needed
-        validatedToken = null;
-        lastValidatedUrl = repoUrl; // Mark this URL as attempted (even though it failed)
-      }
-    } catch (err) {
-      // Don't update state if validation was aborted
-      if (abortSignal.aborted) {
-        return;
-      }
-
-      tokenValidationError = err instanceof Error ? err.message : "Failed to validate token";
-      // Don't set tokenValidated = false here - it will prevent the effect from re-running
-      validatedToken = null;
-      lastValidatedUrl = repoUrl; // Mark this URL as attempted (even though it failed)
+      const access = await resolveSourceAccess(parsed);
+      if (runId !== sourceValidationRunId) return;
+      sourceToken = access.token;
+      tokenValidated = true;
+      validatedForUrl = repoUrl.trim();
+    } catch (error) {
+      if (runId !== sourceValidationRunId) return;
+      sourceToken = null;
+      tokenValidated = false;
+      validatedForUrl = null;
+      tokenValidationError = toFriendlySourceAccessError(error, parsed.host);
     } finally {
-      // Only reset if this validation wasn't aborted (i.e., it's still the current one)
-      if (!abortSignal.aborted && validationAbortController === currentController) {
+      if (runId === sourceValidationRunId) {
         isValidatingToken = false;
-        validationAbortController = null;
-        // Keep validatingForUrl set to prevent re-validation of the same URL
-        // It will be reset when the URL changes
-      } else if (abortSignal.aborted) {
-        // If aborted, still reset isValidatingToken (a new validation may have started)
-        isValidatingToken = false;
-        // Keep validatingForUrl set
       }
     }
   }
 
-  // Track the last URL we attempted to validate (success or failure) to prevent redundant validations
-  let lastValidatedUrl: string | null = null;
-  let lastResetUrl: string | null = null;
-
-  // Reset validated token when URL or host changes
+  let lastSourceTokenUrl: string | null = null;
   $effect(() => {
-    const currentUrl = repoUrl || selectedHost || null;
-    if (currentUrl && currentUrl !== lastResetUrl) {
-      lastResetUrl = currentUrl;
-      // Reset validation state when URL/host changes
-      if (validatedToken) {
-        tokenValidated = false;
-        validatedToken = null;
-        tokenValidationError = undefined;
-      }
-      // Reset tracking variables to allow validation of the new URL
-      lastValidatedUrl = null;
-      validatingForUrl = null;
+    const normalizedUrl = repoUrl.trim();
+    if (normalizedUrl === lastSourceTokenUrl) return;
+    lastSourceTokenUrl = normalizedUrl;
+    sourceValidationRunId++;
+    if (validationTimer) {
+      clearTimeout(validationTimer);
+      validationTimer = null;
     }
+    sourceToken = null;
+    tokenValidated = false;
+    tokenValidationError = undefined;
+    validatedForUrl = null;
   });
 
-  // Auto-validate token when host changes
   $effect(() => {
-    if (!selectedHost || !repoUrl || tokenValidated || isValidatingToken) {
+    void repoUrl;
+    void selectedHost;
+    void currentStep;
+
+    if (currentStep !== 1) return;
+
+    const normalizedUrl = repoUrl.trim();
+    if (!normalizedUrl || !selectedHost) return;
+    if (validatedForUrl === normalizedUrl) return;
+
+    const urlError = validateUrl(normalizedUrl);
+    if (urlError) {
+      tokenValidated = false;
+      sourceToken = null;
+      validatedForUrl = null;
+      tokenValidationError = urlError;
       return;
     }
 
-    // Don't validate if we've already attempted validation for this URL
-    if (lastValidatedUrl === repoUrl || validatingForUrl === repoUrl) {
+    if (validationTimer) clearTimeout(validationTimer);
+    validationTimer = setTimeout(() => {
+      void validateSourceToken();
+    }, 450);
+
+    return () => {
+      if (validationTimer) {
+        clearTimeout(validationTimer);
+        validationTimer = null;
+      }
+    };
+  });
+
+  $effect(() => {
+    void currentStep;
+    void repoMetadata;
+    void targetRepoName;
+    void tokenList;
+    void graspRelayUrls;
+
+    if (currentStep !== 2 || !repoMetadata || !targetRepoName) {
       return;
     }
 
-    validateToken();
+    void runTargetPreflight();
   });
 
   // Step 1: Validate and proceed to Step 2
@@ -345,8 +741,8 @@
       return;
     }
 
-    if (!tokenValidated) {
-      validationError = "Please validate your token first";
+    if (!tokenValidated || validatedForUrl !== repoUrl.trim() || !sourceToken) {
+      validationError = "Please validate source access before continuing";
       return;
     }
 
@@ -354,20 +750,13 @@
 
     // Parse URL and get repo metadata
     try {
-      const parsed = parseRepoUrl(repoUrl);
-
-      // Use validated token (should always be set if tokenValidated is true)
-      if (!validatedToken) {
-        validationError = "Token validation failed. Please validate your token again.";
-        return;
-      }
-
-      // Get Git service API
-      const api = getGitServiceApiFromUrl(repoUrl, validatedToken);
+      const normalizedRepoUrl = repoUrl.trim();
+      const parsed = parseRepoUrl(normalizedRepoUrl);
 
       // Fetch repo metadata and check ownership
       isCheckingOwnership = true;
       try {
+        const api = getGitServiceApiFromUrl(normalizedRepoUrl, sourceToken);
         const ownership = await checkRepoOwnership(api, parsed.owner, parsed.repo);
 
         repoMetadata = {
@@ -378,18 +767,17 @@
           isOwner: ownership.isOwner,
         };
 
-        forkName = ownership.isOwner ? parsed.repo : `${parsed.repo}-fork`;
-        forkRepo = !ownership.isOwner; // Mandatory fork if not owner (checkbox will be disabled)
-        // Owner: mirror issues/PRs/comments by default; fork: uncheck by default
+        // Owner: mirror issues/PRs/comments by default; non-owner: start conservative
         const mirrorByDefault = ownership.isOwner;
         mirrorIssues = mirrorByDefault;
         mirrorPullRequests = mirrorByDefault;
         mirrorComments = mirrorByDefault;
+        initializedTargetSelection = false;
+        selectedImportTargetIds = [];
 
         currentStep = 2;
       } catch (err) {
-        validationError =
-          err instanceof Error ? err.message : "Failed to fetch repository information";
+        validationError = toFriendlySourceAccessError(err, parsed.host);
       } finally {
         isCheckingOwnership = false;
       }
@@ -411,23 +799,39 @@
       return;
     }
 
-    validationError = undefined;
+    const selectedTargets: ImportRemoteTarget[] = importTargets
+      .filter((target) => selectedImportTargetIds.includes(target.id) && target.status === "ready")
+      .map((target) => ({
+        id: target.id,
+        label: target.label,
+        provider: target.provider,
+        host: target.host,
+        relayUrl: target.relayUrl,
+        token: target.validatedToken,
+        existsAlready: target.existsAlready,
+        existingRemoteUrl: target.existingRemoteUrl,
+        existingWebUrl: target.existingWebUrl,
+      }));
 
-    // Use validated token (should always be set if tokenValidated is true)
-    if (!validatedToken) {
-      validationError = "Token validation failed. Please validate your token again.";
+    if (!repoMetadata.isOwner && selectedTargets.length === 0) {
+      validationError = "Select at least one writable import target";
       return;
     }
 
-    const token = validatedToken;
+    validationError = undefined;
+
+    if (!sourceToken) {
+      validationError = "Source repository access token is missing. Go back and re-open Step 2.";
+      return;
+    }
+    const token = sourceToken;
 
     // Create import config
     const config: ImportConfig = {
       maxRetries: 3,
       enableProgressTracking: true,
       sinceDate: sinceDate,
-      forkRepo: forkRepo && !repoMetadata.isOwner,
-      forkName: forkRepo && !repoMetadata.isOwner && forkName.trim() ? forkName.trim() : undefined,
+      forkRepo: false,
       mirrorIssues,
       mirrorPullRequests,
       mirrorComments,
@@ -437,7 +841,7 @@
     // Start import
     currentStep = 3;
     try {
-      await importState.importRepository(repoUrl, token, config);
+      await importState.importRepository(repoUrl, token, config, selectedTargets);
     } catch (err) {
       // Error is handled by the hook and shown in progress
       console.error("Import failed:", err);
@@ -459,6 +863,26 @@
     if (selectedRelays.length > 1) {
       selectedRelays = selectedRelays.filter((_, i) => i !== index);
     }
+  }
+
+  function handleImportTargetSelectionChange() {
+    initializedTargetSelection = true;
+  }
+
+  function targetStatusLabel(target: ImportTargetOption): string {
+    if (target.status === "ready") return "Ready";
+    if (target.status === "checking") return "Checking";
+    if (target.status === "no-token") return "No token";
+    if (target.status === "unsupported") return "Unsupported";
+    return "Failed";
+  }
+
+  function targetStatusTone(target: ImportTargetOption): string {
+    if (target.status === "ready") return "text-green-400";
+    if (target.status === "checking") return "text-gray-400";
+    if (target.status === "no-token") return "text-yellow-400";
+    if (target.status === "unsupported") return "text-yellow-400";
+    return "text-red-400";
   }
 
   // Track if we should close after abort completes
@@ -519,12 +943,18 @@
 
   // Computed properties
   const canProceedStep1 = $derived(
-    repoUrl.trim() && tokenValidated && !isValidatingToken && !isCheckingOwnership
+    repoUrl.trim().length > 0 && tokenValidated && !isValidatingToken && !isCheckingOwnership
   );
   const canProceedStep2 = $derived(
     repoMetadata !== null &&
       selectedRelays.length > 0 &&
-      (repoMetadata.isOwner || (!repoMetadata.isOwner && forkRepo && forkName.trim()))
+      (repoMetadata.isOwner ||
+        importTargets.some(
+          (target) => selectedImportTargetIds.includes(target.id) && target.status === "ready"
+        ))
+  );
+  const targetPreflightPending = $derived(
+    currentStep === 2 && importTargets.some((target) => target.status === "checking")
   );
   const isProgressComplete = $derived(currentProgress?.isComplete && completedResult !== null);
   const workflowScopeIssue = $derived.by(() =>
@@ -653,34 +1083,30 @@
               <div class="mb-4">
                 <div class="flex items-center justify-between mb-2">
                   <span class="text-sm font-medium text-gray-300">
-                    Token Validation for {selectedHost}
+                    Source Access for {selectedHost}
                   </span>
                   <button
                     type="button"
-                    onclick={validateToken}
+                    onclick={validateSourceToken}
                     disabled={isValidatingToken}
                     class="text-sm text-blue-400 hover:text-blue-300 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isValidatingToken ? "Validating..." : "Revalidate"}
+                    {isValidatingToken ? "Validating..." : "Validate"}
                   </button>
                 </div>
                 <div class="flex items-center space-x-2">
                   {#if tokenValidated}
                     <CheckCircle2 class="w-5 h-5 text-green-400" />
-                    <span class="text-sm text-green-400">
-                      Token validated for {selectedHost}
-                    </span>
+                    <span class="text-sm text-green-400">Source access validated</span>
                   {:else if tokenValidationError}
                     <AlertCircle class="w-5 h-5 text-red-400" />
                     <span class="text-sm text-red-400">{tokenValidationError}</span>
                   {:else if isValidatingToken}
                     <Loader2 class="w-5 h-5 text-gray-400 animate-spin" />
-                    <span class="text-sm text-gray-400">Validating token...</span>
+                    <span class="text-sm text-gray-400">Validating token access...</span>
                   {:else}
                     <AlertCircle class="w-5 h-5 text-yellow-400" />
-                    <span class="text-sm text-yellow-400">
-                      Click "Revalidate" to check your token
-                    </span>
+                    <span class="text-sm text-yellow-400">Validate source access to continue</span>
                   {/if}
                 </div>
               </div>
@@ -760,6 +1186,116 @@
               </div>
             </div>
 
+            <!-- Import Targets -->
+            <div class="mb-4">
+              <h4 class="text-sm font-medium text-gray-300 mb-2">Import Targets *</h4>
+              <p class="text-xs text-gray-400 mb-3">
+                Select where this repository should be created and pushed. One target failing will
+                not stop other targets from syncing.
+              </p>
+
+              <div class="mb-3 bg-gray-800 rounded-lg p-3 border border-gray-600 space-y-2">
+                <p class="text-xs font-medium text-gray-300">GRASP relays</p>
+                <div class="flex flex-wrap gap-2">
+                  {#each graspRelayUrls as relayUrl, idx (relayUrl + idx)}
+                    <span
+                      class="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full bg-blue-500/20 text-blue-200 border border-blue-500/30"
+                    >
+                      <span class="max-w-[220px] truncate" title={relayUrl}
+                        >{relayUrl.replace(/^wss?:\/\//, "")}</span
+                      >
+                      <button
+                        type="button"
+                        class="hover:text-red-300"
+                        onclick={() => removeGraspRelay(idx)}
+                        title="Remove GRASP relay"
+                      >
+                        x
+                      </button>
+                    </span>
+                  {/each}
+                  <div class="inline-flex items-center">
+                    <input
+                      type="text"
+                      bind:value={newGraspRelayUrl}
+                      placeholder="wss://relay.example.com"
+                      class="w-48 px-2 py-1 text-xs bg-gray-900 border border-gray-600 rounded-l-full text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      onkeydown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitNewGraspRelay();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      class="px-2 py-1 text-xs bg-blue-600 text-white rounded-r-full hover:bg-blue-700"
+                      onclick={commitNewGraspRelay}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                {#if graspServerOptions.length > 0}
+                  <div class="flex flex-wrap gap-1">
+                    {#each graspServerOptions.filter((opt) => !graspRelayUrls.includes(normalizeRelayUrl(opt))) as opt}
+                      <button
+                        type="button"
+                        class="px-2 py-1 text-xs rounded-full border border-dashed border-gray-500 text-gray-300 hover:border-blue-400 hover:text-blue-300"
+                        onclick={() => upsertGraspRelay(opt)}
+                      >
+                        + {opt.replace(/^wss?:\/\//, "")}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+
+              <div class="space-y-2 bg-gray-800 rounded-lg p-4 border border-gray-600">
+                {#if importTargets.length === 0}
+                  <p class="text-sm text-gray-400">No writable targets detected yet.</p>
+                  <p class="text-xs text-gray-500">
+                    Add host tokens in settings and/or add GRASP relay URLs above.
+                  </p>
+                {:else}
+                  {#each importTargets as target (target.id)}
+                    <label class="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        value={target.id}
+                        bind:group={selectedImportTargetIds}
+                        disabled={target.status !== "ready" || importState.isImporting}
+                        onchange={handleImportTargetSelectionChange}
+                        class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      />
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-sm text-white truncate">{target.label}</span>
+                          <span class={`text-xs ${targetStatusTone(target)}`}
+                            >{targetStatusLabel(target)}</span
+                          >
+                        </div>
+                        {#if target.detail}
+                          <p class="text-xs text-gray-400 mt-0.5">{target.detail}</p>
+                        {/if}
+                      </div>
+                    </label>
+                  {/each}
+                {/if}
+              </div>
+              {#if targetPreflightPending}
+                <p class="text-xs text-gray-400 mt-2">Running access preflight checks...</p>
+              {:else}
+                <p class="text-xs text-gray-400 mt-2">
+                  {#if repoMetadata.isOwner}
+                    Selecting import targets is optional for repositories you own.
+                  {:else}
+                    Select at least one target with Ready status.
+                  {/if}
+                </p>
+              {/if}
+            </div>
+
             <!-- Relay Selection -->
             <div class="mb-4">
               <div class="flex items-center gap-2 mb-2">
@@ -819,49 +1355,6 @@
                     </p>
                   </div>
                 </label>
-
-                <!-- Fork Repo (if not owner) - Mandatory -->
-                {#if !repoMetadata.isOwner}
-                  <div class="space-y-4">
-                    <div class="flex items-start space-x-3">
-                      <input
-                        type="checkbox"
-                        bind:checked={forkRepo}
-                        disabled={true}
-                        class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                      <div class="flex-1">
-                        <span class="text-sm text-white font-medium">
-                          Fork repo to {selectedHost || "platform"} (Required)
-                        </span>
-                        <p class="text-xs text-gray-400 mt-0.5">
-                          You don't own this repository. A fork is required to import it (you'll own
-                          the fork and can push changes).
-                        </p>
-                      </div>
-                    </div>
-                    <div class="ml-7 space-y-2">
-                      <label for="fork-name" class="block text-sm font-medium text-gray-300 mb-2">
-                        Fork Name *
-                      </label>
-                      <input
-                        id="fork-name"
-                        type="text"
-                        bind:value={forkName}
-                        placeholder={`imported-${repoMetadata.name}`}
-                        class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        aria-invalid={!forkName.trim()}
-                        aria-required="true"
-                      />
-                      {#if !forkName.trim()}
-                        <p class="mt-1 text-sm text-red-400 flex items-center gap-1">
-                          <AlertCircle class="w-4 h-4" />
-                          Fork name is required
-                        </p>
-                      {/if}
-                    </div>
-                  </div>
-                {/if}
 
                 <!-- Mirror Issues -->
                 <label class="flex items-start space-x-3">
@@ -1081,6 +1574,26 @@
                         {completedResult.prsImported} PRs, and {completedResult.profilesCreated} profiles
                         created.
                       </p>
+                      {#if completedResult.remotePushResults && completedResult.remotePushResults.length > 0}
+                        {@const remoteSuccessCount = completedResult.remotePushResults.filter(
+                          (r) => r.success
+                        ).length}
+                        {@const remoteFailureCount =
+                          completedResult.remotePushResults.length - remoteSuccessCount}
+                        <p class="text-sm text-green-300 mt-1">
+                          Remote sync: {remoteSuccessCount} succeeded{#if remoteFailureCount > 0}, {remoteFailureCount}
+                            failed{/if}.
+                        </p>
+                        {#if remoteFailureCount > 0}
+                          <div class="mt-2 space-y-1">
+                            {#each completedResult.remotePushResults.filter((r) => !r.success) as failedRemote (failedRemote.id)}
+                              <p class="text-xs text-yellow-300">
+                                {failedRemote.label}: {failedRemote.error || "Push failed"}
+                              </p>
+                            {/each}
+                          </div>
+                        {/if}
+                      {/if}
                     </div>
                   </div>
                 </div>

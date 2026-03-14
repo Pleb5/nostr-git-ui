@@ -27,6 +27,7 @@ import {
   type UserProfileMap,
   type CommentEventMap,
 } from "@nostr-git/core";
+import { parseRepoId } from "@nostr-git/core/utils";
 import type {
   RepoAnnouncementEvent,
   RepoStateEvent,
@@ -41,6 +42,13 @@ import type {
   RepoMetadata,
 } from "@nostr-git/core";
 import { nip19 } from "nostr-tools";
+import {
+  createGraspAnnouncementAndState,
+  normalizeGraspOrigins,
+  publishGraspRepoEvents,
+  toNpubOrSelf,
+  waitForGraspProvisioning,
+} from "../utils/grasp-pipeline.js";
 
 /**
  * Import phase identifiers for structured progress reporting.
@@ -49,6 +57,7 @@ import { nip19 } from "nostr-tools";
 export const IMPORT_PHASES = [
   "connecting",
   "repository",
+  "remotes",
   "issues",
   "pull_requests",
   "comments",
@@ -61,6 +70,7 @@ export type ImportPhase = (typeof IMPORT_PHASES)[number] | "complete";
 export const IMPORT_PHASE_LABELS: Record<ImportPhase, string> = {
   connecting: "Connecting",
   repository: "Repository",
+  remotes: "Remote sync",
   issues: "Issues",
   pull_requests: "Pull requests",
   comments: "Comments",
@@ -155,12 +165,57 @@ export interface ImportResult {
    * Final repository metadata (after forking if needed)
    */
   repo: RepoMetadata;
+
+  /**
+   * Result for each selected remote target push.
+   */
+  remotePushResults?: ImportRemotePushResult[];
+}
+
+export type ImportRemoteProvider = "github" | "gitlab" | "gitea" | "bitbucket" | "grasp";
+
+export interface ImportRemoteTarget {
+  id: string;
+  label: string;
+  provider: ImportRemoteProvider;
+  /** Hostname for git providers (e.g. github.com, gitlab.example.com) */
+  host?: string;
+  /** Pre-validated token for git providers */
+  token?: string;
+  /** Relay URL for GRASP targets */
+  relayUrl?: string;
+  /** Whether destination repository already exists */
+  existsAlready?: boolean;
+  /** Existing destination clone URL (when existsAlready=true) */
+  existingRemoteUrl?: string;
+  /** Existing destination web URL (when existsAlready=true) */
+  existingWebUrl?: string;
+}
+
+export interface ImportRemotePushResult {
+  id: string;
+  label: string;
+  provider: ImportRemoteProvider;
+  success: boolean;
+  remoteUrl?: string;
+  webUrl?: string;
+  error?: string;
+}
+
+export interface ImportRepoRollbackParams {
+  repoName: string;
+  relays: string[];
 }
 
 /**
  * Options for the import hook
  */
 export interface UseImportRepoOptions {
+  /**
+   * Git worker API instance used for clone/create/push operations.
+   */
+  workerApi?: any;
+
   /**
    * EventIO instance for publishing events
    */
@@ -181,6 +236,12 @@ export interface UseImportRepoOptions {
    * Function to publish events (required if eventIO not provided)
    */
   onPublishEvent?: (event: NostrEvent) => Promise<void>;
+
+  /**
+   * Roll back already-published repository announcement/state events.
+   * Used when remote sync totally fails after provisional GRASP publish.
+   */
+  onRollbackPublishedRepoEvents?: (params: ImportRepoRollbackParams) => Promise<void>;
 
   /**
    * Progress callback
@@ -257,6 +318,12 @@ interface ImportContext {
   onPublishEvent?: (event: NostrEvent) => Promise<void>;
   eventIO?: EventIO;
   onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>;
+
+  // Worker API for remote sync
+  workerApi?: any;
+
+  // Remote sync results
+  remotePushResults: ImportRemotePushResult[];
 }
 
 // ===== Batch Publishing Functions =====
@@ -375,6 +442,7 @@ async function initializeImportContext(
   withRateLimit: ImportContext["withRateLimit"],
   onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>,
   onPublishEvent?: (event: NostrEvent) => Promise<void>,
+  workerApi?: any,
   eventIO?: EventIO,
   onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>
 ): Promise<Partial<ImportContext>> {
@@ -407,6 +475,7 @@ async function initializeImportContext(
     eventQueue: [],
     onSignEvent,
     onPublishEvent,
+    workerApi,
     eventIO,
     onFetchEvents,
     withRateLimit,
@@ -456,33 +525,21 @@ async function validateTokenAndOwnership(
 }
 
 /**
- * Fork repository if needed (mandatory for non-owned repos)
+ * Ensure repository metadata is available for import source.
+ *
+ * We no longer require creating a source-host fork for non-owned repositories.
+ * Writable destinations are selected separately via import targets.
  */
 async function ensureForkedRepo(context: ImportContext, isOwner: boolean): Promise<RepoMetadata> {
-  if (isOwner) {
-    if (!context.finalRepo) {
-      throw new Error("Repository metadata is missing");
-    }
-    return context.finalRepo;
+  if (!context.finalRepo) {
+    throw new Error("Repository metadata is missing");
   }
 
-  if (!context.config.forkRepo) {
-    throw new Error(
-      "Forking is required for repositories you don't own. Please enable 'Fork repo' to proceed."
-    );
+  if (!isOwner) {
+    context.updateProgress("Using source repository metadata (no source-host fork required)...");
   }
 
-  context.updateProgress("Creating fork...");
-  context.abortController.throwIfAborted();
-
-  // Use user-provided fork name if available, otherwise default to {repo}-imported
-  const forkName = context.config.forkName || `${context.parsed.repo}-imported`;
-  const forkedRepo = await context.withRateLimit(context.platform, "POST", () =>
-    context.api.forkRepo(context.parsed.owner, context.parsed.repo, { name: forkName })
-  );
-
-  context.updateProgress(`Fork created: ${forkedRepo.fullName}`);
-  return forkedRepo;
+  return context.finalRepo;
 }
 
 /**
@@ -506,14 +563,13 @@ async function fetchRepoMetadata(
   if (!context.finalRepo) {
     throw new Error("Repository metadata is unexpectedly null");
   }
-  
+
   return context.finalRepo;
 }
 
 // ===== Profile Management Functions =====
 
-const NIP39_VERIFICATION_PREFIX =
-  "Verifying that I control the following Nostr public key: ";
+const NIP39_VERIFICATION_PREFIX = "Verifying that I control the following Nostr public key: ";
 // npub is "npub1" + 52 bech32 chars; use {50,60} for flexibility
 const NIP39_NPUB_REGEX =
   /Verifying that I control the following Nostr public key:\s*(npub1[a-zA-HJ-NP-Z0-9]{50,60})/;
@@ -696,29 +752,20 @@ async function lookupNip39BridgedPubkey(
   }
 
   try {
-    const events = await fetchEvents([
-      { kinds: [0], "#i": [identity], limit: 1 },
-    ]);
+    const events = await fetchEvents([{ kinds: [0], "#i": [identity], limit: 1 }]);
 
     if (events.length > 0) {
-      const profile = events.reduce((a, b) =>
-        (a.created_at > b.created_at ? a : b)
-      );
+      const profile = events.reduce((a, b) => (a.created_at > b.created_at ? a : b));
 
-      const iTag = profile.tags?.find(
-        (t) => t[0] === "i" && t[1] === identity
-      ) as [string, string, string] | undefined;
+      const iTag = profile.tags?.find((t) => t[0] === "i" && t[1] === identity) as
+        | [string, string, string]
+        | undefined;
       const proof = iTag?.[2];
 
       if (proof) {
         const verified =
           platform === "github"
-            ? await verifyGitHubGistProof(
-                username,
-                proof,
-                profile.pubkey,
-                context.withRateLimit
-              )
+            ? await verifyGitHubGistProof(username, proof, profile.pubkey, context.withRateLimit)
             : await verifyGitLabSnippetProof(
                 username,
                 proof,
@@ -822,9 +869,7 @@ async function fetchAndPublishIssuesStreaming(
     const filteredIssues = pageIssues
       .filter((issue) => !issue.isPullRequest)
       .filter((issue) =>
-        context.config.sinceDate
-          ? new Date(issue.createdAt) >= context.config.sinceDate!
-          : true
+        context.config.sinceDate ? new Date(issue.createdAt) >= context.config.sinceDate! : true
       );
 
     // Process and publish each issue immediately
@@ -833,7 +878,7 @@ async function fetchAndPublishIssuesStreaming(
 
       // Generate profile if needed (incremental)
       await ensureUserProfile(context, issue.author.login, issue.author.avatarUrl);
-      
+
       // Also generate profile for the user who closed the issue (if different from author)
       if (issue.closedBy && issue.closedBy.login !== issue.author.login) {
         await ensureUserProfile(context, issue.closedBy.login, issue.closedBy.avatarUrl);
@@ -874,7 +919,7 @@ async function fetchAndPublishIssuesStreaming(
 
         // Generate and publish status events immediately
         const originalDate =
-          issue.state === 'open' ? issue.createdAt : (issue.closedAt ?? issue.createdAt);
+          issue.state === "open" ? issue.createdAt : (issue.closedAt ?? issue.createdAt);
         const statusEvent = convertIssueStatusToEvent(
           signedIssueEvent.id,
           issue.state,
@@ -886,15 +931,13 @@ async function fetchAndPublishIssuesStreaming(
         context.abortController.throwIfAborted();
 
         // Sign status event with the profile of the user who created or closed the issue
-        const signerUser = issue.state === 'open' 
-          ? issue.author 
-          : (issue.closedBy || issue.author);
-        
+        const signerUser = issue.state === "open" ? issue.author : issue.closedBy || issue.author;
+
         const signerProfileKey = getProfileMapKey(context.platform, signerUser.login);
         const signerProfile = context.userProfiles.get(signerProfileKey);
         if (!signerProfile) {
           throw new Error(
-            `Missing profile for issue ${issue.state === 'open' ? 'creator' : 'closer'} ${signerUser.login}; cannot sign status event for issue #${issue.number}`
+            `Missing profile for issue ${issue.state === "open" ? "creator" : "closer"} ${signerUser.login}; cannot sign status event for issue #${issue.number}`
           );
         }
         const signedStatusEvent = signEvent(statusEvent, signerProfile.privkey);
@@ -904,7 +947,6 @@ async function fetchAndPublishIssuesStreaming(
 
         context.currentTimestamp += 1;
         statusEventsPublished++;
-        
 
         // Update progress with count of published issues
         context.updateProgress(`Publishing issues... (${totalIssues} published)`, totalIssues);
@@ -932,7 +974,7 @@ async function fetchAndPublishIssuesStreaming(
  * Processes and publishes each PR immediately, keeping only ID mappings in memory
  */
 async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<number> {
-  console.log('[DEBUG] fetchAndPublishPRsStreaming START, finalRepo:', context.finalRepo?.name);
+  console.log("[DEBUG] fetchAndPublishPRsStreaming START, finalRepo:", context.finalRepo?.name);
   context.updateProgress("Fetching and publishing pull requests...");
   context.abortController.throwIfAborted();
 
@@ -941,7 +983,7 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
   let totalPRs = 0;
 
   while (true) {
-    console.log('[DEBUG] PR loop iteration, page:', page, 'finalRepo:', context.finalRepo?.name);
+    console.log("[DEBUG] PR loop iteration, page:", page, "finalRepo:", context.finalRepo?.name);
     context.abortController.throwIfAborted();
 
     const sinceDate = context.config.sinceDate ? context.config.sinceDate.toISOString() : undefined;
@@ -969,7 +1011,7 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
 
     // Process and publish each PR immediately
     for (const pr of filteredPrs) {
-      console.log('[DEBUG] Processing PR #', pr.number, 'finalRepo:', context.finalRepo?.name);
+      console.log("[DEBUG] Processing PR #", pr.number, "finalRepo:", context.finalRepo?.name);
       context.abortController.throwIfAborted();
 
       // Generate profile if needed (incremental)
@@ -1005,7 +1047,10 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
       }
 
       // Convert single PR to Nostr event (with title, body, branch, base, labels, commits)
-      console.log('[DEBUG] About to convert PR to Nostr event, finalRepo:', context.finalRepo?.name);
+      console.log(
+        "[DEBUG] About to convert PR to Nostr event, finalRepo:",
+        context.finalRepo?.name
+      );
       const prEventData = convertPullRequestsToNostrEvents(
         [pr], // Single PR
         context.repoAddr,
@@ -1362,6 +1407,263 @@ async function fetchAndPublishCommentsStreaming(
   return totalCommentsPublished;
 }
 
+// ===== Remote Sync Functions =====
+
+function getProviderBaseUrl(provider: ImportRemoteProvider, host?: string): string | undefined {
+  if (!host) return undefined;
+  const normalizedHost = host.toLowerCase();
+
+  if (provider === "github") {
+    if (normalizedHost === "github.com") return undefined;
+    return `https://${host}/api/v3`;
+  }
+  if (provider === "gitlab") {
+    if (normalizedHost === "gitlab.com") return undefined;
+    return `https://${host}/api/v4`;
+  }
+  if (provider === "gitea") {
+    return `https://${host}/api/v1`;
+  }
+  if (provider === "bitbucket") {
+    if (normalizedHost === "bitbucket.org") return undefined;
+    return `https://${host}/api/2.0`;
+  }
+
+  return undefined;
+}
+
+function guessWebUrl(remoteUrl: string | undefined): string | undefined {
+  if (!remoteUrl) return undefined;
+  if (/^wss?:\/\//i.test(remoteUrl)) {
+    return remoteUrl
+      .replace(/^wss:\/\//i, "https://")
+      .replace(/^ws:\/\//i, "http://")
+      .replace(/\.git$/, "");
+  }
+  return remoteUrl.replace(/\.git$/, "");
+}
+
+async function syncRepositoryToRemotes(
+  context: ImportContext,
+  sourceUrl: string,
+  sourceToken: string,
+  targets: ImportRemoteTarget[]
+): Promise<ImportRemotePushResult[]> {
+  if (!targets.length) return [];
+
+  if (!context.workerApi) {
+    return targets.map((target) => ({
+      id: target.id,
+      label: target.label,
+      provider: target.provider,
+      success: false,
+      error: "Git worker unavailable for remote sync",
+    }));
+  }
+
+  const repoName = context.finalRepo?.name || context.parsed.repo;
+  const repoDescription = context.finalRepo?.description || "";
+  const targetBranch = context.finalRepo?.defaultBranch || "main";
+  const localRepoId = parseRepoId(
+    `${context.userPubkey}:import-${repoName}-${context.importTimestamp}`
+  );
+  const localCloneDir = `/repos/${localRepoId}`;
+
+  context.updateProgress("Preparing local mirror for remote sync...");
+  context.abortController.throwIfAborted();
+
+  await context.workerApi.cloneRemoteRepo({
+    url: sourceUrl,
+    dir: localCloneDir,
+    token: sourceToken,
+  });
+
+  const orderedTargets = [...targets].sort((a, b) => {
+    const aIsGrasp = a.provider === "grasp" ? 1 : 0;
+    const bIsGrasp = b.provider === "grasp" ? 1 : 0;
+    return aIsGrasp - bIsGrasp;
+  });
+  const hasAnyNonGraspTarget = orderedTargets.some((target) => target.provider !== "grasp");
+
+  const results: ImportRemotePushResult[] = [];
+
+  for (let i = 0; i < orderedTargets.length; i++) {
+    const target = orderedTargets[i];
+    context.abortController.throwIfAborted();
+    context.updateProgress(`Syncing target ${i + 1}/${orderedTargets.length}: ${target.label}`);
+
+    try {
+      if (target.provider === "grasp") {
+        if (!target.relayUrl) {
+          throw new Error("Missing relay URL");
+        }
+
+        let remoteUrl = target.existingRemoteUrl;
+        let webUrl = target.existingWebUrl;
+
+        if (!remoteUrl) {
+          const hasSuccessfulNonGraspPush = results.some(
+            (result) => result.success && result.provider !== "grasp"
+          );
+
+          if (hasAnyNonGraspTarget && !hasSuccessfulNonGraspPush) {
+            throw new Error(
+              "Skipping GRASP repo-event provisioning because no non-GRASP target succeeded"
+            );
+          }
+        }
+
+        if (!remoteUrl) {
+          const createResult = await context.workerApi.createRemoteRepo({
+            provider: "grasp",
+            token: context.userPubkey,
+            name: repoName,
+            description: repoDescription,
+            isPrivate: false,
+            baseUrl: target.relayUrl,
+          });
+
+          if (!createResult?.success || !createResult?.remoteUrl) {
+            throw new Error(createResult?.error || "Failed to create GRASP repository");
+          }
+
+          if (!context.onPublishEvent) {
+            throw new Error(
+              "Missing onPublishEvent callback required for GRASP target provisioning"
+            );
+          }
+
+          const graspEvents = createGraspAnnouncementAndState({
+            relayUrl: target.relayUrl,
+            ownerPubkey: context.userPubkey,
+            repoName,
+            description: repoDescription,
+            relays: Array.from(
+              new Set([
+                normalizeGraspOrigins(target.relayUrl).wsOrigin,
+                ...(context.config.relays || []),
+              ])
+            ),
+            maintainers: [context.userPubkey],
+          });
+
+          await publishGraspRepoEvents(
+            context.onPublishEvent as any,
+            graspEvents.announcementEvent,
+            graspEvents.stateEvent
+          );
+
+          await waitForGraspProvisioning({
+            relayUrl: target.relayUrl,
+            userPubkey: context.userPubkey,
+            owner: toNpubOrSelf(context.userPubkey),
+            repoName,
+            maxAttempts: 12,
+            delayMs: 1500,
+          });
+
+          remoteUrl = createResult.remoteUrl;
+          webUrl = guessWebUrl(createResult.remoteUrl);
+        }
+
+        if (!remoteUrl) {
+          throw new Error("No GRASP remote URL available for push");
+        }
+
+        const pushResult = await context.workerApi.pushToRemote({
+          repoId: localRepoId,
+          remoteUrl,
+          branch: targetBranch,
+          token: context.userPubkey,
+          provider: "grasp",
+        });
+
+        if (!pushResult?.success) {
+          throw new Error(pushResult?.error || "Failed to push to GRASP target");
+        }
+
+        results.push({
+          id: target.id,
+          label: target.label,
+          provider: target.provider,
+          success: true,
+          remoteUrl,
+          webUrl: webUrl || guessWebUrl(remoteUrl),
+        });
+        continue;
+      }
+
+      if (!target.token) {
+        throw new Error("Missing token for target host");
+      }
+
+      let remoteUrl = target.existingRemoteUrl;
+      let webUrl = target.existingWebUrl;
+
+      if (!remoteUrl) {
+        const createResult = await context.workerApi.createRemoteRepo({
+          provider: target.provider,
+          token: target.token,
+          name: repoName,
+          description: repoDescription,
+          isPrivate: false,
+          baseUrl: getProviderBaseUrl(target.provider, target.host),
+        });
+
+        if (!createResult?.success || !createResult?.remoteUrl) {
+          throw new Error(createResult?.error || "Failed to create remote repository");
+        }
+
+        remoteUrl = createResult.remoteUrl;
+        webUrl = guessWebUrl(createResult.remoteUrl);
+      }
+
+      if (!remoteUrl) {
+        throw new Error("No remote URL available for push");
+      }
+
+      const pushResult = await context.workerApi.safePushToRemote({
+        repoId: localRepoId,
+        remoteUrl,
+        branch: targetBranch,
+        token: target.token,
+        provider: target.provider,
+        preflight: {
+          blockIfUncommitted: false,
+          requireUpToDate: false,
+          blockIfShallow: false,
+        },
+      });
+
+      if (!pushResult?.success) {
+        if (pushResult?.requiresConfirmation) {
+          throw new Error(pushResult?.warning || "Push requires confirmation");
+        }
+        throw new Error(pushResult?.error || "Push failed");
+      }
+
+      results.push({
+        id: target.id,
+        label: target.label,
+        provider: target.provider,
+        success: true,
+        remoteUrl,
+        webUrl: webUrl || guessWebUrl(remoteUrl),
+      });
+    } catch (error) {
+      results.push({
+        id: target.id,
+        label: target.label,
+        provider: target.provider,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return results;
+}
+
 // ===== Event Conversion Functions =====
 
 /**
@@ -1391,6 +1693,37 @@ function convertRepoEvents(context: ImportContext): {
     context.userPubkey,
     context.importTimestamp
   );
+
+  const successfulRemoteUrls = Array.from(
+    new Set(
+      context.remotePushResults
+        .filter((result) => result.success)
+        .map((result) => result.remoteUrl)
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+  const successfulWebUrls = Array.from(
+    new Set(
+      context.remotePushResults
+        .filter((result) => result.success)
+        .map((result) => result.webUrl)
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+
+  if (successfulRemoteUrls.length > 0) {
+    repoAnnouncementEventTemplate.tags = [
+      ...repoAnnouncementEventTemplate.tags.filter((tag) => tag[0] !== "clone"),
+      ["clone", ...successfulRemoteUrls],
+    ];
+  }
+
+  if (successfulWebUrls.length > 0) {
+    repoAnnouncementEventTemplate.tags = [
+      ...repoAnnouncementEventTemplate.tags.filter((tag) => tag[0] !== "web"),
+      ["web", ...successfulWebUrls],
+    ];
+  }
 
   const repoStateEventTemplate = convertRepoToStateEvent(
     context.finalRepo,
@@ -1478,8 +1811,17 @@ async function publishProfileEvents(context: ImportContext): Promise<void> {
  * Svelte 5 composable for importing repositories from Git hosting providers
  */
 export function useImportRepo(options: UseImportRepoOptions) {
-  const { onProgress, onImportCompleted, userPubkey, eventIO, onFetchEvents, onSignEvent, onPublishEvent } =
-    options;
+  const {
+    onProgress,
+    onImportCompleted,
+    userPubkey,
+    workerApi,
+    eventIO,
+    onFetchEvents,
+    onSignEvent,
+    onPublishEvent,
+    onRollbackPublishedRepoEvents,
+  } = options;
 
   // Validate that we have a way to sign user events (repo events, status events)
   if (!onSignEvent && !eventIO) {
@@ -1528,7 +1870,8 @@ export function useImportRepo(options: UseImportRepoOptions) {
   async function importRepository(
     repoUrl: string,
     token: string,
-    config: ImportConfig = DEFAULT_IMPORT_CONFIG
+    config: ImportConfig = DEFAULT_IMPORT_CONFIG,
+    remoteTargets: ImportRemoteTarget[] = []
   ): Promise<ImportResult> {
     if (isImporting) {
       throw new Error("Import operation already in progress");
@@ -1545,6 +1888,9 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
     try {
       // Initialize context
+      let signedRepoAnnouncement: NostrEvent | null = null;
+      let signedRepoState: NostrEvent | null = null;
+
       const partialContext = await initializeImportContext(
         repoUrl,
         token,
@@ -1555,6 +1901,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         withRateLimitFn,
         onSignEvent,
         onPublishEvent,
+        workerApi,
         eventIO,
         onFetchEvents
       );
@@ -1579,6 +1926,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         issuesPublished: 0,
         prsPublished: 0,
         commentsPublished: 0,
+        remotePushResults: [],
       } as ImportContext;
 
       // Validation & Repository Setup
@@ -1588,9 +1936,15 @@ export function useImportRepo(options: UseImportRepoOptions) {
         throw new Error("Failed to fetch repository information");
       }
 
+      if (!isOwner && remoteTargets.length === 0) {
+        throw new Error(
+          "At least one writable import target is required for repositories you do not own"
+        );
+      }
+
       // Set initial repo
       context.finalRepo = ownershipRepo;
-      console.log('[DEBUG] Set initial finalRepo:', context.finalRepo?.name);
+      console.log("[DEBUG] Set initial finalRepo:", context.finalRepo?.name);
 
       currentPhaseRef.current = "repository";
       // Fork if needed (this updates context.finalRepo)
@@ -1599,15 +1953,15 @@ export function useImportRepo(options: UseImportRepoOptions) {
         throw new Error("Failed to ensure repository access");
       }
       context.finalRepo = forkedOrOriginalRepo;
-      console.log('[DEBUG] After fork/ensure, finalRepo:', context.finalRepo?.name);
-      
+      console.log("[DEBUG] After fork/ensure, finalRepo:", context.finalRepo?.name);
+
       // Fetch full metadata if needed
       const repoWithMetadata = await fetchRepoMetadata(context, ownershipRepo);
       if (!repoWithMetadata) {
         throw new Error("Failed to fetch repository metadata");
       }
       context.finalRepo = repoWithMetadata;
-      console.log('[DEBUG] After metadata fetch, finalRepo:', context.finalRepo?.name);
+      console.log("[DEBUG] After metadata fetch, finalRepo:", context.finalRepo?.name);
 
       // Final safety check before proceeding
       if (!context.finalRepo) {
@@ -1615,20 +1969,57 @@ export function useImportRepo(options: UseImportRepoOptions) {
       }
 
       // Initialize repo address and timestamps
-      console.log('[DEBUG] About to access finalRepo.name, finalRepo is:', context.finalRepo);
+      console.log("[DEBUG] About to access finalRepo.name, finalRepo is:", context.finalRepo);
       const repoName = context.finalRepo.fullName.split("/").pop() || context.finalRepo.name;
-      console.log('[DEBUG] Successfully got repoName:', repoName);
+      console.log("[DEBUG] Successfully got repoName:", repoName);
       context.repoAddr = `30617:${userPubkey}:${repoName}`;
       context.startTimestamp = context.importTimestamp - 3600; // Start from 1 hour ago
       context.currentTimestamp = context.startTimestamp;
 
-      // Step 1: Convert and publish repo events (still under repository phase)
-      console.log('[DEBUG] Before convertRepoEvents, finalRepo:', context.finalRepo?.name);
-      const repoEvents = convertRepoEvents(context);
-      console.log('[DEBUG] After convertRepoEvents, finalRepo:', context.finalRepo?.name);
-      const { announcement: signedRepoAnnouncement, state: signedRepoState } =
-        await publishRepoEvents(context, repoEvents);
-      console.log('[DEBUG] After publishRepoEvents, finalRepo:', context.finalRepo?.name);
+      // Sync git data to selected remote targets (continue on individual failures)
+      if (remoteTargets.length > 0) {
+        currentPhaseRef.current = "remotes";
+        const sourceCloneUrl = context.finalRepo.cloneUrl || repoUrl;
+        context.remotePushResults = await syncRepositoryToRemotes(
+          context,
+          sourceCloneUrl,
+          token,
+          remoteTargets
+        );
+
+        const successfulTargets = context.remotePushResults.filter((result) => result.success);
+        if (successfulTargets.length === 0) {
+          const hasGraspTarget = remoteTargets.some((target) => target.provider === "grasp");
+          let rollbackWarning = "";
+
+          if (hasGraspTarget && onRollbackPublishedRepoEvents) {
+            const rollbackRelays = Array.from(
+              new Set([
+                ...(context.config.relays || []),
+                ...remoteTargets
+                  .filter((target) => target.provider === "grasp" && target.relayUrl)
+                  .map((target) => normalizeGraspOrigins(target.relayUrl as string).wsOrigin),
+              ])
+            );
+
+            try {
+              await onRollbackPublishedRepoEvents({
+                repoName,
+                relays: rollbackRelays,
+              });
+            } catch (rollbackError) {
+              rollbackWarning = `; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
+            }
+          }
+
+          const failedSummary = context.remotePushResults
+            .map((result) => `${result.label}: ${result.error || "push failed"}`)
+            .join("; ");
+          throw new Error(
+            `Failed to push to all selected import targets (${failedSummary})${rollbackWarning}`
+          );
+        }
+      }
 
       // Step 2: Stream issues (fetch, process, publish immediately)
       let issuesImported = 0;
@@ -1643,9 +2034,9 @@ export function useImportRepo(options: UseImportRepoOptions) {
       let prsImported = 0;
       if (config.mirrorPullRequests) {
         currentPhaseRef.current = "pull_requests";
-        console.log('[DEBUG] Before PRs, finalRepo:', context.finalRepo?.name);
+        console.log("[DEBUG] Before PRs, finalRepo:", context.finalRepo?.name);
         prsImported = await fetchAndPublishPRsStreaming(context);
-        console.log('[DEBUG] After PRs, finalRepo:', context.finalRepo?.name);
+        console.log("[DEBUG] After PRs, finalRepo:", context.finalRepo?.name);
         completedCountsRef.current.pull_requests = prsImported;
       }
 
@@ -1653,11 +2044,11 @@ export function useImportRepo(options: UseImportRepoOptions) {
       let commentsImported = 0;
       if (config.mirrorComments) {
         currentPhaseRef.current = "comments";
-        console.log('[DEBUG] Before comments, finalRepo:', context.finalRepo?.name);
+        console.log("[DEBUG] Before comments, finalRepo:", context.finalRepo?.name);
         const issueNumbers = new Set(Array.from(context.issueEventIdMap.keys()));
         const prNumbers = new Set(Array.from(context.prEventIdMap.keys()));
         commentsImported = await fetchAndPublishCommentsStreaming(context, issueNumbers, prNumbers);
-        console.log('[DEBUG] After comments, finalRepo:', context.finalRepo?.name);
+        console.log("[DEBUG] After comments, finalRepo:", context.finalRepo?.name);
         completedCountsRef.current.comments = commentsImported;
       }
 
@@ -1668,14 +2059,28 @@ export function useImportRepo(options: UseImportRepoOptions) {
       // Final flush: ensure all queued events are published before completing
       await flushEventQueue(context);
 
+      // Publish repo announcement/state at the end (after remote sync and mirror data)
+      currentPhaseRef.current = "repository";
+      console.log("[DEBUG] Before convertRepoEvents, finalRepo:", context.finalRepo?.name);
+      const repoEvents = convertRepoEvents(context);
+      console.log("[DEBUG] After convertRepoEvents, finalRepo:", context.finalRepo?.name);
+      const publishedRepoEvents = await publishRepoEvents(context, repoEvents);
+      signedRepoAnnouncement = publishedRepoEvents.announcement;
+      signedRepoState = publishedRepoEvents.state;
+      console.log("[DEBUG] After publishRepoEvents, finalRepo:", context.finalRepo?.name);
+
       // Complete
       setProgress("complete", "Import completed successfully!");
 
       // Final validation before returning result
-      console.log('[DEBUG] Before creating result, finalRepo:', context.finalRepo);
+      console.log("[DEBUG] Before creating result, finalRepo:", context.finalRepo);
       if (!context.finalRepo) {
-        console.error('[DEBUG] ERROR: finalRepo is null when creating result!');
+        console.error("[DEBUG] ERROR: finalRepo is null when creating result!");
         throw new Error("Repository metadata was lost during import");
+      }
+
+      if (!signedRepoAnnouncement || !signedRepoState) {
+        throw new Error("Repository events were not published");
       }
 
       const result: ImportResult = {
@@ -1686,6 +2091,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         prsImported,
         profilesCreated: context.userProfiles.size,
         repo: context.finalRepo,
+        remotePushResults: context.remotePushResults,
       };
 
       onImportCompleted?.(result);

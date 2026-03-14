@@ -15,6 +15,8 @@ export {
   useImportRepo,
   type ImportProgress,
   type ImportResult,
+  type ImportRemoteTarget,
+  type ImportRemotePushResult,
   type ImportPhase,
   IMPORT_PHASES,
   IMPORT_PHASE_LABELS,
@@ -30,7 +32,4 @@ export { pushRepoAlert } from "./alertsAdapter";
 export * from "./utils/eventKinds";
 // Export hash utilities
 export { sha256, md5 } from "./utils/hash";
-export {
-  prChangeToParseDiffFile,
-  type PrChangeInput,
-} from "./utils/prDiffUtils";
+export { prChangeToParseDiffFile, type PrChangeInput } from "./utils/prDiffUtils";
