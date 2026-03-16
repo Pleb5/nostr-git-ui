@@ -447,6 +447,8 @@ export class WorkerManager {
     repoId: string;
     cloneUrls: string[];
     branch?: string;
+    requireRemoteSync?: boolean;
+    requireTrackingRef?: boolean;
   }): Promise<any> {
     await this.initialize();
     return this.execute("syncWithRemote", params);
