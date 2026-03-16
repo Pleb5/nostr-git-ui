@@ -45,6 +45,8 @@
   let isSubmitting = $state(false);
   let sourceBranches = $state<Array<{ name: string }>>([]);
   let sourceBranchesLoading = $state(false);
+  let sourceBranchesError = $state("");
+  let forkFetchRetryNonce = $state(0);
   let prPreview = $state<{
     success: boolean;
     error?: string;
@@ -58,34 +60,50 @@
 
   const commonLabels = ["enhancement", "bug", "documentation", "ready-for-review"];
 
-  // Source branches: from repo.refs when same-repo, from fork when fromFork
-  $effect(() => {
-    if (!fromFork) {
-      sourceBranches = targetBranches;
-      sourceBranchesLoading = false;
-      return;
-    }
-    const urls = cloneUrlsText
+  const parseForkCloneUrls = () =>
+    cloneUrlsText
       .split(/\n/)
       .map((s) => s.trim())
       .filter(Boolean);
+
+  function handleRetryForkFetch() {
+    if (!fromFork) return;
+    sourceBranchesError = "";
+    forkFetchRetryNonce += 1;
+  }
+
+  // Source branches: from repo.refs when same-repo, from fork when fromFork
+  $effect(() => {
+    const retryNonce = forkFetchRetryNonce;
+    void retryNonce;
+    if (!fromFork) {
+      sourceBranches = targetBranches;
+      sourceBranchesLoading = false;
+      sourceBranchesError = "";
+      return;
+    }
+    const urls = parseForkCloneUrls();
     if (urls.length === 0 || !repo.workerManager) {
       sourceBranches = [];
       sourceBranchesLoading = false;
+      sourceBranchesError = "";
       return;
     }
     let cancelled = false;
     sourceBranchesLoading = true;
+    sourceBranchesError = "";
     repo.workerManager
       .listBranchesFromUrls({ cloneUrls: urls })
       .then((res) => {
         if (cancelled) return;
         sourceBranches = (res?.branches || []).map((name) => ({ name }));
+        sourceBranchesError = res?.error || "";
         sourceBranchesLoading = false;
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
         sourceBranches = [];
+        sourceBranchesError = err instanceof Error ? err.message : "Failed to load fork branches";
         sourceBranchesLoading = false;
       });
     return () => {
@@ -96,6 +114,8 @@
   // Fetch PR preview when both branches selected.
   // For same-repo PRs, source === target is invalid. For fork PRs, both can have the same name (e.g. main→main).
   $effect(() => {
+    const retryNonce = forkFetchRetryNonce;
+    void retryNonce;
     const sameNameInvalid = !fromFork && sourceBranch === targetBranch;
     if (!repo.workerManager || !sourceBranch || !targetBranch || sameNameInvalid) {
       prPreview = null;
@@ -105,12 +125,7 @@
     previewLoading = true;
     prPreview = null;
     const targetUrls = cloneUrls;
-    const sourceUrls = fromFork
-      ? cloneUrlsText
-          .split(/\n/)
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [];
+    const sourceUrls = fromFork ? parseForkCloneUrls() : [];
     const cloneUrlsForPreview = fromFork ? targetUrls : targetUrls;
     if (fromFork && sourceUrls.length === 0) {
       prPreview = {
@@ -140,7 +155,7 @@
         if (cancelled) return;
         prPreview = {
           success: false,
-          error: err?.message,
+          error: err?.message || "Failed to load PR preview",
           commits: [],
           commitOids: [],
           filesChanged: [],
@@ -178,12 +193,7 @@
     e.preventDefault();
     errors = {};
     isSubmitting = true;
-    const urls = fromFork
-      ? cloneUrlsText
-          .split(/\n/)
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : cloneUrls;
+    const urls = fromFork ? parseForkCloneUrls() : cloneUrls;
     const result = prSchema.safeParse({
       subject,
       content,
@@ -261,6 +271,25 @@
       <p class="mt-1 text-xs text-muted-foreground">
         Your fork's clone URL. Source branches will be loaded from here.
       </p>
+      <div class="mt-2 flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onclick={handleRetryForkFetch}
+          disabled={!cloneUrlsText.trim() || sourceBranchesLoading || previewLoading}
+        >
+          Retry fork fetch
+        </Button>
+        {#if sourceBranchesLoading}
+          <span class="flex items-center gap-1 text-xs text-muted-foreground">
+            <Loader2 class="h-3 w-3 animate-spin" />
+            Refreshing fork branches...
+          </span>
+        {/if}
+      </div>
+      {#if sourceBranchesError}
+        <div class="mt-1 text-sm text-destructive">{sourceBranchesError}</div>
+      {/if}
       {#if errors.cloneUrls}
         <div class="mt-1 text-sm text-red-500">{errors.cloneUrls}</div>
       {/if}
@@ -320,7 +349,19 @@
           <span>Loading commits and changes…</span>
         </div>
       {:else if prPreview?.error}
-        <div class="text-sm text-destructive py-2">{prPreview.error}</div>
+        <div class="space-y-2 py-2">
+          <div class="text-sm text-destructive">{prPreview.error}</div>
+          {#if fromFork}
+            <Button
+              type="button"
+              variant="outline"
+              onclick={handleRetryForkFetch}
+              disabled={sourceBranchesLoading || previewLoading}
+            >
+              Retry fork fetch
+            </Button>
+          {/if}
+        </div>
       {:else if prPreview?.success}
         <div class="space-y-3 text-sm">
           {#if prPreview.commits?.length}

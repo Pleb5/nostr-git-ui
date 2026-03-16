@@ -668,7 +668,9 @@ export class WorkerManager {
    * List branch names from clone URLs without cloning (RPC).
    * Used when creating PRs from forks to populate source branch dropdown.
    */
-  async listBranchesFromUrls(params: { cloneUrls: string[] }): Promise<{ branches: string[] }> {
+  async listBranchesFromUrls(params: {
+    cloneUrls: string[];
+  }): Promise<{ branches: string[]; error?: string }> {
     await this.initialize();
     return this.execute("listBranchesFromUrls", params);
   }
