@@ -116,14 +116,7 @@
   let mergeCommit = $state("");
   let appliedCommits = $state("");
   let isPublishing = $state(false);
-  let lastPublishTime = $state(0);
   let publishError = $state("");
-
-  // Rate limit (3 seconds cooldown)
-  const COOLDOWN_MS = 3000;
-  const canPublish = $derived.by(() => {
-    return Date.now() - lastPublishTime > COOLDOWN_MS;
-  });
 
   // UI: show/hide history
   let showHistory = $state(false);
@@ -237,11 +230,6 @@
   };
 
   const handlePublish = async () => {
-    if (!canPublish) {
-      publishError = "Please wait before publishing again";
-      return;
-    }
-
     if (isPublishing) return;
 
     console.log("[Status] Publishing status", { selectedState, rootId, rootKind });
@@ -316,7 +304,6 @@
         await onPublish(statusEvent);
       }
 
-      lastPublishTime = Date.now();
       showEditor = false;
 
       console.log("[Status] Status published successfully");
@@ -329,11 +316,6 @@
   };
 
   const handleAdopt = async (suggestion: StatusEvent) => {
-    if (!canPublish) {
-      publishError = "Please wait before publishing again";
-      return;
-    }
-
     console.log("[Status] Adopting suggestion", suggestion);
 
     const state = kindToState(suggestion.kind);
@@ -508,15 +490,10 @@
           {/if}
 
           <div class="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
-            <span class="text-[10px] sm:text-xs text-muted-foreground text-center sm:text-left">
-              {canPublish
-                ? ""
-                : `Wait ${Math.ceil((COOLDOWN_MS - (Date.now() - lastPublishTime)) / 1000)}s`}
-            </span>
             <Button
               size="sm"
               onclick={handlePublish}
-              disabled={isPublishing || !canPublish}
+              disabled={isPublishing}
               class="w-full sm:w-auto text-xs sm:text-sm min-h-[36px] sm:min-h-0"
             >
               {isPublishing ? "Publishing..." : "Publish Status"}
@@ -602,7 +579,7 @@
                     size="sm"
                     variant="ghost"
                     onclick={() => handleAdopt(event)}
-                    disabled={!canPublish || isPublishing}
+                    disabled={isPublishing}
                     class="w-full sm:w-auto text-xs sm:text-sm min-h-[32px] sm:min-h-0 flex-shrink-0"
                   >
                     Adopt
