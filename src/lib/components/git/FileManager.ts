@@ -5,6 +5,7 @@ import { parseRepoAnnouncementEvent } from "@nostr-git/core/events";
 import { toast } from "$lib/stores/toast";
 import type { VendorReadRouter } from "./VendorReadRouter";
 import { createTimeoutError } from "@nostr-git/core/errors";
+import { normalizeGitRefName } from "./branch-ref";
 
 /**
  * Configuration options for FileManager
@@ -105,7 +106,8 @@ export interface FileListingResult {
 export class FileManager {
   private workerManager: WorkerManager;
   private cacheManager?: CacheManager;
-  private config: Required<Omit<FileManagerConfig, 'vendorReadRouter'>> & Pick<FileManagerConfig, 'vendorReadRouter'>;
+  private config: Required<Omit<FileManagerConfig, "vendorReadRouter">> &
+    Pick<FileManagerConfig, "vendorReadRouter">;
   private vendorReadRouter?: VendorReadRouter;
 
   // Cache keys for different types of file operations
@@ -246,8 +248,7 @@ export class FileManager {
       // Apply backoff on failure for this key
       this.failureBackoffUntil.set(cacheKey, Date.now() + FileManager.FAILURE_BACKOFF_MS);
       throw error;
-    }
-    finally {
+    } finally {
       this.inFlightListings.delete(cacheKey);
     }
   }
@@ -314,9 +315,7 @@ export class FileManager {
    * Get default branch name from full branch reference
    */
   private getShortBranchName(fullBranch?: string): string {
-    const shortName = (fullBranch || "").split("/").pop();
-    // If we have a short name, use it; otherwise defer to core's robust branch resolution
-    return shortName || "";
+    return normalizeGitRefName(fullBranch);
   }
 
   /**
@@ -418,7 +417,7 @@ export class FileManager {
           return {
             files,
             path: vendorRes.path || path,
-            ref: vendorRes.ref || (shortBranch || "").split("/").pop() || "",
+            ref: vendorRes.ref || shortBranch || "",
             fromCache: false,
           };
         }
@@ -454,7 +453,9 @@ export class FileManager {
       // Handle stale local clone: "commit X is not available locally. Do a git fetch"
       const looksLikeStaleClone = /is not available locally|do a git fetch/i.test(msg);
       if (looksLikeStaleClone) {
-        console.log(`[FileManager] Stale clone detected, re-initializing repo for branch ${shortBranch}`);
+        console.log(
+          `[FileManager] Stale clone detected, re-initializing repo for branch ${shortBranch}`
+        );
         try {
           const cloneUrls = this.getCloneUrlsFromRepoEvent(repoEvent);
           if (cloneUrls.length > 0) {
@@ -534,8 +535,7 @@ export class FileManager {
         this.lastToastAt.set(cacheKey, Date.now());
       }
       throw error;
-    }
-    finally {
+    } finally {
       this.inFlightListings.delete(cacheKey);
     }
   }
@@ -594,9 +594,7 @@ export class FileManager {
           ref: vendorRes.ref || ref,
           encoding: vendorRes.encoding || "utf-8",
           size:
-            typeof vendorRes.size === "number"
-              ? vendorRes.size
-              : (vendorRes.content || "").length,
+            typeof vendorRes.size === "number" ? vendorRes.size : (vendorRes.content || "").length,
           fromCache: false,
         };
 
@@ -836,7 +834,8 @@ export class FileManager {
    * Get file manager statistics
    */
   getStats(): {
-    config: Required<Omit<FileManagerConfig, 'vendorReadRouter'>> & Pick<FileManagerConfig, 'vendorReadRouter'>;
+    config: Required<Omit<FileManagerConfig, "vendorReadRouter">> &
+      Pick<FileManagerConfig, "vendorReadRouter">;
     cacheEnabled: boolean;
     cacheManager: boolean;
   } {

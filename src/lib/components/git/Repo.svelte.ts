@@ -46,6 +46,7 @@ import {
   extractHostname,
 } from "@nostr-git/core/git";
 import { VendorReadRouter } from "./VendorReadRouter";
+import { normalizeGitRefName } from "./branch-ref";
 
 export type PushFanoutMode = "best-effort" | "all-or-nothing";
 
@@ -892,7 +893,7 @@ export class Repo {
     const repoId = this.key;
     const fallbackMain = this.branchManager.getMainBranch();
     const branch =
-      (targetBranch ?? this.mainBranch ?? fallbackMain).split("/").pop() || fallbackMain;
+      normalizeGitRefName(targetBranch ?? this.mainBranch ?? fallbackMain) || fallbackMain;
     // Use workerRepoId (event id) for worker calls when available
     const workerRepoId = this.repoEvent?.id;
     return await this.patchManager.getMergeAnalysis(patch, branch, repoId, workerRepoId);
@@ -940,7 +941,7 @@ export class Repo {
     const repoId = this.key;
     const fallbackMain = this.branchManager.getMainBranch();
     const branch =
-      (targetBranch ?? this.mainBranch ?? fallbackMain).split("/").pop() || fallbackMain;
+      normalizeGitRefName(targetBranch ?? this.mainBranch ?? fallbackMain) || fallbackMain;
     // Use workerRepoId (event id) for worker calls when available
     const workerRepoId = this.repoEvent?.id;
     return await this.patchManager.refreshMergeAnalysis(patch, branch, repoId, workerRepoId);
@@ -1411,8 +1412,8 @@ export class Repo {
     // Update in BranchManager first
     this.branchManager.setSelectedBranch(branchName);
 
-    // Resolve short branch name (git expects short ref like "main")
-    const shortBranch = (branchName || "").split("/").pop() || branchName;
+    // Normalize branch name while preserving branch paths (e.g. "fix/ipk-builds")
+    const shortBranch = normalizeGitRefName(branchName) || branchName;
 
     // Update reactive state for UI immediately
     this.#selectedBranchState = shortBranch;
@@ -1666,15 +1667,16 @@ export class Repo {
       return {
         files: [],
         path: path || "/",
-        ref: (target || "").split("/").pop() || "",
+        ref: normalizeGitRefName(target),
         fromCache: false,
       } as const;
     }
 
     // If target name corresponds to a tag, list files by its commit
     try {
+      const normalizedTarget = normalizeGitRefName(target);
       const refs = this.branchManager.getAllRefs();
-      const hit = refs.find((r) => r.name === (target || "").split("/").pop());
+      const hit = refs.find((r) => r.name === normalizedTarget);
       if (hit && hit.type === "tags" && hit.commitId) {
         return this.fileManager.listRepoFilesAtCommit({
           repoEvent: this.repoEvent,
@@ -1708,7 +1710,7 @@ export class Repo {
       return {
         content: "",
         path,
-        ref: commit || (targetBranch || "").split("/").pop() || "",
+        ref: commit || normalizeGitRefName(targetBranch),
         encoding: "utf-8",
         size: 0,
         fromCache: false,
@@ -2043,8 +2045,9 @@ export class Repo {
     // Resolve branch (short name)
     const fallbackMain = this.branchManager.getMainBranch();
     const branch =
-      (params?.branch ?? this.selectedBranch ?? this.mainBranch ?? fallbackMain).split("/").pop() ||
-      fallbackMain;
+      normalizeGitRefName(
+        params?.branch ?? this.selectedBranch ?? this.mainBranch ?? fallbackMain
+      ) || fallbackMain;
 
     const cloneUrlsRaw = [...(this.#repo?.clone || [])]
       .map((u) => String(u || "").trim())
@@ -2207,8 +2210,7 @@ export class Repo {
 
   async getHeadCommitId(branchName?: string): Promise<string> {
     try {
-      const short =
-        (branchName || this.selectedBranch || this.mainBranch || "").split("/").pop() || "";
+      const short = normalizeGitRefName(branchName || this.selectedBranch || this.mainBranch || "");
       const refs = await this.getAllRefsWithFallback();
       const hit = refs.find((r) => r.type === "heads" && r.name === short);
       return hit?.commitId || "";
@@ -2227,7 +2229,7 @@ export class Repo {
     if (!patches?.length) return;
 
     const repoId = this.key;
-    const targetBranch = this.mainBranch?.split("/").pop() || "";
+    const targetBranch = normalizeGitRefName(this.mainBranch || "");
     const workerRepoId = this.repoEvent?.id;
 
     // Delegate to PatchManager for background processing

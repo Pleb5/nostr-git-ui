@@ -5,6 +5,7 @@ import { createNetworkError, createUnknownError } from "@nostr-git/core/errors";
 import type { VendorReadRouter } from "./VendorReadRouter";
 import type { RepoAnnouncementEvent } from "@nostr-git/core/events";
 import { parseRepoAnnouncementEvent } from "@nostr-git/core/events";
+import { normalizeGitRefName } from "./branch-ref";
 
 /**
  * Configuration options for CommitManager
@@ -54,7 +55,8 @@ export interface CommitLoadResult {
 export class CommitManager {
   private workerManager: WorkerManager;
   private cacheManager?: CacheManager;
-  private config: Required<Omit<CommitManagerConfig, 'vendorReadRouter'>> & Pick<CommitManagerConfig, 'vendorReadRouter'>;
+  private config: Required<Omit<CommitManagerConfig, "vendorReadRouter">> &
+    Pick<CommitManagerConfig, "vendorReadRouter">;
   private vendorReadRouter?: VendorReadRouter;
   private repoEventSnapshot?: RepoAnnouncementEvent;
   // Repo identifiers
@@ -176,7 +178,9 @@ export class CommitManager {
    * Get current commits
    */
   getCommits(): any[] {
-    console.log(`[CommitManager.getCommits] Returning ${this.commits.length} commits, currentBranch=${this.currentBranch}`);
+    console.log(
+      `[CommitManager.getCommits] Returning ${this.commits.length} commits, currentBranch=${this.currentBranch}`
+    );
     return this.commits;
   }
 
@@ -298,12 +302,15 @@ export class CommitManager {
       mainBranch,
       effectiveMainBranch,
       storedBranch: this.currentBranch,
-      storedMainBranch: this.currentMainBranch
+      storedMainBranch: this.currentMainBranch,
     });
 
     // Validate repoId is not empty string
     if (!effectiveRepoId || effectiveRepoId.trim() === "" || !effectiveMainBranch) {
-      console.debug("[CommitManager] loadCommits skipped: missing repoId or mainBranch", { effectiveRepoId, effectiveMainBranch });
+      console.debug("[CommitManager] loadCommits skipped: missing repoId or mainBranch", {
+        effectiveRepoId,
+        effectiveMainBranch,
+      });
       return { success: false, error: "Repository ID and main branch are required" };
     }
 
@@ -325,9 +332,19 @@ export class CommitManager {
 
       // Try cache first if enabled
       const cacheEnabled = !!(this.config.enableCaching && this.cacheManager && this.canonicalKey);
-      // Ensure branchName is a concrete string (short git name)
-      const branchName = (effectiveBranch ?? effectiveMainBranch).split("/").pop()!;
-      console.log("[CommitManager] branchName resolved to:", branchName, "from branch:", branch, "mainBranch:", mainBranch);
+      // Ensure branchName is normalized while preserving branch paths (e.g. fix/ipk-builds)
+      const branchName =
+        normalizeGitRefName(effectiveBranch ?? effectiveMainBranch) ||
+        normalizeGitRefName(effectiveMainBranch) ||
+        "main";
+      console.log(
+        "[CommitManager] branchName resolved to:",
+        branchName,
+        "from branch:",
+        branch,
+        "mainBranch:",
+        mainBranch
+      );
       const pageKey = cacheEnabled
         ? `${this.canonicalKey}:${branchName}:p${this.currentPage}:s${this.commitsPerPage}`
         : undefined;
@@ -347,7 +364,9 @@ export class CommitManager {
           pageKey
         );
         if (cached) {
-          console.log(`[CommitManager] Cache hit for ${pageKey}: repoKey=${cached.repoKey}, branch=${cached.branch}, commits=${cached.commits?.length}`);
+          console.log(
+            `[CommitManager] Cache hit for ${pageKey}: repoKey=${cached.repoKey}, branch=${cached.branch}, commits=${cached.commits?.length}`
+          );
         } else {
           console.log(`[CommitManager] Cache miss for ${pageKey}`);
         }
@@ -359,7 +378,9 @@ export class CommitManager {
             ? this.currentPage * this.commitsPerPage < cached.total
             : cached.commits.length === this.commitsPerPage; // heuristic if no total
 
-          console.log(`[CommitManager] Using cached commits: ${this.commits.length} for branch ${branchName}`);
+          console.log(
+            `[CommitManager] Using cached commits: ${this.commits.length} for branch ${branchName}`
+          );
           if (this.loadingIds.commits) {
             context.remove(this.loadingIds.commits);
             this.loadingIds.commits = null;
@@ -384,12 +405,20 @@ export class CommitManager {
 
       // Try vendor API FIRST if available (API-first for fast UI response)
       // This avoids waiting for slow git clone/sync operations for supported vendors like GitHub
-      let commitsResult: { success: boolean; commits?: any[]; fallbackUsed?: string; error?: string; fromVendor?: boolean };
+      let commitsResult: {
+        success: boolean;
+        commits?: any[];
+        fallbackUsed?: string;
+        error?: string;
+        fromVendor?: boolean;
+      };
 
       if (this.vendorReadRouter && this.repoEventSnapshot) {
         try {
           const cloneUrls = this.getCloneUrlsFromRepoEvent(this.repoEventSnapshot);
-          console.log(`[CommitManager] Trying VendorReadRouter.listCommits FIRST for branch=${branchName}, depth=${requiredDepth}`);
+          console.log(
+            `[CommitManager] Trying VendorReadRouter.listCommits FIRST for branch=${branchName}, depth=${requiredDepth}`
+          );
 
           const vendorResult = await this.vendorReadRouter.listCommits({
             workerManager: this.workerManager,
@@ -411,21 +440,30 @@ export class CommitManager {
                 author: {
                   name: c.author.name,
                   email: c.author.email,
-                  timestamp: c.author.date ? Math.floor(new Date(c.author.date).getTime() / 1000) : undefined,
+                  timestamp: c.author.date
+                    ? Math.floor(new Date(c.author.date).getTime() / 1000)
+                    : undefined,
                 },
                 committer: {
                   name: c.committer.name,
                   email: c.committer.email,
-                  timestamp: c.committer.date ? Math.floor(new Date(c.committer.date).getTime() / 1000) : undefined,
+                  timestamp: c.committer.date
+                    ? Math.floor(new Date(c.committer.date).getTime() / 1000)
+                    : undefined,
                 },
                 parent: c.parents?.map((p: any) => p.sha) || [],
               },
             })),
             fromVendor: vendorResult.fromVendor,
           };
-          console.log(`[CommitManager] VendorReadRouter returned ${commitsResult.commits?.length || 0} commits, fromVendor=${vendorResult.fromVendor}`);
+          console.log(
+            `[CommitManager] VendorReadRouter returned ${commitsResult.commits?.length || 0} commits, fromVendor=${vendorResult.fromVendor}`
+          );
         } catch (vendorError) {
-          console.warn(`[CommitManager] VendorReadRouter.listCommits failed, falling back to git:`, vendorError);
+          console.warn(
+            `[CommitManager] VendorReadRouter.listCommits failed, falling back to git:`,
+            vendorError
+          );
           // Fall through to git worker below
           commitsResult = { success: false, error: String(vendorError) };
         }
@@ -461,17 +499,23 @@ export class CommitManager {
           }
         }
 
-        console.log(`[CommitManager] Calling worker.getCommitHistory with repoId=${effectiveRepoId}, branch=${branchName}, depth=${requiredDepth}`);
+        console.log(
+          `[CommitManager] Calling worker.getCommitHistory with repoId=${effectiveRepoId}, branch=${branchName}, depth=${requiredDepth}`
+        );
         commitsResult = await this.workerManager.getCommitHistory({
           repoId: effectiveRepoId as string,
           branch: branchName as string,
           depth: requiredDepth as number,
         });
-        console.log(`[CommitManager] Worker returned ${commitsResult.commits?.length || 0} commits, success=${commitsResult.success}, fallbackUsed=${commitsResult.fallbackUsed || 'none'}`);
+        console.log(
+          `[CommitManager] Worker returned ${commitsResult.commits?.length || 0} commits, success=${commitsResult.success}, fallbackUsed=${commitsResult.fallbackUsed || "none"}`
+        );
 
         // Warn if worker used a fallback branch - this could explain "wrong commits" issues
         if (commitsResult.fallbackUsed && commitsResult.fallbackUsed !== branchName) {
-          console.warn(`[CommitManager] WARNING: Worker used fallback branch '${commitsResult.fallbackUsed}' instead of requested '${branchName}'`);
+          console.warn(
+            `[CommitManager] WARNING: Worker used fallback branch '${commitsResult.fallbackUsed}' instead of requested '${branchName}'`
+          );
         }
       }
 
@@ -485,7 +529,9 @@ export class CommitManager {
 
         // If it's the first page, replace the commits, otherwise append
         this.commits = this.currentPage === 1 ? pageCommits : [...this.commits, ...pageCommits];
-        console.log(`[CommitManager] Stored ${this.commits.length} commits (page ${this.currentPage}, branch: ${this.currentBranch})`);
+        console.log(
+          `[CommitManager] Stored ${this.commits.length} commits (page ${this.currentPage}, branch: ${this.currentBranch})`
+        );
 
         this.hasMoreCommits = endIndex < allCommits.length;
 
@@ -510,7 +556,9 @@ export class CommitManager {
                 // Vendor API doesn't provide exact count - use loaded commits as estimate
                 this.totalCommits = allCommits.length;
                 this.hasMoreCommits = true; // Assume there are more when we hit the limit
-                console.log(`[CommitManager] Using vendor commit count estimate: ${this.totalCommits}+`);
+                console.log(
+                  `[CommitManager] Using vendor commit count estimate: ${this.totalCommits}+`
+                );
               } else {
                 this.totalCommits = countResult.count;
               }
@@ -518,7 +566,9 @@ export class CommitManager {
               // Graceful fallback - use loaded commits as estimate
               this.totalCommits = allCommits.length;
               this.hasMoreCommits = true;
-              console.log(`[CommitManager] getCommitCount failed, using estimate: ${this.totalCommits}+`);
+              console.log(
+                `[CommitManager] getCommitCount failed, using estimate: ${this.totalCommits}+`
+              );
             }
           } else {
             // No vendor router - try git worker directly (may fail if not cloned)
@@ -612,7 +662,9 @@ export class CommitManager {
     if (this.vendorReadRouter && this.repoEventSnapshot) {
       try {
         const cloneUrls = this.getCloneUrlsFromRepoEvent(this.repoEventSnapshot);
-        console.log(`[CommitManager.getCommitHistory] Trying VendorReadRouter.listCommits for branch=${branch}`);
+        console.log(
+          `[CommitManager.getCommitHistory] Trying VendorReadRouter.listCommits for branch=${branch}`
+        );
 
         const vendorResult = await this.vendorReadRouter.listCommits({
           workerManager: this.workerManager,
@@ -632,21 +684,30 @@ export class CommitManager {
             author: {
               name: c.author.name,
               email: c.author.email,
-              timestamp: c.author.date ? Math.floor(new Date(c.author.date).getTime() / 1000) : undefined,
+              timestamp: c.author.date
+                ? Math.floor(new Date(c.author.date).getTime() / 1000)
+                : undefined,
             },
             committer: {
               name: c.committer.name,
               email: c.committer.email,
-              timestamp: c.committer.date ? Math.floor(new Date(c.committer.date).getTime() / 1000) : undefined,
+              timestamp: c.committer.date
+                ? Math.floor(new Date(c.committer.date).getTime() / 1000)
+                : undefined,
             },
             parent: c.parents?.map((p: any) => p.sha) || [],
           },
         }));
 
-        console.log(`[CommitManager.getCommitHistory] VendorReadRouter returned ${commits.length} commits, fromVendor=${vendorResult.fromVendor}`);
+        console.log(
+          `[CommitManager.getCommitHistory] VendorReadRouter returned ${commits.length} commits, fromVendor=${vendorResult.fromVendor}`
+        );
         return { success: true, commits };
       } catch (vendorError) {
-        console.warn(`[CommitManager.getCommitHistory] VendorReadRouter.listCommits failed, falling back to git:`, vendorError);
+        console.warn(
+          `[CommitManager.getCommitHistory] VendorReadRouter.listCommits failed, falling back to git:`,
+          vendorError
+        );
         // Fall through to git worker below
       }
     }

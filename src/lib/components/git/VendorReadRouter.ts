@@ -18,6 +18,7 @@ import { nip19 } from "nostr-tools";
 import type { Token } from "$lib/stores/tokens";
 import { tryTokensForHost, getTokensForHost } from "$lib/utils/tokenHelpers";
 import { WorkerManager } from "./WorkerManager";
+import { normalizeGitRefName } from "./branch-ref";
 
 export interface VendorReadRouterConfig {
   getTokens: () => Promise<Token[]>;
@@ -212,7 +213,7 @@ export class VendorReadRouter {
       return {
         files,
         path,
-        ref: (branch || "").split("/").pop() || "",
+        ref: normalizeGitRefName(branch),
         fromVendor: false,
       };
     } catch (workerErr) {
@@ -294,7 +295,7 @@ export class VendorReadRouter {
       return {
         content,
         path: params.path,
-        ref: (branch || "").split("/").pop() || "",
+        ref: normalizeGitRefName(branch),
         encoding: "utf-8",
         size: content.length,
         fromVendor: false,
@@ -464,7 +465,7 @@ export class VendorReadRouter {
 
     return {
       commits,
-      ref: branch.split("/").pop() || "",
+      ref: normalizeGitRefName(branch),
       fromVendor: false,
     };
   }
@@ -695,7 +696,7 @@ export class VendorReadRouter {
       return {
         files,
         path: params.path || "/",
-        ref: (params.branch || "").split("/").pop() || "",
+        ref: normalizeGitRefName(params.branch),
         fromVendor: true,
       };
     }
@@ -714,7 +715,7 @@ export class VendorReadRouter {
       return {
         files,
         path: params.path || "/",
-        ref: (params.branch || "").split("/").pop() || "",
+        ref: normalizeGitRefName(params.branch),
         fromVendor: true,
       };
     }
@@ -767,7 +768,7 @@ export class VendorReadRouter {
       return {
         content: decoded,
         path: params.path,
-        ref: (params.branch || "").split("/").pop() || "",
+        ref: normalizeGitRefName(params.branch),
         encoding: "utf-8",
         size: decoded.length,
         fromVendor: true,
@@ -779,7 +780,7 @@ export class VendorReadRouter {
       return {
         content: contentField,
         path: params.path,
-        ref: (params.branch || "").split("/").pop() || "",
+        ref: normalizeGitRefName(params.branch),
         encoding: "utf-8",
         size: contentField.length,
         fromVendor: true,
@@ -909,7 +910,7 @@ export class VendorReadRouter {
     return {
       files,
       path: params.path || "/",
-      ref: (params.branch || "").split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
     };
   }
@@ -949,7 +950,7 @@ export class VendorReadRouter {
     return {
       content,
       path: params.path,
-      ref: (params.branch || "").split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       encoding: "utf-8",
       size: content.length,
       fromVendor: true,
@@ -1043,7 +1044,7 @@ export class VendorReadRouter {
     return {
       files,
       path: params.path || "/",
-      ref: (params.branch || "").split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
     };
   }
@@ -1080,7 +1081,7 @@ export class VendorReadRouter {
     return {
       content,
       path: params.path,
-      ref: (params.branch || "").split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       encoding: "utf-8",
       size: content.length,
       fromVendor: true,
@@ -1173,7 +1174,7 @@ export class VendorReadRouter {
     return {
       files,
       path: params.path || "/",
-      ref: (params.branch || "").split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
     };
   }
@@ -1209,7 +1210,7 @@ export class VendorReadRouter {
     return {
       content,
       path: params.path,
-      ref: (params.branch || "").split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       encoding: "utf-8",
       size: content.length,
       fromVendor: true,
@@ -1306,7 +1307,7 @@ export class VendorReadRouter {
 
     return {
       commits,
-      ref: params.branch.split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
       hasMore: commits.length === perPage,
     };
@@ -1366,7 +1367,7 @@ export class VendorReadRouter {
 
     return {
       commits,
-      ref: params.branch.split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
       hasMore: commits.length === perPage,
     };
@@ -1422,7 +1423,7 @@ export class VendorReadRouter {
 
     return {
       commits,
-      ref: params.branch.split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
       hasMore: commits.length === perPage,
     };
@@ -1481,7 +1482,7 @@ export class VendorReadRouter {
 
     return {
       commits,
-      ref: params.branch.split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
       hasMore: commits.length === perPage,
     };
@@ -1538,7 +1539,7 @@ export class VendorReadRouter {
 
     return {
       commits,
-      ref: params.branch.split("/").pop() || "",
+      ref: normalizeGitRefName(params.branch),
       fromVendor: true,
       hasMore: !!(json as any).next,
     };

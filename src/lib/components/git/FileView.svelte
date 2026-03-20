@@ -30,6 +30,7 @@
   import { lineNumbers, EditorView } from "@codemirror/view";
   import { EditorSelection, EditorState } from "@codemirror/state";
   import { nip19 } from "nostr-tools";
+  import { normalizeGitRefName } from "./branch-ref";
 
   const {
     file,
@@ -1153,7 +1154,7 @@
       let commit = "";
       let branch = "";
       try {
-        branch = (repo.selectedBranch || repo.mainBranch || "").split("/").pop() || "";
+        branch = normalizeGitRefName(repo.selectedBranch || repo.mainBranch || "");
         const hit = (repo.refs || []).find((r) => r.type === "heads" && r.name === branch);
         commit = hit?.commitId || "";
       } catch {}
