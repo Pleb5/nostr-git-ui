@@ -22,7 +22,7 @@
   import { commonHashtags } from "../../stores/hashtags";
   import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
   import type { Token } from "$lib/stores/tokens";
-  import type { ForkResult, ForkConfig } from "../../hooks/useForkRepo.svelte";
+  import type { ForkResult, ForkConfig, ForkProgress } from "../../hooks/useForkRepo.svelte";
   import { toast } from "../../stores/toast";
   import { validateGraspServerUrl } from "@nostr-git/core/events";
   import { nip19 } from "nostr-tools";
@@ -40,8 +40,14 @@
     repo: Repo;
     pubkey: string;
     onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<void>;
+    onRollbackPublishedRepoEvents?: (params: {
+      repoName: string;
+      relays: string[];
+    }) => Promise<void>;
     graspServerUrls?: string[]; // Optional list of known GRASP servers to display
-    useForkRepoImpl?: typeof useForkRepo;
+    useForkRepoImpl?: (
+      options?: Parameters<typeof useForkRepo>[0]
+    ) => ReturnType<typeof useForkRepo>;
     // Optional callback to navigate to the forked repository after fork completion
     navigateToForkedRepo?: (result: ForkResult) => void;
     defaultRelays?: string[];
@@ -64,6 +70,7 @@
     repo,
     pubkey,
     onPublishEvent,
+    onRollbackPublishedRepoEvents,
     graspServerUrls = [],
     useForkRepoImpl,
     navigateToForkedRepo,
@@ -76,30 +83,36 @@
   // Initialize the useForkRepo hook (allow DI override)
   const forkImpl = $derived(useForkRepoImpl ?? useForkRepo);
   const { Markdown } = useRegistry();
-  const forkState = $derived(
-    forkImpl({
-      userPubkey: pubkey, // Pass Nostr pubkey for maintainers
-      onProgress: (steps) => {
-        // Progress is handled internally by the hook
+  const forkOptions = $derived.by(() => {
+    const baseOptions = {
+      userPubkey: pubkey,
+      onProgress: (steps: ForkProgress[]) => {
         console.log("🔄 Fork progress:", steps);
       },
-      onForkCompleted: (result) => {
+      onForkCompleted: (result: ForkResult) => {
         console.log("🎉 Fork completed:", result);
         completedResult = result;
-        // Show success notification
         toast.push({
           message: "Repository forked successfully!",
           variant: "default",
         });
-        // Navigate to the forked repo after a short delay if callback is provided
-        // This gives users time to see the success message
         if (navigateToForkedRepo && result.announcementEvent) {
           navigateToForkedRepo(result);
         }
       },
       onPublishEvent: onPublishEvent,
-    })
-  );
+    };
+
+    if (onRollbackPublishedRepoEvents) {
+      return {
+        ...baseOptions,
+        onRollbackPublishedRepoEvents,
+      };
+    }
+
+    return baseOptions;
+  });
+  const forkState = $derived(forkImpl(forkOptions));
 
   // Access reactive state through getters
   const progress = $derived(forkState.progress);

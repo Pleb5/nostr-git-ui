@@ -57,6 +57,7 @@ export interface UseForkRepoOptions {
   onProgress?: (progress: ForkProgress[]) => void;
   onForkCompleted?: (result: ForkResult) => void;
   onPublishEvent?: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<void>;
+  onRollbackPublishedRepoEvents?: (params: { repoName: string; relays: string[] }) => Promise<void>;
 }
 
 /**
@@ -343,7 +344,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     console.log("🔐 Token store updated, now have", t.length, "tokens");
   });
 
-  const { onProgress, onForkCompleted, onPublishEvent, userPubkey } = options;
+  const { onProgress, onForkCompleted, onPublishEvent, onRollbackPublishedRepoEvents, userPubkey } =
+    options;
 
   function updateProgress(
     step: string,
@@ -392,6 +394,10 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     error = null;
     warning = null;
     progress = [];
+
+    let graspEventsPublished = false;
+    let graspPushCompleted = false;
+    let graspRollbackContext: { repoName: string; relays: string[] } | null = null;
 
     try {
       // Validate inputs early
@@ -660,6 +666,10 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         });
         announcementEvent = graspEvents.announcementEvent;
         stateEvent = graspEvents.stateEvent;
+        graspRollbackContext = {
+          repoName: config.forkName,
+          relays: Array.from(new Set([relayUrl || "", ...(relays || [])])).filter(Boolean),
+        };
       }
 
       updateProgress("events", "Nostr events created successfully", "completed");
@@ -671,6 +681,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           if (provider === "grasp") {
             await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
             console.log("✅ Published GRASP repo announcement and state events");
+            graspEventsPublished = true;
           } else {
             await onPublishEvent(announcementEvent);
             console.log("✅ Published repo announcement event");
@@ -720,6 +731,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         }
 
         updateProgress("push", "Git data pushed to GRASP successfully", "completed");
+        graspPushCompleted = true;
       }
 
       const result: ForkResult = {
@@ -735,6 +747,29 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       onForkCompleted?.(result);
       return result;
     } catch (err) {
+      if (
+        config.provider === "grasp" &&
+        graspEventsPublished &&
+        !graspPushCompleted &&
+        graspRollbackContext &&
+        onRollbackPublishedRepoEvents
+      ) {
+        updateProgress("rollback", "Rolling back published GRASP repo events...", "running");
+        try {
+          await onRollbackPublishedRepoEvents(graspRollbackContext);
+          updateProgress("rollback", "Rolled back published GRASP repo events", "completed");
+        } catch (rollbackError) {
+          const rollbackMessage =
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          updateProgress(
+            "rollback",
+            `Rollback failed: ${rollbackMessage}`,
+            "error",
+            rollbackMessage
+          );
+        }
+      }
+
       const errorMessage = parseForkError(err, config.provider || "github");
       error = errorMessage;
 
