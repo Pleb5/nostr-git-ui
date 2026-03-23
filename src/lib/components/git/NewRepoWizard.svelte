@@ -199,9 +199,17 @@
 
   function syncGraspRelaysToPreferredRelays(urls: string[]) {
     if (!selectedProviders.includes("grasp")) return;
-    const merged = dedupeStrings([...(advancedSettings.relays || []), ...(urls || [])]);
-    if (!arraysEqual(advancedSettings.relays, merged)) {
-      advancedSettings.relays = merged;
+    const normalized = dedupeStrings(urls || []);
+    if (normalized.length === 0) return;
+
+    const graspOnly = selectedProviders.length === 1 && selectedProviders[0] === "grasp";
+    const nextRelays =
+      graspOnly && !userEditedRelays
+        ? normalized
+        : dedupeStrings([...(advancedSettings.relays || []), ...normalized]);
+
+    if (!arraysEqual(advancedSettings.relays, nextRelays)) {
+      advancedSettings.relays = nextRelays;
     }
   }
 
@@ -303,7 +311,9 @@
 
     if (!userEditedRelays) {
       const defaultRelaySet = selectedProviders.includes("grasp")
-        ? dedupeStrings([...(defaultRelays || []), ...(graspRelayUrls || [])])
+        ? selectedProviders.length === 1 && selectedProviders[0] === "grasp"
+          ? dedupeStrings([...(graspRelayUrls || [])])
+          : dedupeStrings([...(defaultRelays || []), ...(graspRelayUrls || [])])
         : dedupeStrings([...(defaultRelays || [])]);
       if (!arraysEqual(advancedSettings.relays, defaultRelaySet)) {
         advancedSettings.relays = defaultRelaySet;

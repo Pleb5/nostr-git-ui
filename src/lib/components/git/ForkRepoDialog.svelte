@@ -301,7 +301,12 @@
   });
 
   $effect(() => {
-    if (!relaysInitialized && preferredRelays.length === 0 && defaultRelays.length > 0) {
+    if (
+      !relaysInitialized &&
+      selectedService !== "grasp" &&
+      preferredRelays.length === 0 &&
+      defaultRelays.length > 0
+    ) {
       preferredRelays = [...defaultRelays];
       relaysInitialized = true;
     }
@@ -887,7 +892,17 @@
   // Handle service selection change
   function handleServiceChange(event: Event) {
     const target = event.target as HTMLSelectElement;
+    const previousService = selectedService;
     selectedService = target.value;
+
+    if (previousService !== "grasp" && selectedService === "grasp" && defaultRelays.length > 0) {
+      const defaultRelaySet = new Set(defaultRelays.map((value) => value.trim()).filter(Boolean));
+      const filtered = preferredRelays.filter((value) => !defaultRelaySet.has(value.trim()));
+      if (filtered.length !== preferredRelays.length) {
+        preferredRelays = filtered;
+      }
+    }
+
     existingForkInfo = undefined; // Reset fork check when service changes
     // Reset relay URL error when switching services
     if (selectedService !== "grasp") {
