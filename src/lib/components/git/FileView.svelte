@@ -18,6 +18,7 @@
   import { GIT_PERMALINK } from "@nostr-git/core/types";
   import type { Repo } from "./Repo.svelte";
   import CodeMirror from "svelte-codemirror-editor";
+  import { oneDark } from "@codemirror/theme-one-dark";
   import { detectFileType, type FileTypeInfo } from "../../utils/fileTypeDetection.js";
   import FileMetadataPanel from "./FileMetadataPanel.svelte";
   import {
@@ -128,6 +129,7 @@
   const MENU_WIDTH = 176;
   const MENU_PADDING = 8;
   const viewerExtensions = [
+    oneDark,
     EditorState.readOnly.of(true),
     EditorView.editable.of(false),
     EditorView.contentAttributes.of({
@@ -1049,9 +1051,19 @@
 
   async function loadLanguageExtension(filename: string, info: FileTypeInfo | null) {
     try {
+      const lowerName = filename.toLowerCase();
       const ext = (filename.split(".").pop() || "").toLowerCase();
+      const language = info?.language?.toLowerCase() || "";
+      const languageKey =
+        lowerName === "go.mod" || lowerName === "go.sum"
+          ? "go"
+          : language && language !== "text"
+            ? language
+            : ext;
       let mod: any | null = null;
-      switch (ext) {
+      switch (languageKey) {
+        case "typescript":
+        case "javascript":
         case "ts":
         case "tsx":
         case "js":
@@ -1059,11 +1071,21 @@
           mod = await import("@codemirror/lang-javascript");
           cmExtensions = [mod.javascript({ jsx: true, typescript: ext.startsWith("ts") })];
           break;
+        case "go":
+          mod = await import("@codemirror/lang-go");
+          cmExtensions = [mod.go()];
+          break;
+        case "rust":
+        case "rs":
+          mod = await import("@codemirror/lang-rust");
+          cmExtensions = [mod.rust()];
+          break;
         case "json":
           mod = await import("@codemirror/lang-json");
           cmExtensions = [mod.json()];
           break;
         case "css":
+        case "sass":
         case "scss":
         case "less":
           mod = await import("@codemirror/lang-css");
@@ -1074,56 +1096,58 @@
           mod = await import("@codemirror/lang-html");
           cmExtensions = [mod.html()];
           break;
-        case "md":
+        case "xml":
+          mod = await import("@codemirror/lang-xml");
+          cmExtensions = [mod.xml()];
+          break;
         case "markdown":
+        case "md":
           mod = await import("@codemirror/lang-markdown");
           cmExtensions = [mod.markdown()];
           break;
+        case "python":
         case "py":
           mod = await import("@codemirror/lang-python");
           cmExtensions = [mod.python()];
           break;
-        case "rs":
-          mod = await import("@codemirror/lang-rust");
-          cmExtensions = [mod.rust()];
+        case "shell":
+        case "sh":
+        case "bash":
+        case "zsh":
+        case "fish": {
+          const languageMod = await import("@codemirror/language");
+          const shellModeMod = await import("@codemirror/legacy-modes/mode/shell");
+          cmExtensions = [languageMod.StreamLanguage.define(shellModeMod.shell)];
           break;
-        case "go":
-          mod = await import("@codemirror/lang-go");
-          cmExtensions = [mod.go()];
-          break;
+        }
         case "java":
           mod = await import("@codemirror/lang-java");
           cmExtensions = [mod.java()];
           break;
         case "c":
+        case "cpp":
         case "h":
         case "cc":
-        case "cpp":
         case "cxx":
         case "hpp":
         case "hh":
           mod = await import("@codemirror/lang-cpp");
           cmExtensions = [mod.cpp()];
           break;
-        case "yml":
         case "yaml":
+        case "yml":
           mod = await import("@codemirror/lang-yaml");
           cmExtensions = [mod.yaml()];
           break;
-        // removed unsupported dynamic imports (toml, shell)
         case "sql":
           mod = await import("@codemirror/lang-sql");
           cmExtensions = [mod.sql()];
-          break;
-        case "xml":
-          mod = await import("@codemirror/lang-xml");
-          cmExtensions = [mod.xml()];
           break;
         default:
           cmExtensions = [];
       }
     } catch (e) {
-      console.warn("Failed to load language extension", e);
+      console.warn(`Failed to load language extension for ${filename}`, e);
       cmExtensions = [];
     }
     // Ensure line numbers are shown for code files
@@ -1516,13 +1540,18 @@
   }
 
   :global(.file-view .cm-gutters) {
-    background-color: hsl(var(--muted)) !important;
-    color: hsl(var(--muted-foreground)) !important;
+    background-color: hsl(var(--secondary) / 0.85) !important;
+    color: hsl(var(--muted-foreground) / 0.95) !important;
     border-right: 1px solid hsl(var(--border)) !important;
   }
 
   :global(.file-view .cm-activeLineGutter) {
-    background-color: hsl(var(--accent)) !important;
+    background-color: hsl(var(--primary) / 0.32) !important;
+    color: hsl(var(--foreground)) !important;
+  }
+
+  :global(.file-view .cm-activeLine) {
+    background-color: hsl(var(--secondary) / 0.5) !important;
   }
 
   :global(.file-view .cm-line) {
@@ -1531,6 +1560,7 @@
 
   :global(.file-view .cm-content) {
     caret-color: hsl(var(--foreground)) !important;
+    filter: brightness(1.2) saturate(1.08);
     -webkit-user-select: text;
     user-select: text;
     -webkit-user-drag: none;
@@ -1538,7 +1568,11 @@
   }
 
   :global(.file-view .cm-selectionBackground) {
-    background-color: hsl(var(--accent) / 0.35) !important;
+    background-color: hsl(var(--primary) / 0.32) !important;
+  }
+
+  :global(.file-view .cm-focused .cm-selectionBackground) {
+    background-color: hsl(var(--primary) / 0.42) !important;
   }
 
   :global(.file-view .cm-cursor) {
@@ -1546,12 +1580,12 @@
   }
 
   :global(.file-view .cm-content ::selection) {
-    background-color: hsl(var(--accent) / 0.35);
+    background-color: hsl(var(--primary) / 0.42);
     color: hsl(var(--foreground));
   }
 
   :global(.file-view .cm-content ::-moz-selection) {
-    background-color: hsl(var(--accent) / 0.35);
+    background-color: hsl(var(--primary) / 0.42);
     color: hsl(var(--foreground));
   }
 

@@ -393,6 +393,18 @@ function detectSpecialFiles(basename: string, fullname: string): FileTypeInfo | 
     };
   }
 
+  // Go module files
+  if (lowerName === "go.mod" || lowerName === "go.sum") {
+    return {
+      category: "text",
+      mimeType: "text/plain",
+      language: "go",
+      icon: "FileCode",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
   // Docker files
   if (lowerName === "dockerfile" || lowerName.startsWith("dockerfile.")) {
     return {
