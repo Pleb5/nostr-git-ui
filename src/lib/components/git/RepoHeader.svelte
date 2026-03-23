@@ -117,7 +117,7 @@
     >
       <div class="flex min-w-0 items-center gap-2">
         <GitBranch class="h-5 w-5 sm:h-6 sm:w-6 flex-shrink-0" />
-        <button onclick={overviewRepo} class="truncate text-left" title={name}>
+        <button onclick={overviewRepo} class="truncate text-left" title={name} data-testid="repo-name">
           {name}
         </button>
       </div>
