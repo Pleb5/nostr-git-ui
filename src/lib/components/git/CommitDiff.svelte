@@ -147,7 +147,9 @@
               <div class="flex items-center gap-1.5">
                 <Calendar class="h-4 w-4" />
                 <span
-                  >{commitDiff.meta.date ? formatDistanceToNow(new Date(commitDiff.meta.date), { addSuffix: true }) : 'Unknown date'}</span
+                  >{commitDiff.meta.date
+                    ? formatDistanceToNow(new Date(commitDiff.meta.date), { addSuffix: true })
+                    : "Unknown date"}</span
                 >
               </div>
               <div class="font-mono text-xs bg-muted px-2 py-1 rounded">
@@ -162,16 +164,20 @@
                   {commitDiff.changes.length} file{commitDiff.changes.length !== 1 ? "s" : ""} changed
                 </span>
                 {#if fileStats.added > 0}
-                  <span class="text-green-600">+{fileStats.added} added</span>
+                  <span class="text-emerald-700 dark:text-emerald-300"
+                    >+{fileStats.added} added</span
+                  >
                 {/if}
                 {#if fileStats.modified > 0}
-                  <span class="text-blue-600">{fileStats.modified} modified</span>
+                  <span class="text-sky-700 dark:text-sky-300">{fileStats.modified} modified</span>
                 {/if}
                 {#if fileStats.deleted > 0}
-                  <span class="text-red-600">-{fileStats.deleted} deleted</span>
+                  <span class="text-rose-700 dark:text-rose-300">-{fileStats.deleted} deleted</span>
                 {/if}
                 {#if fileStats.renamed > 0}
-                  <span class="text-purple-600">{fileStats.renamed} renamed</span>
+                  <span class="text-violet-700 dark:text-violet-300"
+                    >{fileStats.renamed} renamed</span
+                  >
                 {/if}
               </div>
             {/if}
@@ -186,14 +192,16 @@
             </div>
           {:else if error}
             <div class="flex items-center gap-3">
-              <div class="h-5 w-5 rounded-full bg-red-100 flex items-center justify-center">
-                <span class="text-red-600 text-xs font-bold">!</span>
+              <div
+                class="h-5 w-5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 flex items-center justify-center"
+              >
+                <span class="text-xs font-bold">!</span>
               </div>
               <div class="flex-1">
                 <div class="font-mono text-sm text-foreground mb-1">
                   Error loading commit {shortSha}
                 </div>
-                <div class="text-sm text-red-600">
+                <div class="text-sm text-rose-700 dark:text-rose-300">
                   {error}
                 </div>
               </div>
@@ -243,7 +251,7 @@
     </div>
   {:else if expanded && error}
     <div class="p-8 text-center">
-      <div class="text-red-600 mb-2">Failed to load commit details</div>
+      <div class="text-rose-700 dark:text-rose-300 mb-2">Failed to load commit details</div>
       <div class="text-sm text-muted-foreground">{error}</div>
       <button
         onclick={onLoadCommit}

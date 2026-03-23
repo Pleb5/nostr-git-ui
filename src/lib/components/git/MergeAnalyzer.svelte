@@ -75,15 +75,19 @@
       <div class="space-y-4">
         <!-- Error Display -->
         {#if analysis.errorMessage}
-          <div class="rounded-lg border border-red-200 bg-red-50 p-4 dark:bg-red-950/20">
+          <div
+            class="rounded-lg border border-rose-200 bg-rose-50 p-4 dark:border-rose-900 dark:bg-rose-950/30"
+          >
             <div class="flex items-start gap-3">
-              <XCircle class="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600" />
+              <XCircle class="mt-0.5 h-5 w-5 flex-shrink-0 text-rose-700 dark:text-rose-300" />
               <div class="flex-1">
-                <h4 class="text-sm font-medium text-red-800 dark:text-red-200">Analysis Failed</h4>
-                <p class="mt-1 text-sm text-red-700 dark:text-red-300">{analysis.errorMessage}</p>
+                <h4 class="text-sm font-medium text-rose-900 dark:text-rose-200">
+                  Analysis Failed
+                </h4>
+                <p class="mt-1 text-sm text-rose-800 dark:text-rose-300">{analysis.errorMessage}</p>
                 {#if analysis.analysis}
                   <div class="mt-2">
-                    <span class="text-xs text-red-600 dark:text-red-400 font-mono"
+                    <span class="text-xs text-rose-700 dark:text-rose-400 font-mono"
                       >Type: {analysis.analysis}</span
                     >
                   </div>
@@ -95,14 +99,14 @@
 
         <!-- Analysis Status -->
         {#if analyzing}
-          <div class="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:bg-blue-950/20">
+          <div
+            class="rounded-lg border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30"
+          >
             <div class="flex items-center gap-3">
-              <AlertCircle class="h-5 w-5 text-blue-600 animate-pulse" />
+              <AlertCircle class="h-5 w-5 text-sky-700 dark:text-sky-300 animate-pulse" />
               <div>
-                <h4 class="text-sm font-medium text-blue-800 dark:text-blue-200">
-                  Analyzing Patch
-                </h4>
-                <p class="text-sm text-blue-700 dark:text-blue-300">
+                <h4 class="text-sm font-medium text-sky-900 dark:text-sky-200">Analyzing Patch</h4>
+                <p class="text-sm text-sky-800 dark:text-sky-300">
                   Checking compatibility and potential conflicts...
                 </p>
               </div>
@@ -140,7 +144,7 @@
             <div class="text-center">
               <div class="flex items-center justify-center gap-1 mb-1">
                 {#if analysis.autoMergeable}
-                  <CheckCircle class="h-4 w-4 text-green-500" />
+                  <CheckCircle class="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
                 {:else}
                   <AlertTriangle class="h-4 w-4 text-orange-500" />
                 {/if}
@@ -152,7 +156,7 @@
             </div>
 
             <div class="text-center">
-              <div class="text-lg font-bold text-purple-600">
+              <div class="text-lg font-bold text-violet-700 dark:text-violet-300">
                 {analysis.affectedFiles.length}
               </div>
               <div class="text-xs text-muted-foreground">Files affected</div>
@@ -180,7 +184,9 @@
     </CardHeader>
     <CardContent>
       {#if analysis.errorMessage}
-        <div class="rounded-lg border border-orange-200 bg-orange-50 p-4 dark:bg-orange-950/20">
+        <div
+          class="rounded-lg border border-orange-200 bg-orange-50 p-4 dark:border-orange-900 dark:bg-orange-950/30"
+        >
           <div class="flex items-start gap-3">
             <AlertTriangle class="mt-0.5 h-5 w-5 flex-shrink-0 text-orange-600" />
             <div>
@@ -194,14 +200,14 @@
           </div>
         </div>
       {:else if analysis.affectedFiles.length === 0}
-        <div class="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:bg-blue-950/20">
+        <div
+          class="rounded-lg border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30"
+        >
           <div class="flex items-start gap-3">
-            <Info class="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-600" />
+            <Info class="mt-0.5 h-5 w-5 flex-shrink-0 text-sky-700 dark:text-sky-300" />
             <div>
-              <h4 class="text-sm font-medium text-blue-800 dark:text-blue-200">
-                No Files Affected
-              </h4>
-              <p class="text-sm text-blue-700 dark:text-blue-300">
+              <h4 class="text-sm font-medium text-sky-900 dark:text-sky-200">No Files Affected</h4>
+              <p class="text-sm text-sky-800 dark:text-sky-300">
                 This patch doesn't appear to modify any files.
               </p>
             </div>
@@ -211,15 +217,17 @@
         <div class="space-y-3">
           <!-- Conflict Summary -->
           {#if analysis.conflictCount > 0}
-            <div class="rounded-lg border border-red-200 bg-red-50 p-3 dark:bg-red-950/20">
+            <div
+              class="rounded-lg border border-rose-200 bg-rose-50 p-3 dark:border-rose-900 dark:bg-rose-950/30"
+            >
               <div class="flex items-center gap-2">
-                <AlertTriangle class="h-4 w-4 text-red-600" />
-                <span class="text-sm font-medium text-red-800 dark:text-red-200">
+                <AlertTriangle class="h-4 w-4 text-rose-700 dark:text-rose-300" />
+                <span class="text-sm font-medium text-rose-900 dark:text-rose-200">
                   {analysis.conflictCount} potential conflict{analysis.conflictCount > 1 ? "s" : ""} detected
                 </span>
               </div>
               {#if analysis.conflictDetails && analysis.conflictDetails.length > 0}
-                <div class="mt-2 text-xs text-red-700 dark:text-red-300">
+                <div class="mt-2 text-xs text-rose-800 dark:text-rose-300">
                   <p>Conflicts detected in:</p>
                   <ul class="mt-1 list-disc list-inside space-y-1">
                     {#each analysis.conflictDetails.slice(0, 3) as conflict}
@@ -244,10 +252,12 @@
               {/if}
             </div>
           {:else}
-            <div class="rounded-lg border border-green-200 bg-green-50 p-3 dark:bg-green-950/20">
+            <div
+              class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/30"
+            >
               <div class="flex items-center gap-2">
-                <CheckCircle class="h-4 w-4 text-green-600" />
-                <span class="text-sm font-medium text-green-800 dark:text-green-200">
+                <CheckCircle class="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+                <span class="text-sm font-medium text-emerald-900 dark:text-emerald-200">
                   No conflicts detected
                 </span>
               </div>
@@ -261,7 +271,7 @@
               conflictDetail || (analysis.conflictCount > 0 && index < analysis.conflictCount)}
             <div
               class="flex items-center justify-between p-3 rounded border gap-3 {hasConflict
-                ? 'border-red-200 bg-red-50/50 dark:bg-red-950/10'
+                ? 'border-rose-200 bg-rose-50/50 dark:border-rose-900 dark:bg-rose-950/20'
                 : ''}"
             >
               <div class="flex items-center gap-3 min-w-0 flex-1">
@@ -269,7 +279,7 @@
                 <div class="min-w-0 flex-1">
                   <code class="text-sm font-mono truncate block" title={file}>{file}</code>
                   {#if conflictDetail?.type}
-                    <p class="text-xs text-red-600 dark:text-red-400 mt-1 truncate">
+                    <p class="text-xs text-rose-700 dark:text-rose-400 mt-1 truncate">
                       Type: {conflictDetail.type}
                       {#if conflictDetail.conflictMarkers && conflictDetail.conflictMarkers.length > 0}
                         - {conflictDetail.conflictMarkers.length} conflict region{conflictDetail
@@ -289,7 +299,7 @@
                   </Badge>
                   {#if conflictDetail?.conflictMarkers && conflictDetail.conflictMarkers.length > 0}
                     <span
-                      class="text-xs text-red-600 dark:text-red-400"
+                      class="text-xs text-rose-700 dark:text-rose-400"
                       title={`${conflictDetail.conflictMarkers.length} conflict region${conflictDetail.conflictMarkers.length > 1 ? "s" : ""} detected`}
                     >
                       {conflictDetail.conflictMarkers.length} region{conflictDetail.conflictMarkers
@@ -323,7 +333,9 @@
     </CardHeader>
     <CardContent>
       {#if analysis.errorMessage}
-        <div class="rounded-lg border border-orange-200 bg-orange-50 p-4 dark:bg-orange-950/20">
+        <div
+          class="rounded-lg border border-orange-200 bg-orange-50 p-4 dark:border-orange-900 dark:bg-orange-950/30"
+        >
           <div class="flex items-start gap-3">
             <AlertTriangle class="mt-0.5 h-5 w-5 flex-shrink-0 text-orange-600" />
             <div>
@@ -340,14 +352,16 @@
           </div>
         </div>
       {:else if normalizedDiff.length === 0}
-        <div class="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:bg-blue-950/20">
+        <div
+          class="rounded-lg border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30"
+        >
           <div class="flex items-start gap-3">
-            <Info class="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-600" />
+            <Info class="mt-0.5 h-5 w-5 flex-shrink-0 text-sky-700 dark:text-sky-300" />
             <div>
-              <h4 class="text-sm font-medium text-blue-800 dark:text-blue-200">
+              <h4 class="text-sm font-medium text-sky-900 dark:text-sky-200">
                 No Changes to Preview
               </h4>
-              <p class="text-sm text-blue-700 dark:text-blue-300">
+              <p class="text-sm text-sky-800 dark:text-sky-300">
                 This patch doesn't contain any code changes to display.
               </p>
             </div>
@@ -373,7 +387,9 @@
                 >
               </div>
             {:else}
-              <div class="mt-2 flex items-center gap-2 text-xs text-green-600">
+              <div
+                class="mt-2 flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-300"
+              >
                 <CheckCircle class="h-3 w-3" />
                 <span>Clean changes - ready for merge</span>
               </div>

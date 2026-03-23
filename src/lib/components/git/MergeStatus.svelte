@@ -38,34 +38,34 @@
   const getStatusIcon = (analysis: string) => {
     switch (analysis) {
       case "clean":
-        return { icon: CheckCircle, color: "text-green-500" };
+        return { icon: CheckCircle, color: "text-emerald-600 dark:text-emerald-300" };
       case "conflicts":
-        return { icon: AlertTriangle, color: "text-orange-500" };
+        return { icon: AlertTriangle, color: "text-amber-600 dark:text-amber-300" };
       case "up-to-date":
-        return { icon: Info, color: "text-blue-500" };
+        return { icon: Info, color: "text-sky-600 dark:text-sky-300" };
       case "diverged":
-        return { icon: AlertTriangle, color: "text-yellow-500" };
+        return { icon: AlertTriangle, color: "text-yellow-600 dark:text-yellow-300" };
       case "error":
-        return { icon: XCircle, color: "text-red-500" };
+        return { icon: XCircle, color: "text-rose-600 dark:text-rose-300" };
       default:
-        return { icon: Clock, color: "text-gray-500" };
+        return { icon: Clock, color: "text-muted-foreground" };
     }
   };
 
   const getStatusColor = (analysis: string) => {
     switch (analysis) {
       case "clean":
-        return "border-green-200 bg-green";
+        return "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20";
       case "conflicts":
-        return "border-orange-200 bg-orange";
+        return "border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20";
       case "up-to-date":
-        return "border-blue-200 bg-blue";
+        return "border-sky-200 bg-sky-50/50 dark:border-sky-900 dark:bg-sky-950/20";
       case "diverged":
-        return "border-yellow-200 bg-yellow";
+        return "border-yellow-200 bg-yellow-50/50 dark:border-yellow-900 dark:bg-yellow-950/20";
       case "error":
-        return "border-red-200 bg-red";
+        return "border-rose-200 bg-rose-50/50 dark:border-rose-900 dark:bg-rose-950/20";
       default:
-        return "border-gray-200 bg-gray";
+        return "border-border bg-card";
     }
   };
 
@@ -89,7 +89,7 @@
   };
 </script>
 
-<Card class={result ? getStatusColor(result.analysis) : "border-gray-200"}>
+<Card class={result ? getStatusColor(result.analysis) : "border-border"}>
   <CardHeader>
     <CardTitle class="flex items-center gap-2 text-md">
       <GitMerge class="h-4 w-4" />
@@ -119,7 +119,7 @@
       {#if result.analysis === "clean"}
         <div class="space-y-2">
           <div class="flex items-center gap-2 text-sm">
-            <CheckCircle class="h-4 w-4 text-green-500" />
+            <CheckCircle class="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
             <span class="font-medium">Ready to merge</span>
           </div>
           {#if result.fastForward}
@@ -143,7 +143,7 @@
 
           <div class="space-y-2">
             {#each result.conflictDetails ?? [] as conflict (conflict.file)}
-              <Card class="border-orange-200">
+              <Card class="border-amber-200 dark:border-amber-900">
                 <CardContent class="p-3">
                   <div class="flex items-center justify-between mb-2">
                     <span class="font-mono text-sm">{conflict.file}</span>
@@ -179,14 +179,18 @@
       {#if result.analysis === "diverged"}
         <div class="space-y-3">
           <div class="flex items-center gap-2 text-sm">
-            <AlertTriangle class="h-4 w-4 text-yellow-500" />
+            <AlertTriangle class="h-4 w-4 text-yellow-600 dark:text-yellow-300" />
             <span class="font-medium">Branch Divergence Detected</span>
           </div>
           <div class="text-sm text-muted-foreground space-y-2">
             <p>The local branch has diverged from the remote repository.</p>
-            <div class="bg-yellow-50 border border-yellow-200 rounded-md p-3">
-              <p class="font-medium text-yellow-800 mb-2">Recommended Actions:</p>
-              <ul class="text-sm text-yellow-700 space-y-1">
+            <div
+              class="rounded-md border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-900 dark:bg-yellow-950/30"
+            >
+              <p class="mb-2 font-medium text-yellow-800 dark:text-yellow-200">
+                Recommended Actions:
+              </p>
+              <ul class="space-y-1 text-sm text-yellow-700 dark:text-yellow-300">
                 <li>• Use the "Reset Repo" button to sync with remote (discards local changes)</li>
               </ul>
             </div>

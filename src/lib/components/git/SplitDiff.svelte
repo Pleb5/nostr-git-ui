@@ -931,9 +931,9 @@
               )} border-r border-border"
             >
               {#if line.type === "+"}
-                <Plus class="h-3 w-3 mx-auto text-green-600" />
+                <Plus class="h-3 w-3 mx-auto text-emerald-700 dark:text-emerald-300" />
               {:else if line.type === "-"}
-                <Minus class="h-3 w-3 mx-auto text-red-600" />
+                <Minus class="h-3 w-3 mx-auto text-rose-700 dark:text-rose-300" />
               {:else}
                 <span class="text-muted-foreground"> </span>
               {/if}
@@ -1010,12 +1010,12 @@
   }
 
   .overflow-x-auto::-webkit-scrollbar-thumb {
-    background-color: rgba(0, 0, 0, 0.2);
+    background-color: hsl(var(--muted-foreground) / 0.35);
     border-radius: 3px;
   }
 
   .overflow-x-auto::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(0, 0, 0, 0.3);
+    background-color: hsl(var(--muted-foreground) / 0.55);
   }
 
   :global(.hljs) {

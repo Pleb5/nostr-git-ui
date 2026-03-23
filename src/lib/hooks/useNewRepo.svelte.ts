@@ -10,10 +10,12 @@ import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
 import { checkGraspRepoExists } from "../utils/grasp-availability.js";
 import {
   createGraspAnnouncementAndState,
+  didRelayAckGraspEvents,
   normalizeGraspOrigins,
   publishGraspRepoEvents,
   toNpubOrSelf,
   waitForGraspProvisioning,
+  type GraspPublishRelayAck,
 } from "../utils/grasp-pipeline.js";
 
 async function checkGraspRepoAvailability(
@@ -468,7 +470,7 @@ export interface UseNewRepoOptions {
   onRepoCreated?: (result: NewRepoResult) => void;
   onPublishEvent?: (
     event: Omit<NostrEvent, "id" | "sig" | "pubkey" | "created_at">
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   userPubkey?: string; // User's nostr pubkey (required for GRASP repos)
   /** Callback to create NIP-98 auth header for GRASP push (must be called on main thread) */
   createAuthHeader?: (url: string, method?: string) => Promise<string | null>;
@@ -615,6 +617,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       let announcementEvent: any = undefined;
       let stateEvent: any = undefined;
       let provisionalAnnouncementCreatedAt: number | undefined;
+      let graspPublishAck: GraspPublishRelayAck | null = null;
 
       // Publish provisional GRASP events before creating remote repositories.
       if (includesGrasp) {
@@ -661,7 +664,11 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         stateEvent = graspEvents.stateEvent;
         provisionalAnnouncementCreatedAt = announcementEvent.created_at;
 
-        await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
+        graspPublishAck = await publishGraspRepoEvents(
+          onPublishEvent,
+          announcementEvent,
+          stateEvent
+        );
         updateProgress("grasp-events", "GRASP state and announcement published", "completed");
       }
 
@@ -696,14 +703,36 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
             if (!primaryRelay || !providerConfig.authorPubkey) {
               throw new Error("GRASP relay URL and author pubkey are required before pushing");
             }
-            await waitForGraspProvisioning({
-              relayUrl: primaryRelay,
-              userPubkey: providerConfig.authorPubkey,
-              owner: toNpubOrSelf(providerConfig.authorPubkey),
-              repoName: providerConfig.name,
-              maxAttempts: 12,
-              delayMs: 1500,
-            });
+
+            if (
+              graspPublishAck?.hasRelayOutcomes &&
+              !didRelayAckGraspEvents(graspPublishAck, primaryRelay)
+            ) {
+              throw new Error(
+                "Selected GRASP relay did not ACK announcement/state events; skipping push to avoid inconsistent state"
+              );
+            }
+
+            try {
+              await waitForGraspProvisioning({
+                relayUrl: primaryRelay,
+                userPubkey: providerConfig.authorPubkey,
+                owner: toNpubOrSelf(providerConfig.authorPubkey),
+                repoName: providerConfig.name,
+                maxAttempts: 15,
+                delayMs: 3000,
+              });
+            } catch (provisionError) {
+              const message =
+                provisionError instanceof Error
+                  ? provisionError.message
+                  : String(provisionError || "Unknown provisioning error");
+              updateProgress(
+                pushStep,
+                `Provisioning check timed out (${message}). Continuing with push...`,
+                "running"
+              );
+            }
           }
 
           updateProgress(pushStep, `Pushing to ${provider}...`, "running");
@@ -1009,7 +1038,20 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
 
         const availability = await checkGraspRepoAvailability(config.name, wsOrigin, token);
         if (!availability.available) {
-          throw new Error(availability.reason || "Repository name is not available");
+          const reason = availability.reason || "Repository name is not available";
+          const isAlreadyExists = /already exists/i.test(reason);
+          if (!isAlreadyExists) {
+            throw new Error(reason);
+          }
+
+          const owner = availability.username || toNpubOrSelf(token);
+          const { httpOrigin } = normalizeGraspOrigins(wsOrigin);
+          const existingRemoteUrl = `${httpOrigin}/${owner}/${config.name}.git`;
+          return {
+            url: existingRemoteUrl,
+            provider: "grasp",
+            webUrl: existingRemoteUrl.replace(/\.git$/, ""),
+          };
         }
 
         const result = await api.createRemoteRepo({
@@ -1152,13 +1194,32 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       // For GRASP, use direct push since we just created the local repo
       console.log("[NEW REPO] Using direct pushToRemote for GRASP");
 
-      // Create NIP-98 auth headers on main thread if callback is provided
-      // Git push requires auth headers for TWO different URLs:
-      // 1. GET /info/refs?service=git-receive-pack (discovery)
-      // 2. POST /git-receive-pack (upload)
-      let authHeaders: Record<string, string> | null = null;
-      if (options.createAuthHeader) {
-        console.log("[NEW REPO] Creating NIP-98 auth headers for GRASP push");
+      const requiresNip98Retry = (result: any): boolean => {
+        const summary = [
+          result?.error,
+          result?.details,
+          result?.code,
+          result?.message,
+          result?.stack,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return (
+          summary.includes("401") ||
+          summary.includes("403") ||
+          summary.includes("unauthorized") ||
+          summary.includes("forbidden") ||
+          summary.includes("authentication") ||
+          summary.includes("auth required")
+        );
+      };
+
+      const createNip98AuthHeaders = async (): Promise<Record<string, string> | null> => {
+        if (!options.createAuthHeader) return null;
+
+        console.log("[NEW REPO] Creating NIP-98 auth headers for GRASP auth retry");
 
         // Build the smart HTTP URL (same logic as worker)
         let smartUrl = pushUrl;
@@ -1167,7 +1228,9 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           let p = u.pathname.startsWith("/git/") ? u.pathname.slice(4) : u.pathname;
           if (!p.endsWith(".git")) p = p.endsWith("/") ? `${p.slice(0, -1)}.git` : `${p}.git`;
           smartUrl = `${u.protocol}//${u.host}${p}`;
-        } catch {}
+        } catch {
+          // pass
+        }
 
         const infoRefsUrl = `${smartUrl}/info/refs?service=git-receive-pack`;
         const receivePackUrl = `${smartUrl}/git-receive-pack`;
@@ -1179,28 +1242,45 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           options.createAuthHeader(receivePackUrl, "POST"),
         ]);
 
-        if (infoRefsAuth && receivePackAuth) {
-          authHeaders = {
-            [infoRefsUrl]: infoRefsAuth,
-            [receivePackUrl]: receivePackAuth,
-          };
-          console.log("[NEW REPO] NIP-98 auth headers created successfully for both URLs");
-        } else {
+        if (!infoRefsAuth || !receivePackAuth) {
           console.warn("[NEW REPO] Failed to create NIP-98 auth headers", {
             infoRefsAuth: !!infoRefsAuth,
             receivePackAuth: !!receivePackAuth,
           });
+          return null;
         }
-      }
 
-      const directPushResult = await api.pushToRemote({
+        console.log("[NEW REPO] NIP-98 auth headers created successfully for both URLs");
+        return {
+          [infoRefsUrl]: infoRefsAuth,
+          [receivePackUrl]: receivePackAuth,
+        };
+      };
+
+      // Unauthenticated first (GRASP-01 smart-http), then fallback to NIP-98 only when needed.
+      let directPushResult = await api.pushToRemote({
         repoId: canonicalKey || config.name,
         remoteUrl: pushUrl,
         branch: config.defaultBranch,
         token: providerToken,
         provider: config.provider as any,
-        authHeaders, // Pass pre-signed NIP-98 auth headers (keyed by URL)
       });
+
+      if (!directPushResult?.success && requiresNip98Retry(directPushResult)) {
+        const authHeaders = await createNip98AuthHeaders();
+        if (authHeaders) {
+          console.log("[NEW REPO] Retrying GRASP push with NIP-98 headers");
+          directPushResult = await api.pushToRemote({
+            repoId: canonicalKey || config.name,
+            remoteUrl: pushUrl,
+            branch: config.defaultBranch,
+            token: providerToken,
+            provider: config.provider as any,
+            authHeaders,
+          });
+        }
+      }
+
       const pushResult = {
         success: directPushResult?.success || false,
         pushed: directPushResult?.success,

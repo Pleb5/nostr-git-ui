@@ -222,7 +222,7 @@
       {/if}
 
       {#if hasErrors}
-        <div class="flex items-center gap-2 text-sm text-red-600">
+        <div class="flex items-center gap-2 text-sm text-rose-700 dark:text-rose-300">
           <AlertCircle class="h-4 w-4" />
           {storeState.errors.size} error{storeState.errors.size !== 1 ? "s" : ""}
         </div>
@@ -258,15 +258,17 @@
 
   <!-- Global Error -->
   {#if globalError}
-    <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-      <div class="flex items-center gap-2 text-red-800 mb-2">
+    <div
+      class="mb-6 p-4 rounded-lg border border-rose-200 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30"
+    >
+      <div class="mb-2 flex items-center gap-2 text-rose-900 dark:text-rose-200">
         <AlertCircle class="h-5 w-5" />
         <span class="font-semibold">Error</span>
       </div>
-      <p class="text-red-700">{globalError}</p>
+      <p class="text-rose-800 dark:text-rose-300">{globalError}</p>
       <button
         onclick={() => (globalError = null)}
-        class="mt-2 px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+        class="mt-2 rounded bg-rose-700 px-3 py-1 text-sm text-white transition-colors hover:bg-rose-800 dark:bg-rose-600 dark:hover:bg-rose-500"
       >
         Dismiss
       </button>

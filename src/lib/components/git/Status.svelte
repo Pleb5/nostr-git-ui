@@ -138,32 +138,37 @@
       case "open":
         return {
           icon: CircleDot,
-          color: "text-emerald-600",
-          bg: "bg-emerald-50",
-          border: "border-emerald-200",
+          color: "text-emerald-700 dark:text-emerald-300",
+          bg: "bg-emerald-50 dark:bg-emerald-950/30",
+          border: "border-emerald-200 dark:border-emerald-900",
         };
       case "draft":
         return {
           icon: Clock,
-          color: "text-amber-600",
-          bg: "bg-amber-50",
-          border: "border-amber-200",
+          color: "text-amber-700 dark:text-amber-300",
+          bg: "bg-amber-50 dark:bg-amber-950/30",
+          border: "border-amber-200 dark:border-amber-900",
         };
       case "closed":
-        return { icon: X, color: "text-rose-600", bg: "bg-rose-50", border: "border-rose-200" };
+        return {
+          icon: X,
+          color: "text-rose-700 dark:text-rose-300",
+          bg: "bg-rose-50 dark:bg-rose-950/30",
+          border: "border-rose-200 dark:border-rose-900",
+        };
       case "applied":
         return {
           icon: CircleCheck,
-          color: "text-sky-600",
-          bg: "bg-sky-50",
-          border: "border-sky-200",
+          color: "text-sky-700 dark:text-sky-300",
+          bg: "bg-sky-50 dark:bg-sky-950/30",
+          border: "border-sky-200 dark:border-sky-900",
         };
       case "resolved":
         return {
           icon: CircleCheck,
-          color: "text-sky-600",
-          bg: "bg-sky-50",
-          border: "border-sky-200",
+          color: "text-sky-700 dark:text-sky-300",
+          bg: "bg-sky-50 dark:bg-sky-950/30",
+          border: "border-sky-200 dark:border-sky-900",
         };
     }
   };

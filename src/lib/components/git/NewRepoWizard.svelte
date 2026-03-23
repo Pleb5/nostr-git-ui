@@ -48,7 +48,7 @@
     onCancel?: () => void;
     onPublishEvent?: (
       event: Omit<NostrEvent, "id" | "sig" | "pubkey" | "created_at">
-    ) => Promise<void>;
+    ) => Promise<unknown>;
     defaultRelays?: string[];
     userPubkey?: string; // User's nostr pubkey (required for GRASP repos)
     /** Default author name for git commits (from user profile) */
@@ -143,6 +143,7 @@
       graspServerOptions.length > 0
     ) {
       graspRelayUrls = [...graspServerOptions];
+      syncGraspRelaysToPreferredRelays(graspServerOptions);
     }
   });
 
@@ -194,6 +195,14 @@
   function arraysEqual(a: string[], b: string[]): boolean {
     if (a.length !== b.length) return false;
     return a.every((value, index) => value === b[index]);
+  }
+
+  function syncGraspRelaysToPreferredRelays(urls: string[]) {
+    if (!selectedProviders.includes("grasp")) return;
+    const merged = dedupeStrings([...(advancedSettings.relays || []), ...(urls || [])]);
+    if (!arraysEqual(advancedSettings.relays, merged)) {
+      advancedSettings.relays = merged;
+    }
   }
 
   function buildBudabitRepoUrl(name: string): string | undefined {
@@ -502,11 +511,13 @@
     }
     // Recompute defaults for advanced settings
     updateAdvancedDefaults();
+    syncGraspRelaysToPreferredRelays(graspRelayUrls);
   }
 
   // GRASP relay URLs handler
   function handleRelayUrlsChange(urls: string[]) {
     graspRelayUrls = urls;
+    syncGraspRelaysToPreferredRelays(urls);
     const primary = urls[0] || "";
     const { wsOrigin } = deriveOrigins(primary);
     const relayTarget = wsOrigin || primary;

@@ -101,13 +101,13 @@
 }
 
 .diff-line-number.added {
-  background-color: #dcfce7;
-  color: #15803d;
+  background-color: var(--diff-bg-added);
+  color: var(--diff-text-added);
 }
 
 .diff-line-number.removed {
-  background-color: #fecaca;
-  color: #b91c1c;
+  background-color: var(--diff-bg-removed);
+  color: var(--diff-text-removed);
 }
 
 /* Change indicators */
@@ -122,13 +122,13 @@
 }
 
 .diff-change-indicator.added {
-  background-color: #dcfce7;
-  color: #16a34a;
+  background-color: var(--diff-bg-added);
+  color: var(--diff-text-added);
 }
 
 .diff-change-indicator.removed {
-  background-color: #fecaca;
-  color: #dc2626;
+  background-color: var(--diff-bg-removed);
+  color: var(--diff-text-removed);
 }
 
 /* Code content */
@@ -181,23 +181,23 @@
 
 /* File status indicators */
 .file-status-added {
-  color: #16a34a;
-  background-color: #f0fdf4;
+  color: var(--diff-text-added);
+  background-color: var(--diff-bg-added);
 }
 
 .file-status-modified {
-  color: #2563eb;
-  background-color: #eff6ff;
+  color: hsl(var(--primary));
+  background-color: hsl(var(--primary) / 0.15);
 }
 
 .file-status-deleted {
-  color: #dc2626;
-  background-color: #fef2f2;
+  color: var(--diff-text-removed);
+  background-color: var(--diff-bg-removed);
 }
 
 .file-status-renamed {
-  color: #9333ea;
-  background-color: #faf5ff;
+  color: hsl(var(--accent));
+  background-color: hsl(var(--accent) / 0.15);
 }
 
 /* Hunk headers */
@@ -241,16 +241,16 @@
 
 /* Error states */
 .diff-error {
-  background-color: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #991b1b;
+  background-color: hsl(var(--destructive) / 0.12);
+  border: 1px solid hsl(var(--destructive) / 0.45);
+  color: hsl(var(--destructive));
   padding: 1rem;
   border-radius: 0.5rem;
   margin: 1rem 0;
 }
 
 .diff-error-icon {
-  color: #dc2626;
+  color: hsl(var(--destructive));
   margin-right: 0.5rem;
 }
 

@@ -47,6 +47,7 @@ import {
 } from "@nostr-git/core/git";
 import { VendorReadRouter } from "./VendorReadRouter";
 import { normalizeGitRefName } from "./branch-ref";
+import { isGraspRepoHttpUrl } from "$lib/utils/grasp-url";
 
 export type PushFanoutMode = "best-effort" | "all-or-nothing";
 
@@ -2111,9 +2112,7 @@ export class Repo {
       let token: string | undefined = undefined;
 
       const looksLikeGrasp =
-        provider === "grasp" ||
-        /^wss?:\/\//i.test(remoteUrl) ||
-        /relay\.ngit\.dev|gitnostr\.com|grasp/i.test(remoteUrl);
+        provider === "grasp" || /^wss?:\/\//i.test(remoteUrl) || isGraspRepoHttpUrl(remoteUrl);
       if (!looksLikeGrasp) {
         if (!host) {
           results.push({

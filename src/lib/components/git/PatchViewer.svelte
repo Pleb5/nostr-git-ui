@@ -171,12 +171,14 @@
       </div>
 
       {#if !selectedPatch?.diff || selectedPatch.diff.length === 0}
-        <div class="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:bg-blue-950/20">
+        <div
+          class="rounded-lg border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/30"
+        >
           <div class="flex items-start gap-3">
-            <Info class="mt-0.5 h-5 w-5 flex-shrink-0 text-blue-600" />
+            <Info class="mt-0.5 h-5 w-5 flex-shrink-0 text-sky-700 dark:text-sky-300" />
             <div>
-              <h4 class="text-sm font-medium text-blue-800 dark:text-blue-200">No File Changes</h4>
-              <p class="text-sm text-blue-700 dark:text-blue-300">
+              <h4 class="text-sm font-medium text-sky-900 dark:text-sky-200">No File Changes</h4>
+              <p class="text-sm text-sky-800 dark:text-sky-300">
                 This patch doesn't modify any files.
               </p>
             </div>
@@ -191,11 +193,15 @@
                 <AlertTriangle class="h-4 w-4 text-orange-600" />
                 <span class="text-sm font-medium text-orange-600">No line changes detected</span>
               {:else if fileStats.added + fileStats.removed < 10}
-                <CheckCircle class="h-4 w-4 text-green-600" />
-                <span class="text-sm font-medium text-green-600">Minor changes</span>
+                <CheckCircle class="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+                <span class="text-sm font-medium text-emerald-700 dark:text-emerald-300"
+                  >Minor changes</span
+                >
               {:else if fileStats.added + fileStats.removed < 100}
-                <Info class="h-4 w-4 text-blue-600" />
-                <span class="text-sm font-medium text-blue-600">Moderate changes</span>
+                <Info class="h-4 w-4 text-sky-700 dark:text-sky-300" />
+                <span class="text-sm font-medium text-sky-700 dark:text-sky-300"
+                  >Moderate changes</span
+                >
               {:else}
                 <AlertTriangle class="h-4 w-4 text-orange-600" />
                 <span class="text-sm font-medium text-orange-600">Significant changes</span>
@@ -234,8 +240,12 @@
             </div>
           </div>
 
-          <div class="rounded-lg border bg-green-50 p-3 text-center dark:bg-green-950/20">
-            <div class="text-2xl font-bold text-green-600">+{fileStats.added}</div>
+          <div
+            class="rounded-lg border bg-emerald-50 p-3 text-center dark:border-emerald-900 dark:bg-emerald-950/30"
+          >
+            <div class="text-2xl font-bold text-emerald-700 dark:text-emerald-300">
+              +{fileStats.added}
+            </div>
             <div class="text-sm text-muted-foreground">Lines Added</div>
             <div class="text-xs text-muted-foreground mt-1">
               {fileStats.added === 0
@@ -248,8 +258,12 @@
             </div>
           </div>
 
-          <div class="rounded-lg border bg-red-50 p-3 text-center dark:bg-red-950/20">
-            <div class="text-2xl font-bold text-red-600">-{fileStats.removed}</div>
+          <div
+            class="rounded-lg border bg-rose-50 p-3 text-center dark:border-rose-900 dark:bg-rose-950/30"
+          >
+            <div class="text-2xl font-bold text-rose-700 dark:text-rose-300">
+              -{fileStats.removed}
+            </div>
             <div class="text-sm text-muted-foreground">Lines Removed</div>
             <div class="text-xs text-muted-foreground mt-1">
               {fileStats.removed === 0

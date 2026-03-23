@@ -112,15 +112,40 @@
   const getStatusInfo = (status: FileDiff["status"]) => {
     switch (status) {
       case "added":
-        return { icon: FilePlus, color: "text-green-600", bg: "bg-green-50", label: "A" };
+        return {
+          icon: FilePlus,
+          color: "text-emerald-700 dark:text-emerald-300",
+          bg: "bg-emerald-50 dark:bg-emerald-950/30",
+          label: "A",
+        };
       case "deleted":
-        return { icon: FileX, color: "text-red-600", bg: "bg-red-50", label: "D" };
+        return {
+          icon: FileX,
+          color: "text-rose-700 dark:text-rose-300",
+          bg: "bg-rose-50 dark:bg-rose-950/30",
+          label: "D",
+        };
       case "modified":
-        return { icon: FileText, color: "text-blue-600", bg: "bg-blue-50", label: "M" };
+        return {
+          icon: FileText,
+          color: "text-sky-700 dark:text-sky-300",
+          bg: "bg-sky-50 dark:bg-sky-950/30",
+          label: "M",
+        };
       case "renamed":
-        return { icon: FileIcon, color: "text-purple-600", bg: "bg-purple-50", label: "R" };
+        return {
+          icon: FileIcon,
+          color: "text-violet-700 dark:text-violet-300",
+          bg: "bg-violet-50 dark:bg-violet-950/30",
+          label: "R",
+        };
       default:
-        return { icon: FileText, color: "text-gray-600", bg: "bg-gray-50", label: "?" };
+        return {
+          icon: FileText,
+          color: "text-muted-foreground",
+          bg: "bg-muted/60",
+          label: "?",
+        };
     }
   };
 
@@ -172,9 +197,9 @@
   const getLineClass = (type: "+" | "-" | " ") => {
     switch (type) {
       case "+":
-        return "bg-green-50 border-l-2 border-l-green-500";
+        return "border-l-2 border-l-emerald-600 bg-emerald-200/70 dark:bg-emerald-900/50";
       case "-":
-        return "bg-red-50 border-l-2 border-l-red-500";
+        return "border-l-2 border-l-rose-600 bg-rose-200/70 dark:bg-rose-900/50";
       default:
         return "bg-background hover:bg-muted/30";
     }
@@ -184,9 +209,9 @@
   const getLineNumClass = (type: "+" | "-" | " ") => {
     switch (type) {
       case "+":
-        return "bg-green-100 text-green-700";
+        return "bg-emerald-300 text-emerald-950 dark:bg-emerald-800/70 dark:text-emerald-100";
       case "-":
-        return "bg-red-100 text-red-700";
+        return "bg-rose-300 text-rose-950 dark:bg-rose-800/70 dark:text-rose-100";
       default:
         return "bg-muted text-muted-foreground";
     }
@@ -195,7 +220,7 @@
   // Highlight code content using highlight.js
   const highlightCode = (content: string, language: string): string => {
     if (!content) return "";
-    
+
     try {
       // Check if the language is registered
       if (hljs.getLanguage(language)) {
@@ -207,10 +232,7 @@
       return result.value;
     } catch (e) {
       // If highlighting fails, return escaped content
-      return content
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      return content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
   };
 
@@ -354,9 +376,9 @@
                 )} border-r border-border"
               >
                 {#if line.type === "+"}
-                  <Plus class="h-3 w-3 mx-auto text-green-600" />
+                  <Plus class="h-3 w-3 mx-auto text-emerald-700 dark:text-emerald-300" />
                 {:else if line.type === "-"}
-                  <Minus class="h-3 w-3 mx-auto text-red-600" />
+                  <Minus class="h-3 w-3 mx-auto text-rose-700 dark:text-rose-300" />
                 {:else}
                   <span class="text-muted-foreground"> </span>
                 {/if}
@@ -421,17 +443,46 @@
   }
 
   .overflow-x-auto::-webkit-scrollbar-thumb {
-    background-color: rgba(0, 0, 0, 0.2);
+    background-color: hsl(var(--muted-foreground) / 0.35);
     border-radius: 3px;
   }
 
   .overflow-x-auto::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(0, 0, 0, 0.3);
+    background-color: hsl(var(--muted-foreground) / 0.55);
   }
 
   /* Syntax highlighting overrides */
   :global(.hljs) {
     background: transparent !important;
     color: inherit !important;
+  }
+
+  :global(.hljs-keyword),
+  :global(.hljs-selector-tag),
+  :global(.hljs-literal),
+  :global(.hljs-title),
+  :global(.hljs-section),
+  :global(.hljs-type) {
+    color: hsl(var(--primary));
+  }
+
+  :global(.hljs-string),
+  :global(.hljs-attr),
+  :global(.hljs-attribute),
+  :global(.hljs-template-tag),
+  :global(.hljs-template-variable) {
+    color: hsl(var(--accent-foreground));
+  }
+
+  :global(.hljs-number),
+  :global(.hljs-symbol),
+  :global(.hljs-bullet) {
+    color: hsl(var(--secondary-foreground));
+  }
+
+  :global(.hljs-comment),
+  :global(.hljs-quote) {
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
   }
 </style>

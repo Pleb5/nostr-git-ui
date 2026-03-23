@@ -39,7 +39,7 @@
   interface Props {
     repo: Repo;
     pubkey: string;
-    onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<void>;
+    onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<unknown>;
     onRollbackPublishedRepoEvents?: (params: {
       repoName: string;
       relays: string[];
@@ -92,10 +92,15 @@
       onForkCompleted: (result: ForkResult) => {
         console.log("🎉 Fork completed:", result);
         completedResult = result;
+        const isPartial = Boolean(result.pushReport?.partialSuccess);
         toast.push({
-          message: "Repository forked successfully!",
-          variant: "default",
+          message: isPartial
+            ? "Repository fork completed with partial git push"
+            : "Repository forked successfully!",
+          variant: isPartial ? "warning" : "default",
         });
+        if (isPartial) return;
+
         if (navigateToForkedRepo && result.announcementEvent) {
           navigateToForkedRepo(result);
         }
@@ -222,6 +227,10 @@
   const ownerIsNostr = $derived.by(() =>
     /^(nostr:)?(npub|nprofile)1/i.test(ownerDisplayOwner || "")
   );
+  const currentUserDisplayOwner = $derived.by(() => toDisplayOwner(pubkey || ""));
+  const currentUserIsNostr = $derived.by(() =>
+    /^(nostr:)?(npub|nprofile)1/i.test(currentUserDisplayOwner || "")
+  );
 
   // Determine default service based on hostname
   function getDefaultService(hostname: string): string {
@@ -240,6 +249,12 @@
     if (completedResult?.repoId) return completedResult.repoId;
     return `${ownerDisplayOwner}/${forkName}`;
   });
+
+  function getProgressUserDisplay(message: string): string | undefined {
+    const match = String(message || "").match(/^Current user:\s*(.+)$/i);
+    if (!match || !match[1]) return undefined;
+    return toDisplayOwner(match[1].trim());
+  }
   let existingForkInfo = $state<
     | {
         exists: boolean;
@@ -891,6 +906,21 @@
     relayUrlError = ok ? undefined : "Invalid relay URL. Must start with ws:// or wss://";
   }
 
+  $effect(() => {
+    if (selectedService !== "grasp") return;
+
+    const relay = relayUrl.trim();
+    if (!relay) return;
+
+    const isValidRelay = validateGraspServerUrl(relay) || /^wss?:\/\//i.test(relay);
+    if (!isValidRelay) return;
+
+    const alreadyIncluded = preferredRelays.some((value) => value.trim() === relay);
+    if (!alreadyIncluded) {
+      preferredRelays = [...preferredRelays, relay];
+    }
+  });
+
   // Computed properties for progress handling
   const isProgressComplete = $derived.by(() => {
     // If no progress or empty progress array, fork hasn't started yet
@@ -968,7 +998,7 @@
     }
 
     // Check if fork already exists
-    if (existingForkInfo?.exists) {
+    if (existingForkInfo?.exists && selectedService !== "grasp") {
       console.log("❌ ForkRepoDialog: Fork already exists");
       return;
     }
@@ -1264,6 +1294,22 @@
                           </button>
                         {/each}
                       </div>
+                    </div>
+                  {/if}
+                  {#if currentUserDisplayOwner}
+                    <div class="mt-3 text-xs text-gray-400 flex items-center gap-1">
+                      <span>Current user:</span>
+                      {#if Markdown && currentUserIsNostr}
+                        <div class="fork-owner-inline">
+                          <Markdown
+                            content={currentUserDisplayOwner}
+                            relays={defaultRelays}
+                            variant="comment"
+                          />
+                        </div>
+                      {:else}
+                        <span class="text-gray-300">{currentUserDisplayOwner}</span>
+                      {/if}
                     </div>
                   {/if}
                 </div>
@@ -2030,13 +2076,31 @@
             <!-- Progress Steps -->
             <div class="space-y-2">
               {#each progress as step}
+                {@const progressUser = getProgressUserDisplay(step.message)}
+                {@const progressUserIsNostr = /^(nostr:)?(npub|nprofile)1/i.test(
+                  progressUser || ""
+                )}
                 <div class="flex items-center space-x-2 text-sm">
                   {#if step.status === "completed"}
                     <CheckCircle2 class="w-4 h-4 text-green-400" />
-                    <span class="text-green-400">{step.message}</span>
+                    {#if progressUser && Markdown && progressUserIsNostr}
+                      <span class="text-green-400">Current user:</span>
+                      <div class="fork-owner-inline text-green-400">
+                        <Markdown content={progressUser} relays={defaultRelays} variant="comment" />
+                      </div>
+                    {:else}
+                      <span class="text-green-400">{step.message}</span>
+                    {/if}
                   {:else if step.status === "running"}
                     <Loader2 class="w-4 h-4 text-blue-400 animate-spin" />
-                    <span class="text-blue-400">{step.message}</span>
+                    {#if progressUser && Markdown && progressUserIsNostr}
+                      <span class="text-blue-400">Current user:</span>
+                      <div class="fork-owner-inline text-blue-400">
+                        <Markdown content={progressUser} relays={defaultRelays} variant="comment" />
+                      </div>
+                    {:else}
+                      <span class="text-blue-400">{step.message}</span>
+                    {/if}
                   {:else if step.status === "error"}
                     <AlertCircle class="w-4 h-4 text-red-400" />
                     <span class="text-red-400">{step.message}</span>
@@ -2071,7 +2135,7 @@
               (selectedService === "grasp" && !relayUrl.trim()) ||
               !forkName.trim() ||
               availableServices.length === 0 ||
-              existingForkInfo?.exists}
+              (existingForkInfo?.exists && selectedService !== "grasp")}
             class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
           >
             {#if isForking}

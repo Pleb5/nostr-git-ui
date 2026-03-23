@@ -44,10 +44,12 @@ import type {
 import { nip19 } from "nostr-tools";
 import {
   createGraspAnnouncementAndState,
+  didRelayAckGraspEvents,
   normalizeGraspOrigins,
   publishGraspRepoEvents,
   toNpubOrSelf,
   waitForGraspProvisioning,
+  type GraspPublishRelayAck,
 } from "../utils/grasp-pipeline.js";
 
 /**
@@ -235,7 +237,7 @@ export interface UseImportRepoOptions {
   /**
    * Function to publish events (required if eventIO not provided)
    */
-  onPublishEvent?: (event: NostrEvent) => Promise<void>;
+  onPublishEvent?: (event: NostrEvent) => Promise<unknown>;
 
   /**
    * Roll back already-published repository announcement/state events.
@@ -315,7 +317,7 @@ interface ImportContext {
 
   // Event publishing
   onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>;
-  onPublishEvent?: (event: NostrEvent) => Promise<void>;
+  onPublishEvent?: (event: NostrEvent) => Promise<unknown>;
   eventIO?: EventIO;
   onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>;
 
@@ -441,7 +443,7 @@ async function initializeImportContext(
   abortController: ImportAbortController,
   withRateLimit: ImportContext["withRateLimit"],
   onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>,
-  onPublishEvent?: (event: NostrEvent) => Promise<void>,
+  onPublishEvent?: (event: NostrEvent) => Promise<unknown>,
   workerApi?: any,
   eventIO?: EventIO,
   onFetchEvents?: (filters: NostrFilter[]) => Promise<NostrEvent[]>
@@ -1486,6 +1488,7 @@ async function syncRepositoryToRemotes(
   const hasAnyNonGraspTarget = orderedTargets.some((target) => target.provider !== "grasp");
 
   const results: ImportRemotePushResult[] = [];
+  const graspAckByRelay = new Map<string, GraspPublishRelayAck>();
 
   for (let i = 0; i < orderedTargets.length; i++) {
     const target = orderedTargets[i];
@@ -1547,20 +1550,31 @@ async function syncRepositoryToRemotes(
             maintainers: [context.userPubkey],
           });
 
-          await publishGraspRepoEvents(
+          const relayAck = await publishGraspRepoEvents(
             context.onPublishEvent as any,
             graspEvents.announcementEvent,
             graspEvents.stateEvent
           );
+          graspAckByRelay.set(target.relayUrl, relayAck);
 
-          await waitForGraspProvisioning({
-            relayUrl: target.relayUrl,
-            userPubkey: context.userPubkey,
-            owner: toNpubOrSelf(context.userPubkey),
-            repoName,
-            maxAttempts: 12,
-            delayMs: 1500,
-          });
+          if (relayAck.hasRelayOutcomes && !didRelayAckGraspEvents(relayAck, target.relayUrl)) {
+            throw new Error(
+              "Selected GRASP relay did not ACK announcement/state events; skipping push"
+            );
+          }
+
+          try {
+            await waitForGraspProvisioning({
+              relayUrl: target.relayUrl,
+              userPubkey: context.userPubkey,
+              owner: toNpubOrSelf(context.userPubkey),
+              repoName,
+              maxAttempts: 15,
+              delayMs: 3000,
+            });
+          } catch {
+            // continue to push; provisioning checks can lag behind relay acceptance
+          }
 
           remoteUrl = createResult.remoteUrl;
           webUrl = guessWebUrl(createResult.remoteUrl);
@@ -1568,6 +1582,14 @@ async function syncRepositoryToRemotes(
 
         if (!remoteUrl) {
           throw new Error("No GRASP remote URL available for push");
+        }
+
+        const existingAck = graspAckByRelay.get(target.relayUrl || "");
+        if (
+          existingAck?.hasRelayOutcomes &&
+          !didRelayAckGraspEvents(existingAck, target.relayUrl || "")
+        ) {
+          throw new Error("Skipping GRASP push because target relay did not ACK published events");
         }
 
         const pushResult = await context.workerApi.pushToRemote({

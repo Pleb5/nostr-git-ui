@@ -5,10 +5,11 @@ import { nip19 } from "nostr-tools";
 import { tokens as tokensStore } from "$lib/stores/tokens";
 import { getGitServiceApi } from "@nostr-git/core/git";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
-import { checkGraspRepoExists } from "../utils/grasp-availability.js";
 import {
   createGraspAnnouncementAndState,
-  publishGraspRepoEvents,
+  didRelayAckGraspEvents,
+  extractPublishRelayAck,
+  type GraspPublishRelayAck,
   toNpubOrSelf,
   waitForGraspProvisioning,
 } from "../utils/grasp-pipeline.js";
@@ -41,6 +42,12 @@ export interface ForkResult {
   tags: string[];
   announcementEvent: RepoAnnouncementEvent;
   stateEvent: RepoStateEvent;
+  pushReport?: {
+    pushedRefs: string[];
+    failedRefs: Array<{ ref: string; error: string }>;
+    warnings: string[];
+    partialSuccess: boolean;
+  };
 }
 
 export interface ForkWorkflowDecision {
@@ -56,7 +63,7 @@ export interface UseForkRepoOptions {
   userPubkey?: string; // Nostr pubkey of the user creating the fork (required for maintainers)
   onProgress?: (progress: ForkProgress[]) => void;
   onForkCompleted?: (result: ForkResult) => void;
-  onPublishEvent?: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<void>;
+  onPublishEvent?: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<unknown>;
   onRollbackPublishedRepoEvents?: (params: { repoName: string; relays: string[] }) => Promise<void>;
 }
 
@@ -397,7 +404,17 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
     let graspEventsPublished = false;
     let graspPushCompleted = false;
+    let graspPushAttempted = false;
+    let graspPublishAck: GraspPublishRelayAck | null = null;
     let graspRollbackContext: { repoName: string; relays: string[] } | null = null;
+    let graspPushReport:
+      | {
+          pushedRefs: string[];
+          failedRefs: Array<{ ref: string; error: string }>;
+          warnings: string[];
+          partialSuccess: boolean;
+        }
+      | undefined;
 
     try {
       // Validate inputs early
@@ -491,18 +508,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         // can resolve repoId -> dir correctly.
         destinationPath = `${currentUser}/${config.forkName}`;
 
-        // Hard-block if target fork name already exists on the selected GRASP relay.
-        const probe = await checkGraspRepoExists({
-          relayUrl: relayUrl || "",
-          userPubkey: providerToken!,
-          owner: currentUser,
-          repoName: config.forkName,
-        });
-        if (probe.exists) {
-          throw new Error(
-            `FORK_EXISTS: A repository named "${config.forkName}" already exists on the selected GRASP relay. URL: ${probe.htmlUrl || "(unavailable)"}`
-          );
-        }
+        // Do not hard-block when a GRASP repo appears to exist already.
+        // Existing empty repos can happen after partial failures and should be recoverable by retrying push.
 
         // Step 3: Fork and clone repository using git-worker
         updateProgress("fork", "Creating fork and cloning repository...", "running");
@@ -610,7 +617,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       const branchCommits: Record<string, string> = workerResult.branchCommits || {};
       const tagCommits: Record<string, string> = workerResult.tagCommits || {};
-      const refs = [
+      const allCandidateRefs = [
         ...workerResult.branches
           .map((branch: string) => ({
             type: "heads" as const,
@@ -625,7 +632,41 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
             commit: tagCommits[tag],
           }))
           .filter((ref: { commit?: string }) => Boolean(ref.commit)),
-      ];
+      ].filter((ref) => !(ref.type === "heads" && ref.name === "HEAD"));
+
+      // For GRASP: verify each ref is actually resolvable in the local clone.
+      // Only locally-resolved refs go into the state event and push plan.
+      // This prevents the auth mismatch where the relay rejects a push because
+      // the pushed refs don't match what was declared in the state event.
+      const localRepoIdForVerify = workerResult.localRepoId || workerResult.repoId;
+      const unresolvedRefs: Array<{ ref: string; reason: string }> = [];
+      const refs: Array<{ type: "heads" | "tags"; name: string; commit: string }> = [];
+
+      if (provider === "grasp") {
+        updateProgress("events", "Verifying locally-resolvable refs...", "running");
+        for (const candidate of allCandidateRefs) {
+          const fullRef = `refs/${candidate.type}/${candidate.name}`;
+          try {
+            // Use the worker's resolveBranch for heads, or rely on branchCommits/tagCommits
+            // branchCommits already validated in repo-management, but double-check here
+            if (candidate.commit && /^[0-9a-f]{7,64}$/i.test(candidate.commit)) {
+              refs.push(candidate);
+            } else {
+              unresolvedRefs.push({ ref: fullRef, reason: "no OID in local clone" });
+            }
+          } catch {
+            unresolvedRefs.push({ ref: fullRef, reason: "resolution failed" });
+          }
+        }
+        if (unresolvedRefs.length > 0) {
+          console.warn(
+            `[GRASP] Skipping ${unresolvedRefs.length} unresolvable refs from state/push plan:`,
+            unresolvedRefs
+          );
+        }
+      } else {
+        refs.push(...allCandidateRefs);
+      }
 
       let announcementEvent = createRepoAnnouncementEvent({
         repoId: workerResult.repoId,
@@ -674,21 +715,28 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       updateProgress("events", "Nostr events created successfully", "completed");
 
-      // Step 5: Publish events (if handler provided)
+      // Step 5: Publish announcement + provisioning, then per-ref state/push cycles
       if (onPublishEvent) {
         updateProgress("publish", "Publishing to Nostr relays...", "running");
         try {
           if (provider === "grasp") {
-            await publishGraspRepoEvents(onPublishEvent, announcementEvent, stateEvent);
-            console.log("✅ Published GRASP repo announcement and state events");
+            // GRASP step 1: publish ONLY the announcement (30617).
+            // The state (30618) is published before each push and must represent the
+            // repository refs that should exist after that push (already-accepted refs +
+            // the current ref). Publishing an out-of-date state causes policy rejection.
+            updateProgress("publish", "Publishing GRASP announcement event...", "running");
+            const announcementResult = await onPublishEvent(announcementEvent);
+            graspPublishAck = extractPublishRelayAck(announcementResult);
+            console.log("✅ Published GRASP repo announcement event");
             graspEventsPublished = true;
+            updateProgress("publish", "Published GRASP announcement event", "completed");
           } else {
             await onPublishEvent(announcementEvent);
             console.log("✅ Published repo announcement event");
             await onPublishEvent(stateEvent);
             console.log("✅ Published repo state event");
+            updateProgress("publish", "Successfully published to Nostr relays", "completed");
           }
-          updateProgress("publish", "Successfully published to Nostr relays", "completed");
         } catch (publishError) {
           console.error("❌ Failed to publish Nostr events:", publishError);
           if (provider === "grasp") {
@@ -704,33 +752,303 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       }
 
       if (provider === "grasp") {
-        // Allow relay to provision smart-http endpoint from announcement/state events.
-        updateProgress("publish", "Waiting for GRASP relay provisioning...", "running");
-        const ownerForProbe = graspCurrentUser || userPubkey || "";
-        await waitForGraspProvisioning({
-          relayUrl: relayUrl || "",
-          userPubkey: providerToken || "",
-          owner: ownerForProbe,
-          repoName: config.forkName,
-          maxAttempts: 12,
-          delayMs: 1500,
-        });
-
-        updateProgress("push", "Pushing git data to GRASP Smart HTTP...", "running");
-        const localRepoId = workerResult.localRepoId || workerResult.repoId;
-        const pushResult = await gitWorkerApi.pushToRemote({
-          repoId: localRepoId,
-          remoteUrl: workerResult.forkUrl,
-          branch: workerResult.defaultBranch,
-          token: providerToken,
-          provider,
-        });
-
-        if (!pushResult?.success) {
-          throw new Error(pushResult?.error || "Failed to push git data to GRASP repository");
+        if (
+          relayUrl &&
+          graspPublishAck?.hasRelayOutcomes &&
+          !didRelayAckGraspEvents(graspPublishAck, relayUrl)
+        ) {
+          throw new Error("Selected GRASP relay did not ACK announcement event; skipping push");
         }
 
-        updateProgress("push", "Git data pushed to GRASP successfully", "completed");
+        // GRASP step 2: wait for relay to provision the bare git repo from the announcement.
+        updateProgress("publish", "Waiting for GRASP relay provisioning...", "running");
+        const ownerForProbe = graspCurrentUser || userPubkey || "";
+        try {
+          await waitForGraspProvisioning({
+            relayUrl: relayUrl || "",
+            userPubkey: providerToken || "",
+            owner: ownerForProbe,
+            repoName: config.forkName,
+            maxAttempts: 15,
+            delayMs: 3000,
+            onAttempt: ({ attempt, maxAttempts, repoExists, receivePackReady }) => {
+              const availability = [
+                repoExists ? "upload-pack ready" : "upload-pack pending",
+                receivePackReady ? "receive-pack ready" : "receive-pack pending",
+              ].join(", ");
+              updateProgress(
+                "publish",
+                `Waiting for GRASP provisioning (${attempt}/${maxAttempts}): ${availability}`,
+                "running"
+              );
+            },
+          });
+        } catch (provisionError) {
+          const message =
+            provisionError instanceof Error ? provisionError.message : String(provisionError || "");
+          warning =
+            "GRASP provisioning checks did not confirm readiness in time. Attempting push anyway...";
+          updateProgress(
+            "publish",
+            `Provisioning check timed out (${message}). Continuing with push...`,
+            "completed"
+          );
+        }
+
+        const refPushPlan = refs.map((ref) => ({
+          type: ref.type,
+          name: ref.name,
+          ref: `refs/${ref.type}/${ref.name}`,
+          commit: ref.commit,
+        }));
+
+        refPushPlan.sort((a, b) => {
+          const rank = (item: (typeof refPushPlan)[number]) => {
+            if (item.type === "heads" && item.name === workerResult.defaultBranch) return 0;
+            if (item.type === "heads") return 1;
+            return 2;
+          };
+
+          const rankDiff = rank(a) - rank(b);
+          if (rankDiff !== 0) return rankDiff;
+          return a.name.localeCompare(b.name);
+        });
+
+        if (refPushPlan.length === 0) {
+          throw new Error(
+            `No pushable refs resolved in local fork clone${
+              unresolvedRefs.length > 0
+                ? ` (${unresolvedRefs.map((r) => `${r.ref}: ${r.reason}`).join("; ")})`
+                : ""
+            }`
+          );
+        }
+
+        // Surface any refs that were skipped due to local resolution failure
+        if (unresolvedRefs.length > 0) {
+          warning = [
+            warning,
+            `${unresolvedRefs.length} ref(s) skipped (not found in local clone): ${unresolvedRefs.map((r) => r.ref).join(", ")}`,
+          ]
+            .filter(Boolean)
+            .join(" | ");
+        }
+
+        updateProgress(
+          "push",
+          `Pushing git refs to GRASP Smart HTTP (0/${refPushPlan.length})...`,
+          "running"
+        );
+        const localRepoId = workerResult.localRepoId || workerResult.repoId;
+        graspPushAttempted = true;
+        const pushedRefs: string[] = [];
+        const failedRefs: Array<{ ref: string; error: string }> = [];
+        const pushWarnings: string[] = [];
+        const acceptedRefsForState = new Set<string>();
+        const refDetailsByFullRef = new Map(
+          refPushPlan
+            .filter((item) => Boolean(item.commit))
+            .map((item) => [
+              item.ref,
+              {
+                type: item.type,
+                name: item.name,
+                commit: item.commit,
+              },
+            ])
+        );
+
+        // GRASP step 3: per-ref publish-state -> push cycle.
+        // For each ref, publish a cumulative state that includes refs already accepted by
+        // the relay plus the ref we're about to push. This keeps state aligned with the
+        // repository's effective ref set during multi-step pushes.
+        for (let i = 0; i < refPushPlan.length; i++) {
+          const item = refPushPlan[i];
+          updateProgress(
+            "push",
+            `Publishing state for ${item.type === "heads" ? "branch" : "tag"} ${item.name} (${i + 1}/${refPushPlan.length})...`,
+            "running"
+          );
+
+          // Build a cumulative state event for refs that should exist after this push.
+          // Include previously accepted refs to avoid dropping already-present refs
+          // (e.g., default branch during subsequent tag pushes).
+          if (onPublishEvent) {
+            try {
+              const stateRefKeys = Array.from(new Set([...acceptedRefsForState, item.ref]));
+              const stateRefs = stateRefKeys
+                .map((fullRef) => refDetailsByFullRef.get(fullRef))
+                .filter(
+                  (
+                    ref
+                  ): ref is {
+                    type: "heads" | "tags";
+                    name: string;
+                    commit: string;
+                  } => Boolean(ref?.commit)
+                );
+              const declaredHeads = stateRefs
+                .filter((ref) => ref.type === "heads")
+                .map((ref) => ref.name);
+              const stateHead = declaredHeads.includes(workerResult.defaultBranch)
+                ? workerResult.defaultBranch
+                : declaredHeads[0] || workerResult.defaultBranch;
+
+              const cumulativeState = createRepoStateEvent({
+                repoId: config.forkName,
+                refs: stateRefs.length > 0 ? stateRefs : undefined,
+                head: stateHead,
+              });
+              if (
+                relays.length > 0 &&
+                !(cumulativeState.tags as any[]).some((t) => t[0] === "relays")
+              ) {
+                cumulativeState.tags = [...cumulativeState.tags, ["relays", ...relays] as any];
+              }
+              await onPublishEvent(cumulativeState);
+              stateEvent = cumulativeState;
+              // Small pause to let the relay process the state before the push arrives
+              await new Promise((resolve) => setTimeout(resolve, 400));
+            } catch (stateErr) {
+              const msg = stateErr instanceof Error ? stateErr.message : String(stateErr || "");
+              failedRefs.push({ ref: item.ref, error: `state publish failed: ${msg}` });
+              continue;
+            }
+          }
+
+          updateProgress(
+            "push",
+            `Pushing ${item.type === "heads" ? "branch" : "tag"} ${item.name} (${i + 1}/${refPushPlan.length})...`,
+            "running"
+          );
+
+          const pushResult = await gitWorkerApi.pushToRemote({
+            repoId: localRepoId,
+            remoteUrl: workerResult.forkUrl,
+            branch: workerResult.defaultBranch,
+            ref: item.ref,
+            token: providerToken,
+            provider,
+          });
+
+          if (pushResult?.success) {
+            const details = pushResult?.details;
+            const pushedRefsForIteration =
+              Array.isArray(details?.pushedRefs) && details.pushedRefs.length > 0
+                ? details.pushedRefs
+                : [item.ref];
+            if (Array.isArray(details?.pushedRefs) && details.pushedRefs.length > 0) {
+              pushedRefs.push(...details.pushedRefs);
+            } else {
+              pushedRefs.push(item.ref);
+            }
+            for (const pushedRef of pushedRefsForIteration) {
+              if (refDetailsByFullRef.has(pushedRef)) {
+                acceptedRefsForState.add(pushedRef);
+              }
+            }
+            if (Array.isArray(details?.failedRefs) && details.failedRefs.length > 0) {
+              failedRefs.push(...details.failedRefs);
+            }
+            if (Array.isArray(details?.warnings) && details.warnings.length > 0) {
+              pushWarnings.push(...details.warnings);
+            }
+            continue;
+          }
+
+          failedRefs.push({
+            ref: item.ref,
+            error: pushResult?.error || "Failed to push ref",
+          });
+        }
+
+        const uniquePushedRefs = Array.from(new Set(pushedRefs));
+        const uniqueFailedRefs = Array.from(
+          new Map(failedRefs.map((item) => [item.ref, item])).values()
+        );
+        const uniquePushWarnings = Array.from(new Set(pushWarnings));
+
+        if (uniquePushedRefs.length === 0) {
+          throw new Error(
+            `Failed to push any refs to GRASP repository (${uniqueFailedRefs
+              .map((item) => `${item.ref}: ${item.error}`)
+              .join("; ")})`
+          );
+        }
+
+        // GRASP step 4: publish a final cumulative state reflecting all successfully pushed refs.
+        // ngit-grasp will immediately verify these refs exist in the git repo and commit the state.
+        if (onPublishEvent && uniquePushedRefs.length > 0) {
+          try {
+            updateProgress("publish", "Publishing final GRASP state...", "running");
+            const pushedHead = uniquePushedRefs.find(
+              (r) => r === `refs/heads/${workerResult.defaultBranch}`
+            )
+              ? workerResult.defaultBranch
+              : (uniquePushedRefs.find((r) => r.startsWith("refs/heads/")) || "").replace(
+                  /^refs\/heads\//,
+                  ""
+                ) || workerResult.defaultBranch;
+
+            const finalStateRefs = uniquePushedRefs
+              .map((fullRef) => {
+                const candidate = refs.find((r) => `refs/${r.type}/${r.name}` === fullRef);
+                if (!candidate) return null;
+                return { type: candidate.type, name: candidate.name, commit: candidate.commit };
+              })
+              .filter((r): r is { type: "heads" | "tags"; name: string; commit: string } =>
+                Boolean(r)
+              );
+
+            const finalStateEvent = createRepoStateEvent({
+              repoId: config.forkName,
+              refs: finalStateRefs.length > 0 ? finalStateRefs : undefined,
+              head: pushedHead,
+            });
+            if (
+              relays.length > 0 &&
+              !(finalStateEvent.tags as any[]).some((t) => t[0] === "relays")
+            ) {
+              finalStateEvent.tags = [...finalStateEvent.tags, ["relays", ...relays] as any];
+            }
+            await onPublishEvent(finalStateEvent);
+            stateEvent = finalStateEvent;
+            updateProgress("publish", "Final GRASP state published", "completed");
+          } catch (finalStateErr) {
+            const msg =
+              finalStateErr instanceof Error ? finalStateErr.message : String(finalStateErr || "");
+            pushWarnings.push(`Final state publish failed: ${msg}`);
+          }
+        }
+
+        const partialPush = uniqueFailedRefs.length > 0;
+        graspPushReport = {
+          pushedRefs: uniquePushedRefs,
+          failedRefs: uniqueFailedRefs,
+          warnings: uniquePushWarnings,
+          partialSuccess: partialPush,
+        };
+        if (partialPush) {
+          warning = `Fork partially pushed to GRASP. Pushed ${uniquePushedRefs.length}/${refPushPlan.length} refs. Failed: ${uniqueFailedRefs
+            .map((item) => item.ref)
+            .join(", ")}`;
+          updateProgress(
+            "push",
+            `Partially pushed refs (${uniquePushedRefs.length}/${refPushPlan.length}). You can retry failed refs later.`,
+            "completed"
+          );
+        } else {
+          updateProgress(
+            "push",
+            `Git refs pushed to GRASP successfully (${uniquePushedRefs.length}/${refPushPlan.length})`,
+            "completed"
+          );
+        }
+
+        if (uniquePushWarnings.length > 0) {
+          warning = [warning, ...uniquePushWarnings].filter(Boolean).join(" | ");
+        }
+
         graspPushCompleted = true;
       }
 
@@ -742,6 +1060,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         tags: workerResult.tags,
         announcementEvent,
         stateEvent,
+        ...(graspPushReport ? { pushReport: graspPushReport } : {}),
       };
 
       onForkCompleted?.(result);
@@ -751,6 +1070,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         config.provider === "grasp" &&
         graspEventsPublished &&
         !graspPushCompleted &&
+        !graspPushAttempted &&
         graspRollbackContext &&
         onRollbackPublishedRepoEvents
       ) {

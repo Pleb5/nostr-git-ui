@@ -48,7 +48,7 @@
     eventIO?: EventIO;
     onFetchEvents?: (filters: import("@nostr-git/core").NostrFilter[]) => Promise<NostrEvent[]>;
     onClose: () => void;
-    onPublishEvent?: (event: NostrEvent) => Promise<void>;
+    onPublishEvent?: (event: NostrEvent) => Promise<unknown>;
     onRollbackPublishedRepoEvents?: (params: {
       repoName: string;
       relays: string[];
@@ -171,6 +171,7 @@
     graspServerOptions = urls;
     if (graspRelayUrls.length === 0 && urls.length > 0) {
       graspRelayUrls = [...urls];
+      syncGraspRelaysToPreferredRelays(urls);
     }
   });
 
@@ -180,6 +181,12 @@
 
   function normalizeRelayUrl(value: string): string {
     return (value || "").trim().replace(/\/+$/, "");
+  }
+
+  function syncGraspRelaysToPreferredRelays(urls: string[]) {
+    const normalized = (urls || []).map(normalizeRelayUrl).filter(Boolean);
+    if (normalized.length === 0) return;
+    selectedRelays = Array.from(new Set([...(selectedRelays || []), ...normalized]));
   }
 
   function normalizeTokenHostForTarget(host: string): string {
@@ -245,6 +252,7 @@
       graspRelayUrls = [...graspRelayUrls, normalized];
       initializedTargetSelection = false;
     }
+    syncGraspRelaysToPreferredRelays([normalized]);
   }
 
   function removeGraspRelay(index: number) {

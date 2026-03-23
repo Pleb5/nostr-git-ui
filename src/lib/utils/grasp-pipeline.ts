@@ -6,7 +6,75 @@ import {
 } from "@nostr-git/core/events";
 import { sanitizeRelays } from "@nostr-git/core/utils";
 import { nip19 } from "nostr-tools";
-import { checkGraspRepoExists } from "./grasp-availability.js";
+import { checkGraspRepoExists, checkGraspReceivePackReady } from "./grasp-availability.js";
+
+export interface GraspPublishRelayAck {
+  ackedRelays: string[];
+  failedRelays: string[];
+  successCount: number;
+  hasRelayOutcomes: boolean;
+}
+
+function normalizeRelayForCompare(relay: string): string {
+  const trimmed = String(relay || "").trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed);
+    return `${url.protocol}//${url.host}`.replace(/\/+$/, "");
+  } catch {
+    return trimmed.replace(/\/+$/, "");
+  }
+}
+
+export function extractPublishRelayAck(result: unknown): GraspPublishRelayAck {
+  const ackedRelays = new Set<string>();
+  const failedRelays = new Set<string>();
+
+  if (result && typeof result === "object") {
+    const value = result as any;
+
+    if (Array.isArray(value.ackedRelays)) {
+      for (const relay of value.ackedRelays) {
+        const normalized = normalizeRelayForCompare(String(relay || ""));
+        if (normalized) ackedRelays.add(normalized);
+      }
+    }
+
+    if (Array.isArray(value.failedRelays)) {
+      for (const relay of value.failedRelays) {
+        const normalized = normalizeRelayForCompare(String(relay || ""));
+        if (normalized) failedRelays.add(normalized);
+      }
+    }
+  }
+
+  for (const relay of ackedRelays) {
+    failedRelays.delete(relay);
+  }
+
+  return {
+    ackedRelays: Array.from(ackedRelays),
+    failedRelays: Array.from(failedRelays),
+    successCount: ackedRelays.size,
+    hasRelayOutcomes: ackedRelays.size + failedRelays.size > 0,
+  };
+}
+
+function intersectRelays(a: string[], b: string[]): string[] {
+  const setB = new Set(b);
+  return a.filter((relay) => setB.has(relay));
+}
+
+export function didRelayAckGraspEvents(ack: GraspPublishRelayAck, relayUrl: string): boolean {
+  const { wsOrigin, httpOrigin } = normalizeGraspOrigins(relayUrl);
+  const targetVariants = new Set([
+    normalizeRelayForCompare(relayUrl),
+    normalizeRelayForCompare(wsOrigin),
+    normalizeRelayForCompare(httpOrigin),
+  ]);
+
+  return ack.ackedRelays.some((relay) => targetVariants.has(normalizeRelayForCompare(relay)));
+}
 
 export interface GraspRef {
   type: "heads" | "tags";
@@ -129,16 +197,42 @@ export function createGraspAnnouncementAndState({
 }
 
 export async function publishGraspRepoEvents(
-  onPublishEvent: ((event: RepoAnnouncementEvent | RepoStateEvent) => Promise<void>) | undefined,
+  onPublishEvent:
+    | ((event: RepoAnnouncementEvent | RepoStateEvent) => Promise<unknown> | unknown)
+    | undefined,
   announcementEvent: RepoAnnouncementEvent,
-  stateEvent: RepoStateEvent
-): Promise<void> {
+  stateEvent: RepoStateEvent,
+  onStage?: (stage: "announcement" | "state") => void
+): Promise<GraspPublishRelayAck> {
   if (!onPublishEvent) {
     throw new Error("GRASP operation requires onPublishEvent callback");
   }
 
-  await onPublishEvent(announcementEvent);
-  await onPublishEvent(stateEvent);
+  onStage?.("announcement");
+  const announcementResult = await onPublishEvent(announcementEvent);
+  onStage?.("state");
+  const stateResult = await onPublishEvent(stateEvent);
+
+  const announcementAck = extractPublishRelayAck(announcementResult);
+  const stateAck = extractPublishRelayAck(stateResult);
+
+  const ackedRelays = intersectRelays(announcementAck.ackedRelays, stateAck.ackedRelays);
+  const failedRelays = Array.from(
+    new Set([
+      ...announcementAck.failedRelays,
+      ...stateAck.failedRelays,
+      ...announcementAck.ackedRelays.filter((relay) => !ackedRelays.includes(relay)),
+      ...stateAck.ackedRelays.filter((relay) => !ackedRelays.includes(relay)),
+    ])
+  );
+
+  return {
+    ackedRelays,
+    failedRelays,
+    successCount: ackedRelays.length,
+    hasRelayOutcomes:
+      announcementAck.hasRelayOutcomes || stateAck.hasRelayOutcomes || failedRelays.length > 0,
+  };
 }
 
 export async function waitForGraspProvisioning(params: {
@@ -148,23 +242,54 @@ export async function waitForGraspProvisioning(params: {
   repoName: string;
   maxAttempts?: number;
   delayMs?: number;
+  onAttempt?: (info: {
+    attempt: number;
+    maxAttempts: number;
+    repoExists: boolean;
+    receivePackReady: boolean;
+  }) => void;
 }): Promise<void> {
-  const { relayUrl, userPubkey, owner, repoName, maxAttempts = 12, delayMs = 1500 } = params;
+  const {
+    relayUrl,
+    userPubkey,
+    owner,
+    repoName,
+    maxAttempts = 15,
+    delayMs = 3000,
+    onAttempt,
+  } = params;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const probe = await checkGraspRepoExists({
-        relayUrl,
-        userPubkey,
-        owner,
-        repoName,
+      const [probe, receivePackReady] = await Promise.all([
+        checkGraspRepoExists({
+          relayUrl,
+          userPubkey,
+          owner,
+          repoName,
+        }),
+        checkGraspReceivePackReady({
+          relayUrl,
+          owner,
+          repoName,
+        }),
+      ]);
+
+      onAttempt?.({
+        attempt,
+        maxAttempts,
+        repoExists: Boolean(probe.exists),
+        receivePackReady,
       });
-      if (probe.exists) return;
+
+      if (probe.exists || receivePackReady) {
+        return;
+      }
     } catch {
       // Retry until timeout
     }
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
-  throw new Error("GRASP relay did not provision the repository endpoint in time");
+  throw new Error("GRASP relay did not provision read/write git endpoints in time");
 }

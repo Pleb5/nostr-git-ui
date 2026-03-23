@@ -13,6 +13,7 @@ import {
   GitErrorCode,
   GitErrorCategory,
 } from "@nostr-git/core/errors";
+import { isGraspRepoHttpUrl } from "$lib/utils/grasp-url";
 
 // Worker URL/factory must be injected by the consuming app (not imported here)
 // because ?url imports only work at the app's bundler level, not in pre-built packages
@@ -861,9 +862,7 @@ export class WorkerManager {
           repoId: params.repoId,
         });
 
-        const graspRemotes = (remotes || []).filter(
-          (r) => r.url && /relay\.ngit\.dev|gitnostr\.com|grasp/i.test(r.url)
-        );
+        const graspRemotes = (remotes || []).filter((r) => r.url && isGraspRepoHttpUrl(r.url));
 
         if (graspRemotes.length > 0) {
           // Phase 1: merge only

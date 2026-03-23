@@ -1,11 +1,5 @@
 <script lang="ts">
-  import {
-    AlertTriangle,
-    CheckCircle,
-    Clock,
-    GitPullRequest,
-    XCircle,
-  } from "@lucide/svelte";
+  import { AlertTriangle, CheckCircle, Clock, GitPullRequest, XCircle } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
   import type { PatchEvent } from "@nostr-git/core/events";
   import { parsePatchEvent } from "@nostr-git/core/events";
@@ -55,28 +49,28 @@
   const getStatusColor = (status: string) => {
     switch (status) {
       case "clean":
-        return "border-green-200 hover:border-green-300";
+        return "border-emerald-200 hover:border-emerald-300 dark:border-emerald-900 dark:hover:border-emerald-700";
       case "conflicts":
-        return "border-orange-200 hover:border-orange-300";
+        return "border-orange-200 hover:border-orange-300 dark:border-orange-900 dark:hover:border-orange-700";
       case "error":
-        return "border-red-200 hover:border-red-300";
+        return "border-rose-200 hover:border-rose-300 dark:border-rose-900 dark:hover:border-rose-700";
       case "pending":
-        return "border-blue-200 hover:border-blue-300";
+        return "border-sky-200 hover:border-sky-300 dark:border-sky-900 dark:hover:border-sky-700";
       default:
-        return "border-gray-200 hover:border-gray-300";
+        return "border-border hover:border-border/70";
     }
   };
 
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "clean":
-        return { icon: CheckCircle, color: "h-3 w-3 text-green-500" };
+        return { icon: CheckCircle, color: "h-3 w-3 text-emerald-600 dark:text-emerald-300" };
       case "conflicts":
         return { icon: AlertTriangle, color: "h-3 w-3 text-orange-500" };
       case "error":
-        return { icon: XCircle, color: "h-3 w-3 text-red-500" };
+        return { icon: XCircle, color: "h-3 w-3 text-rose-600 dark:text-rose-300" };
       case "pending":
-        return { icon: Clock, color: "h-3 w-3 text-blue-500" };
+        return { icon: Clock, color: "h-3 w-3 text-sky-600 dark:text-sky-300" };
       default:
         return null;
     }
@@ -119,8 +113,8 @@
 
             <div class="flex items-center justify-between text-xs">
               <div class="flex items-center gap-3">
-                <span class="text-green-600">+{patch.linesAdded}</span>
-                <span class="text-red-600">-{patch.linesRemoved}</span>
+                <span class="text-emerald-700 dark:text-emerald-300">+{patch.linesAdded}</span>
+                <span class="text-rose-700 dark:text-rose-300">-{patch.linesRemoved}</span>
                 <span class="text-muted-foreground">{patch.filesChanged} files</span>
               </div>
               <div class="text-muted-foreground">
