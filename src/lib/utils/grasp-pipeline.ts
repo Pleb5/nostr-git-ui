@@ -260,8 +260,11 @@ export async function waitForGraspProvisioning(params: {
   } = params;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let repoExists = false;
+    let receivePackReady = false;
+
     try {
-      const [probe, receivePackReady] = await Promise.all([
+      const [probeResult, receivePackResult] = await Promise.allSettled([
         checkGraspRepoExists({
           relayUrl,
           userPubkey,
@@ -275,19 +278,41 @@ export async function waitForGraspProvisioning(params: {
         }),
       ]);
 
-      onAttempt?.({
-        attempt,
-        maxAttempts,
-        repoExists: Boolean(probe.exists),
-        receivePackReady,
-      });
+      repoExists =
+        probeResult.status === "fulfilled" && probeResult.value
+          ? Boolean(probeResult.value.exists)
+          : false;
+      receivePackReady =
+        receivePackResult.status === "fulfilled" ? Boolean(receivePackResult.value) : false;
 
-      if (probe.exists || receivePackReady) {
-        return;
+      if (probeResult.status === "rejected") {
+        console.warn(
+          "[GRASP] Provisioning check (upload-pack) attempt failed:",
+          probeResult.reason
+        );
       }
-    } catch {
-      // Retry until timeout
+
+      if (receivePackResult.status === "rejected") {
+        console.warn(
+          "[GRASP] Provisioning check (receive-pack) attempt failed:",
+          receivePackResult.reason
+        );
+      }
+    } catch (unexpectedError) {
+      console.warn("[GRASP] Provisioning check attempt failed unexpectedly:", unexpectedError);
     }
+
+    onAttempt?.({
+      attempt,
+      maxAttempts,
+      repoExists,
+      receivePackReady,
+    });
+
+    if (repoExists || receivePackReady) {
+      return;
+    }
+
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 

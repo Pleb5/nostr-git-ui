@@ -58,19 +58,33 @@ function toCorsProxyRequestUrl(url: string, corsProxy: string): string {
 
 function isLikelyCorsOrNetworkFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || "");
-  return /failed to fetch|network|cors|access-control|cross-origin/i.test(message);
+  return /failed to fetch|network|cors|access-control|cross-origin|abort|timed?\s*out|timeout/i.test(
+    message
+  );
+}
+
+const SMART_HTTP_PROBE_TIMEOUT_MS = 3500;
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SMART_HTTP_PROBE_TIMEOUT_MS);
+  try {
+    return await fetch(url, { method: "GET", signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function probeSmartHttp(url: string): Promise<Response | null> {
   try {
-    return await fetch(url, { method: "GET" });
+    return await fetchWithTimeout(url);
   } catch (error) {
     if (!isLikelyCorsOrNetworkFailure(error)) throw error;
   }
 
   const corsProxy = resolveCorsProxyUrl();
   const proxiedUrl = toCorsProxyRequestUrl(url, corsProxy);
-  return fetch(proxiedUrl, { method: "GET" });
+  return fetchWithTimeout(proxiedUrl);
 }
 
 export function isNotFoundError(error: unknown): boolean {

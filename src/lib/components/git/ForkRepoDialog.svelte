@@ -951,7 +951,7 @@
 
   const currentProgressMessage = $derived.by(() => {
     if (!progress || progress.length === 0) return "";
-    const runningStep = progress.find((step) => step.status === "running");
+    const runningStep = [...progress].reverse().find((step) => step.status === "running");
     if (runningStep) return runningStep.message;
     const lastStep = progress[progress.length - 1];
     return lastStep?.message || "";

@@ -717,20 +717,28 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       // Step 5: Publish announcement + provisioning, then per-ref state/push cycles
       if (onPublishEvent) {
-        updateProgress("publish", "Publishing to Nostr relays...", "running");
         try {
           if (provider === "grasp") {
             // GRASP step 1: publish ONLY the announcement (30617).
             // The state (30618) is published before each push and must represent the
             // repository refs that should exist after that push (already-accepted refs +
             // the current ref). Publishing an out-of-date state causes policy rejection.
-            updateProgress("publish", "Publishing GRASP announcement event...", "running");
+            updateProgress(
+              "publish-announcement",
+              "Publishing GRASP announcement event...",
+              "running"
+            );
             const announcementResult = await onPublishEvent(announcementEvent);
             graspPublishAck = extractPublishRelayAck(announcementResult);
             console.log("✅ Published GRASP repo announcement event");
             graspEventsPublished = true;
-            updateProgress("publish", "Published GRASP announcement event", "completed");
+            updateProgress(
+              "publish-announcement",
+              "Published GRASP announcement event",
+              "completed"
+            );
           } else {
+            updateProgress("publish", "Publishing to Nostr relays...", "running");
             await onPublishEvent(announcementEvent);
             console.log("✅ Published repo announcement event");
             await onPublishEvent(stateEvent);
@@ -761,7 +769,11 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         }
 
         // GRASP step 2: wait for relay to provision the bare git repo from the announcement.
-        updateProgress("publish", "Waiting for GRASP relay provisioning...", "running");
+        updateProgress(
+          "preflight",
+          "Preflight: checking GRASP relay endpoint readiness...",
+          "running"
+        );
         const ownerForProbe = graspCurrentUser || userPubkey || "";
         try {
           await waitForGraspProvisioning({
@@ -773,24 +785,29 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
             delayMs: 3000,
             onAttempt: ({ attempt, maxAttempts, repoExists, receivePackReady }) => {
               const availability = [
-                repoExists ? "upload-pack ready" : "upload-pack pending",
-                receivePackReady ? "receive-pack ready" : "receive-pack pending",
+                repoExists ? "read endpoint ready" : "read endpoint pending",
+                receivePackReady ? "write endpoint ready" : "write endpoint pending",
               ].join(", ");
               updateProgress(
-                "publish",
-                `Waiting for GRASP provisioning (${attempt}/${maxAttempts}): ${availability}`,
+                "preflight",
+                `Preflight (${attempt}/${maxAttempts}): ${availability}`,
                 "running"
               );
             },
           });
+          updateProgress(
+            "preflight",
+            "Preflight complete: relay reports provisioning signal (read or write endpoint ready)",
+            "completed"
+          );
         } catch (provisionError) {
           const message =
             provisionError instanceof Error ? provisionError.message : String(provisionError || "");
           warning =
             "GRASP provisioning checks did not confirm readiness in time. Attempting push anyway...";
           updateProgress(
-            "publish",
-            `Provisioning check timed out (${message}). Continuing with push...`,
+            "preflight",
+            `Preflight timed out (${message}). Continuing with push retries...`,
             "completed"
           );
         }
@@ -980,7 +997,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         // ngit-grasp will immediately verify these refs exist in the git repo and commit the state.
         if (onPublishEvent && uniquePushedRefs.length > 0) {
           try {
-            updateProgress("publish", "Publishing final GRASP state...", "running");
+            updateProgress("publish-final-state", "Publishing final GRASP state...", "running");
             const pushedHead = uniquePushedRefs.find(
               (r) => r === `refs/heads/${workerResult.defaultBranch}`
             )
@@ -1013,11 +1030,16 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
             }
             await onPublishEvent(finalStateEvent);
             stateEvent = finalStateEvent;
-            updateProgress("publish", "Final GRASP state published", "completed");
+            updateProgress("publish-final-state", "Final GRASP state published", "completed");
           } catch (finalStateErr) {
             const msg =
               finalStateErr instanceof Error ? finalStateErr.message : String(finalStateErr || "");
             pushWarnings.push(`Final state publish failed: ${msg}`);
+            updateProgress(
+              "publish-final-state",
+              `Final GRASP state publish failed (${msg}). Push result preserved.`,
+              "completed"
+            );
           }
         }
 
