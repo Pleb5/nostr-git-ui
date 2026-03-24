@@ -268,6 +268,63 @@ function dedupeCloneUrls(urls: string[]): string[] {
   return out;
 }
 
+interface CloneAttemptPhase {
+  type: "start" | "failed" | "succeeded";
+  attempt: number;
+  total: number;
+  url: string;
+  error?: string;
+}
+
+function parseCloneAttemptPhase(phase: string): CloneAttemptPhase | null {
+  const startMatch = phase.match(/^Trying source clone URL \((\d+)\/(\d+)\):\s*(.+)$/);
+  if (startMatch) {
+    return {
+      type: "start",
+      attempt: Number(startMatch[1]),
+      total: Number(startMatch[2]),
+      url: String(startMatch[3] || "").trim(),
+    };
+  }
+
+  const successMatch = phase.match(/^Source clone succeeded \((\d+)\/(\d+)\):\s*(.+)$/);
+  if (successMatch) {
+    return {
+      type: "succeeded",
+      attempt: Number(successMatch[1]),
+      total: Number(successMatch[2]),
+      url: String(successMatch[3] || "").trim(),
+    };
+  }
+
+  const failureMatch = phase.match(
+    /^Source clone failed \((\d+)\/(\d+)\):\s*(.+?)(?:\s*\((.*)\))?$/
+  );
+  if (failureMatch) {
+    return {
+      type: "failed",
+      attempt: Number(failureMatch[1]),
+      total: Number(failureMatch[2]),
+      url: String(failureMatch[3] || "").trim(),
+      error: String(failureMatch[4] || "").trim() || undefined,
+    };
+  }
+
+  return null;
+}
+
+function compactCloneUrlLabel(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "unknown URL";
+  try {
+    const parsed = new URL(raw);
+    const compactPath = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.host}${compactPath}`;
+  } catch {
+    return raw;
+  }
+}
+
 function pubkeyToHexOrNull(value?: string): string | null {
   const raw = (value || "").trim();
   if (!raw) return null;
@@ -416,6 +473,108 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         }
       | undefined;
 
+    const cloneAttemptStepByAttempt = new Map<number, string>();
+    const cloneAttemptMeta = new Map<number, { total: number; url: string }>();
+    const finalizedCloneAttempts = new Set<number>();
+    let activeCloneAttempt: number | null = null;
+
+    const getCloneAttemptStep = (attempt: number): string => {
+      const existing = cloneAttemptStepByAttempt.get(attempt);
+      if (existing) return existing;
+      const step = `clone-source-url-${attempt}`;
+      cloneAttemptStepByAttempt.set(attempt, step);
+      return step;
+    };
+
+    const handleForkWorkerProgress = (event: MessageEvent | { data?: any } | any): void => {
+      const payload = event?.data && typeof event.data === "object" ? event.data : event;
+      if (!payload || typeof payload !== "object") return;
+      if (payload.type !== "clone-progress") return;
+
+      const phase = String(payload.phase || "").trim();
+      if (!phase) return;
+
+      const attemptPhase = parseCloneAttemptPhase(phase);
+      if (attemptPhase) {
+        const attempt = attemptPhase.attempt;
+        const step = getCloneAttemptStep(attempt);
+        const compactUrl = compactCloneUrlLabel(attemptPhase.url);
+        cloneAttemptMeta.set(attempt, {
+          total: attemptPhase.total,
+          url: compactUrl,
+        });
+
+        if (attemptPhase.type === "start") {
+          activeCloneAttempt = attempt;
+          finalizedCloneAttempts.delete(attempt);
+          updateProgress(
+            "fork",
+            `Cloning source repository (URL ${attempt}/${attemptPhase.total})...`,
+            "running"
+          );
+          updateProgress(
+            step,
+            `Clone URL ${attempt}/${attemptPhase.total}: ${compactUrl}`,
+            "running"
+          );
+          return;
+        }
+
+        if (attemptPhase.type === "failed") {
+          finalizedCloneAttempts.add(attempt);
+          if (activeCloneAttempt === attempt) activeCloneAttempt = null;
+          const reason = attemptPhase.error ? ` (${attemptPhase.error})` : "";
+          updateProgress(
+            step,
+            `Clone URL ${attempt}/${attemptPhase.total} failed: ${compactUrl}${reason}`,
+            "error"
+          );
+          if (attempt < attemptPhase.total) {
+            updateProgress(
+              "fork",
+              `Clone attempt ${attempt} failed, trying next source URL...`,
+              "running"
+            );
+          }
+          return;
+        }
+
+        finalizedCloneAttempts.add(attempt);
+        if (activeCloneAttempt === attempt) activeCloneAttempt = null;
+        updateProgress(
+          step,
+          `Clone URL ${attempt}/${attemptPhase.total} succeeded: ${compactUrl}`,
+          "completed"
+        );
+        updateProgress(
+          "fork",
+          `Source clone succeeded via URL ${attempt}/${attemptPhase.total}`,
+          "running"
+        );
+        return;
+      }
+
+      if (activeCloneAttempt == null || finalizedCloneAttempts.has(activeCloneAttempt)) {
+        return;
+      }
+
+      const currentMeta = cloneAttemptMeta.get(activeCloneAttempt);
+      if (!currentMeta) return;
+
+      if (
+        phase.startsWith("Downloading objects") ||
+        phase.startsWith("Resolving deltas") ||
+        phase.startsWith("Cloning source repository")
+      ) {
+        const step = getCloneAttemptStep(activeCloneAttempt);
+        updateProgress(
+          step,
+          `Clone URL ${activeCloneAttempt}/${currentMeta.total}: ${currentMeta.url} - ${phase}`,
+          "running"
+        );
+      }
+    };
+
     try {
       // Validate inputs early
       if (!originalRepo?.owner || !originalRepo?.name) {
@@ -478,11 +637,11 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         gitWorkerApi = options.workerApi;
         // Need worker for GRASP - create temporary one if not available
         const { getGitWorker } = await import("@nostr-git/core/worker");
-        const workerInstance = getGitWorker();
+        const workerInstance = getGitWorker({ onProgress: handleForkWorkerProgress });
         worker = workerInstance.worker;
       } else {
         const { getGitWorker } = await import("@nostr-git/core/worker");
-        const workerInstance = getGitWorker();
+        const workerInstance = getGitWorker({ onProgress: handleForkWorkerProgress });
         gitWorkerApi = workerInstance.api;
         worker = workerInstance.worker;
       }
