@@ -477,6 +477,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     const cloneAttemptMeta = new Map<number, { total: number; url: string }>();
     const finalizedCloneAttempts = new Set<number>();
     let activeCloneAttempt: number | null = null;
+    let lastWorkerPhase = "";
 
     const getCloneAttemptStep = (attempt: number): string => {
       const existing = cloneAttemptStepByAttempt.get(attempt);
@@ -554,24 +555,28 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         return;
       }
 
-      if (activeCloneAttempt == null || finalizedCloneAttempts.has(activeCloneAttempt)) {
-        return;
+      if (activeCloneAttempt != null && !finalizedCloneAttempts.has(activeCloneAttempt)) {
+        const currentMeta = cloneAttemptMeta.get(activeCloneAttempt);
+        if (currentMeta) {
+          if (
+            phase.startsWith("Downloading objects") ||
+            phase.startsWith("Resolving deltas") ||
+            phase.startsWith("Cloning source repository")
+          ) {
+            const step = getCloneAttemptStep(activeCloneAttempt);
+            updateProgress(
+              step,
+              `Clone URL ${activeCloneAttempt}/${currentMeta.total}: ${currentMeta.url} - ${phase}`,
+              "running"
+            );
+            return;
+          }
+        }
       }
 
-      const currentMeta = cloneAttemptMeta.get(activeCloneAttempt);
-      if (!currentMeta) return;
-
-      if (
-        phase.startsWith("Downloading objects") ||
-        phase.startsWith("Resolving deltas") ||
-        phase.startsWith("Cloning source repository")
-      ) {
-        const step = getCloneAttemptStep(activeCloneAttempt);
-        updateProgress(
-          step,
-          `Clone URL ${activeCloneAttempt}/${currentMeta.total}: ${currentMeta.url} - ${phase}`,
-          "running"
-        );
+      if (phase !== lastWorkerPhase) {
+        lastWorkerPhase = phase;
+        updateProgress("fork", phase, "running");
       }
     };
 
