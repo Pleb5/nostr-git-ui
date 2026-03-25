@@ -470,11 +470,25 @@ export class WorkerManager {
     repoId: string;
     remoteUrl: string;
     branch?: string;
+    ref?: string;
+    refs?: string[];
     token?: string;
     provider?: string;
   }): Promise<any> {
     await this.initialize();
     return this.execute("pushToRemote", params);
+  }
+
+  /**
+   * List server refs from a remote URL without cloning
+   */
+  async listServerRefs(params: {
+    url: string;
+    prefix?: string;
+    symrefs?: boolean;
+  }): Promise<Array<{ ref?: string; oid?: string; target?: string }>> {
+    await this.initialize();
+    return this.execute("listServerRefs", params);
   }
 
   /**

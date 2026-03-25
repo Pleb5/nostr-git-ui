@@ -411,6 +411,7 @@ export class CommitManager {
         fallbackUsed?: string;
         error?: string;
         fromVendor?: boolean;
+        hasMore?: boolean;
       };
 
       if (this.vendorReadRouter && this.repoEventSnapshot) {
@@ -426,8 +427,9 @@ export class CommitManager {
             repoKey: this.canonicalKey,
             cloneUrls,
             branch: branchName,
-            depth: requiredDepth,
-            perPage: requiredDepth,
+            depth: this.commitsPerPage,
+            page: this.currentPage,
+            perPage: this.commitsPerPage,
           });
 
           // Convert vendor result format to internal format
@@ -455,6 +457,7 @@ export class CommitManager {
               },
             })),
             fromVendor: vendorResult.fromVendor,
+            hasMore: vendorResult.hasMore,
           };
           console.log(
             `[CommitManager] VendorReadRouter returned ${commitsResult.commits?.length || 0} commits, fromVendor=${vendorResult.fromVendor}`
@@ -524,8 +527,9 @@ export class CommitManager {
         const startIndex = (this.currentPage - 1) * this.commitsPerPage;
         const endIndex = startIndex + this.commitsPerPage;
 
-        // Extract commits for current page
-        const pageCommits = allCommits.slice(startIndex, endIndex);
+        const pageCommits = commitsResult.fromVendor
+          ? allCommits
+          : allCommits.slice(startIndex, endIndex);
 
         // If it's the first page, replace the commits, otherwise append
         this.commits = this.currentPage === 1 ? pageCommits : [...this.commits, ...pageCommits];
@@ -533,11 +537,20 @@ export class CommitManager {
           `[CommitManager] Stored ${this.commits.length} commits (page ${this.currentPage}, branch: ${this.currentBranch})`
         );
 
-        this.hasMoreCommits = endIndex < allCommits.length;
+        this.hasMoreCommits = commitsResult.fromVendor
+          ? Boolean(commitsResult.hasMore)
+          : endIndex < allCommits.length;
 
         // Only fetch total count on first load and cache it
         if (this.currentPage === 1 && this.totalCommits === undefined) {
-          if (allCommits.length < requiredDepth) {
+          if (commitsResult.fromVendor) {
+            this.totalCommits = startIndex + this.commits.length;
+            if (this.hasMoreCommits) {
+              console.log(
+                `[CommitManager] Vendor pagination active, showing running estimate: ${this.totalCommits}+`
+              );
+            }
+          } else if (allCommits.length < requiredDepth) {
             // If we got fewer commits than requested, we have all of them
             this.totalCommits = allCommits.length;
           } else if (this.vendorReadRouter && this.repoEventSnapshot) {

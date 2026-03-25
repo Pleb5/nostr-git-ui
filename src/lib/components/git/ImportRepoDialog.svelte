@@ -55,6 +55,7 @@
     }) => Promise<void>;
     onImportComplete?: (result: ImportResult) => void;
     onNavigateToRepo?: (result: ImportResult) => void; // Optional callback to navigate to the imported repo
+    onAbortImport?: () => Promise<void> | void;
     defaultRelays?: string[];
   }
 
@@ -69,6 +70,7 @@
     onRollbackPublishedRepoEvents,
     onImportComplete,
     onNavigateToRepo,
+    onAbortImport,
     defaultRelays = DEFAULT_RELAYS.default.slice(0, 2),
   }: Props = $props();
 
@@ -124,6 +126,7 @@
   let repoMetadata = $state<{
     owner: string;
     name: string;
+    defaultBranch: string;
     description?: string;
     htmlUrl: string;
     isOwner: boolean;
@@ -156,6 +159,20 @@
   let graspServerOptions = $state<string[]>([]);
   let graspRelayUrls = $state<string[]>([]);
   let newGraspRelayUrl = $state("");
+
+  type ImportBranchOption = {
+    name: string;
+    commitSha?: string;
+    commitDate?: string;
+    timestampMs: number;
+    isDefault: boolean;
+  };
+
+  let defaultImportBranch = $state("main");
+  let importBranchOptions = $state<ImportBranchOption[]>([]);
+  let selectedAdditionalBranchNames = $state<string[]>([]);
+  let isLoadingImportBranches = $state(false);
+  let importBranchLoadError = $state<string | undefined>();
 
   // UI state
   let validationError = $state<string | undefined>();
@@ -219,6 +236,201 @@
     if (provider === "bitbucket") return "Bitbucket";
     return "GRASP";
   }
+
+  async function mapWithConcurrency<T, R>(
+    items: T[],
+    limit: number,
+    mapper: (item: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    if (items.length === 0) return [];
+
+    const concurrency = Math.max(1, Math.min(limit, items.length));
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+
+    const worker = async () => {
+      while (true) {
+        const currentIndex = cursor;
+        cursor += 1;
+        if (currentIndex >= items.length) return;
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    return results;
+  }
+
+  function parseDateToTimestampMs(value?: string): number {
+    if (!value) return 0;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function buildSmartHttpCandidateUrls(sourceRepoUrl: string): string[] {
+    const trimmed = sourceRepoUrl.trim().replace(/\/+$/, "");
+    if (!trimmed) return [];
+
+    const candidates: string[] = [];
+    const add = (value: string) => {
+      const normalized = value.trim();
+      if (normalized && !candidates.includes(normalized)) {
+        candidates.push(normalized);
+      }
+    };
+
+    if (/^https?:\/\//i.test(trimmed) && !trimmed.endsWith(".git")) {
+      add(`${trimmed}.git`);
+    }
+
+    add(trimmed);
+
+    return candidates;
+  }
+
+  async function loadImportBranches(
+    sourceRepoUrl: string,
+    owner: string,
+    repo: string,
+    token: string,
+    preferredDefaultBranch?: string
+  ) {
+    isLoadingImportBranches = true;
+    importBranchLoadError = undefined;
+
+    try {
+      const normalizedDefaultBranch = (preferredDefaultBranch || "main").trim() || "main";
+      defaultImportBranch = normalizedDefaultBranch;
+
+      const branchByName = new Map<string, { name: string; commitSha?: string }>();
+
+      if (workerApi?.listServerRefs) {
+        for (const candidateUrl of buildSmartHttpCandidateUrls(sourceRepoUrl)) {
+          try {
+            const refs = await workerApi.listServerRefs({
+              url: candidateUrl,
+              prefix: "refs/heads/",
+              symrefs: false,
+            });
+
+            for (const item of refs || []) {
+              const rawRef = String(item?.ref || "");
+              if (!rawRef.startsWith("refs/heads/")) continue;
+              const branchName = rawRef.replace(/^refs\/heads\//, "").trim();
+              if (!branchName) continue;
+              const commitSha =
+                typeof item?.oid === "string" && item.oid.trim() ? item.oid.trim() : undefined;
+              branchByName.set(branchName, { name: branchName, commitSha });
+            }
+
+            if (branchByName.size > 0) {
+              break;
+            }
+          } catch {
+            // try next candidate URL before falling back to provider API
+          }
+        }
+      }
+
+      const api = getGitServiceApiFromUrl(sourceRepoUrl, token);
+
+      if (branchByName.size === 0) {
+        const sourceBranches = await api.listBranches(owner, repo);
+        for (const branch of sourceBranches || []) {
+          const branchName = String(branch?.name || "").trim();
+          if (!branchName) continue;
+          const commitSha =
+            typeof branch?.commit?.sha === "string" && branch.commit.sha.trim()
+              ? branch.commit.sha.trim()
+              : undefined;
+          branchByName.set(branchName, { name: branchName, commitSha });
+        }
+      }
+
+      if (!branchByName.has(normalizedDefaultBranch)) {
+        branchByName.set(normalizedDefaultBranch, { name: normalizedDefaultBranch });
+      }
+
+      const branchCandidates = Array.from(branchByName.values());
+      const enriched = await mapWithConcurrency(branchCandidates, 6, async (candidate) => {
+        try {
+          let commitDate = "";
+          let commitSha = candidate.commitSha;
+
+          if (commitSha) {
+            const commit = await api.getCommit(owner, repo, commitSha);
+            commitDate = commit?.committer?.date || commit?.author?.date || "";
+          } else {
+            const commits = await api.listCommits(owner, repo, {
+              sha: candidate.name,
+              per_page: 1,
+            });
+            const latest = Array.isArray(commits) ? commits[0] : undefined;
+            commitSha = latest?.sha || commitSha;
+            commitDate = latest?.committer?.date || latest?.author?.date || "";
+          }
+
+          return {
+            name: candidate.name,
+            commitSha,
+            commitDate,
+            timestampMs: parseDateToTimestampMs(commitDate),
+            isDefault: candidate.name === normalizedDefaultBranch,
+          } satisfies ImportBranchOption;
+        } catch {
+          return {
+            name: candidate.name,
+            commitSha: candidate.commitSha,
+            commitDate: undefined,
+            timestampMs: 0,
+            isDefault: candidate.name === normalizedDefaultBranch,
+          } satisfies ImportBranchOption;
+        }
+      });
+
+      enriched.sort((a, b) => {
+        if (b.timestampMs !== a.timestampMs) return b.timestampMs - a.timestampMs;
+        return a.name.localeCompare(b.name);
+      });
+
+      importBranchOptions = enriched;
+      selectedAdditionalBranchNames = [];
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      importBranchLoadError = message || "Failed to load branch options";
+      importBranchOptions = [
+        {
+          name: defaultImportBranch,
+          isDefault: true,
+          timestampMs: 0,
+        },
+      ];
+      selectedAdditionalBranchNames = [];
+    } finally {
+      isLoadingImportBranches = false;
+    }
+  }
+
+  function selectAllAdditionalBranches() {
+    selectedAdditionalBranchNames = importBranchOptions
+      .filter((branch) => !branch.isDefault)
+      .map((branch) => branch.name);
+  }
+
+  function clearAdditionalBranches() {
+    selectedAdditionalBranchNames = [];
+  }
+
+  const selectedBranchNamesForImport = $derived.by(() => {
+    const defaultBranch = defaultImportBranch || "main";
+    const selected = Array.from(
+      new Set([
+        defaultBranch,
+        ...selectedAdditionalBranchNames.filter((name) => name && name !== defaultBranch),
+      ])
+    );
+    return selected;
+  });
 
   function getProviderBaseUrl(
     provider: ImportTargetOption["provider"],
@@ -770,6 +982,7 @@
         repoMetadata = {
           owner: parsed.owner,
           name: parsed.repo,
+          defaultBranch: ownership.repo.defaultBranch || "main",
           description: ownership.repo.description,
           htmlUrl: ownership.repo.htmlUrl,
           isOwner: ownership.isOwner,
@@ -784,6 +997,13 @@
         selectedImportTargetIds = [];
 
         currentStep = 2;
+        void loadImportBranches(
+          normalizedRepoUrl,
+          parsed.owner,
+          parsed.repo,
+          sourceToken || "",
+          ownership.repo.defaultBranch || "main"
+        );
       } catch (err) {
         validationError = toFriendlySourceAccessError(err, parsed.host);
       } finally {
@@ -845,6 +1065,8 @@
       mirrorComments,
       relays: selectedRelays,
     };
+    (config as ImportConfig & { selectedBranches?: string[] }).selectedBranches =
+      selectedBranchNamesForImport;
 
     // Start import
     currentStep = 3;
@@ -895,12 +1117,20 @@
 
   // Track if we should close after abort completes
   let shouldCloseAfterAbort = $state(false);
+  let isCancelingImport = $state(false);
 
   // Watch for when import completes after abort
   $effect(() => {
     if (shouldCloseAfterAbort && !importState.isImporting) {
       shouldCloseAfterAbort = false;
+      isCancelingImport = false;
       onClose();
+    }
+  });
+
+  $effect(() => {
+    if (!importState.isImporting) {
+      isCancelingImport = false;
     }
   });
 
@@ -909,7 +1139,7 @@
     return () => {
       // Cleanup function runs when component unmounts
       if (importState.isImporting) {
-        importState.abortImport("Component unmounted");
+        void requestImportAbort("Component unmounted");
       }
     };
   });
@@ -919,7 +1149,7 @@
     if (importState.isImporting) {
       // Explicit close during import: abort and close after abort completes
       shouldCloseAfterAbort = true;
-      importState.abortImport("User cancelled import");
+      void requestImportAbort("User cancelled import");
     } else {
       onClose();
     }
@@ -943,10 +1173,26 @@
     }
   }
 
+  async function requestImportAbort(reason: string) {
+    if (isCancelingImport) return;
+    isCancelingImport = true;
+    importState.abortImport(reason);
+    try {
+      await onAbortImport?.();
+    } catch {
+      // pass
+    } finally {
+      // Keep canceling state while import teardown finishes
+      if (!importState.isImporting) {
+        isCancelingImport = false;
+      }
+    }
+  }
+
   function handleAbort() {
     // Abort and close after abort completes
     shouldCloseAfterAbort = true;
-    importState.abortImport("User cancelled import");
+    void requestImportAbort("User cancelled import");
   }
 
   // Computed properties
@@ -1190,6 +1436,110 @@
                     View on {selectedHost}
                     <ExternalLink class="w-3 h-3" />
                   </a>
+                </div>
+              </div>
+            </div>
+
+            <!-- Branch Selection -->
+            <div class="mb-4">
+              <h4 class="text-sm font-medium text-gray-300 mb-2">Branches to Import</h4>
+              <p class="text-xs text-gray-400 mb-3">
+                Branches are ordered by latest commit time (newest first). Default branch is always
+                included.
+              </p>
+
+              <div class="space-y-2 bg-gray-800 rounded-lg p-4 border border-gray-600">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-xs text-gray-400">
+                    {#if isLoadingImportBranches}
+                      Loading branch metadata...
+                    {:else}
+                      Importing {selectedBranchNamesForImport.length} of {importBranchOptions.length}
+                      branches
+                    {/if}
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="px-2 py-1 text-xs rounded border border-gray-600 text-gray-300 hover:border-blue-400 hover:text-blue-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onclick={selectAllAdditionalBranches}
+                      disabled={isLoadingImportBranches || importBranchOptions.length <= 1}
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      class="px-2 py-1 text-xs rounded border border-gray-600 text-gray-300 hover:border-blue-400 hover:text-blue-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onclick={clearAdditionalBranches}
+                      disabled={isLoadingImportBranches ||
+                        selectedAdditionalBranchNames.length === 0}
+                    >
+                      Deselect all
+                    </button>
+                  </div>
+                </div>
+
+                {#if importBranchLoadError}
+                  <p class="text-xs text-amber-300">
+                    {importBranchLoadError}. Using default branch only.
+                  </p>
+                {/if}
+
+                <div class="max-h-64 overflow-y-auto rounded border border-gray-700 bg-gray-900/60">
+                  {#if isLoadingImportBranches}
+                    <div class="flex items-center gap-2 px-3 py-3 text-xs text-gray-300">
+                      <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                      Resolving branch activity timestamps...
+                    </div>
+                  {:else if importBranchOptions.length === 0}
+                    <p class="px-3 py-3 text-xs text-gray-400">No branches detected.</p>
+                  {:else}
+                    <div class="divide-y divide-gray-700">
+                      {#each importBranchOptions as branch (branch.name)}
+                        <label class="flex items-center justify-between gap-2 px-3 py-2">
+                          <span class="flex items-center gap-2 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={branch.isDefault ||
+                                selectedAdditionalBranchNames.includes(branch.name)}
+                              disabled={branch.isDefault || importState.isImporting}
+                              onchange={(event) => {
+                                if (branch.isDefault) return;
+                                const isChecked = (event.currentTarget as HTMLInputElement).checked;
+                                if (isChecked) {
+                                  selectedAdditionalBranchNames = Array.from(
+                                    new Set([...selectedAdditionalBranchNames, branch.name])
+                                  );
+                                } else {
+                                  selectedAdditionalBranchNames =
+                                    selectedAdditionalBranchNames.filter(
+                                      (name) => name !== branch.name
+                                    );
+                                }
+                              }}
+                              class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <span class="text-sm text-white truncate" title={branch.name}
+                              >{branch.name}</span
+                            >
+                            {#if branch.isDefault}
+                              <span
+                                class="px-1.5 py-0.5 text-[10px] rounded bg-blue-500/20 text-blue-200 border border-blue-500/30"
+                                >default</span
+                              >
+                            {/if}
+                          </span>
+                          <span class="text-[11px] text-gray-400 whitespace-nowrap">
+                            {#if branch.commitDate}
+                              {new Date(branch.commitDate).toLocaleString()}
+                            {:else}
+                              unknown
+                            {/if}
+                          </span>
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
                 </div>
               </div>
             </div>
@@ -1614,9 +1964,15 @@
                 <button
                   type="button"
                   onclick={handleAbort}
-                  class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+                  disabled={isCancelingImport}
+                  class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
                 >
-                  Cancel import
+                  {#if isCancelingImport}
+                    <Loader2 class="w-4 h-4 animate-spin" />
+                    Canceling...
+                  {:else}
+                    Cancel import
+                  {/if}
                 </button>
               </div>
             {/if}

@@ -99,6 +99,7 @@ export class Repo {
   #selectedBranchState: string | undefined = $state(undefined);
   #branchSwitching: boolean = $state(false);
   #refsLoading: boolean = $state(false);
+  #refsSeededFromHead: boolean = $state(false);
   // Counter that increments when branch switch completes - components can track this
   #branchChangeTrigger: number = $state(0);
   // Reactive commits state so UI can respond to branch changes
@@ -369,7 +370,11 @@ export class Repo {
         }
 
         // Load branches if WorkerManager is ready and refs aren't populated yet
-        if (this.workerManager.isReady && this.refs.length === 0 && !this.#refsLoading) {
+        if (
+          this.workerManager.isReady &&
+          (this.refs.length === 0 || this.#refsSeededFromHead) &&
+          !this.#refsLoading
+        ) {
           void this.#loadBranchesFromRepo(event);
         }
 
@@ -419,6 +424,7 @@ export class Repo {
             if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
             return (a.name || "").localeCompare(b.name || "");
           });
+          this.#refsSeededFromHead = false;
           console.log(`⚡ Instantly loaded ${this.refs.length} refs from RepoStateEvent`);
           this.#maybeSelectBranchFromRefs(this.refs, parsedState?.head);
         } else {
@@ -472,6 +478,7 @@ export class Repo {
             if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
             return (a.name || "").localeCompare(b.name || "");
           });
+          this.#refsSeededFromHead = false;
           console.log(`⚡ Instantly loaded ${this.refs.length} refs from merged RepoStateEvents`);
           this.#maybeSelectBranchFromRefs(this.refs);
         } else {
@@ -554,7 +561,7 @@ export class Repo {
 
         // Only reload refs from worker if we still don't have any
         // (refs should already be loaded from RepoStateEvent subscriptions)
-        if (this.refs.length === 0) {
+        if (this.refs.length === 0 || this.#refsSeededFromHead) {
           try {
             this.#refsLoading = true;
             // Set repoEvent for vendor API fallback when no RepoStateEvent is available
@@ -565,6 +572,7 @@ export class Repo {
             const loadedRefs = this.branchManager.getAllRefs();
             if (loadedRefs.length > 0) {
               this.refs = loadedRefs;
+              this.#refsSeededFromHead = false;
             } else {
               this.#seedRefsFromHead(this.#state?.head);
             }
@@ -1120,6 +1128,7 @@ export class Repo {
       const loadedRefs = this.branchManager.getAllRefs();
       if (loadedRefs.length > 0) {
         this.refs = loadedRefs;
+        this.#refsSeededFromHead = false;
       } else {
         this.#seedRefsFromHead(this.#state?.head);
       }
@@ -1248,6 +1257,7 @@ export class Repo {
         commitId: "",
       },
     ];
+    this.#refsSeededFromHead = true;
     if (!this.#selectedBranchState) {
       this.#selectedBranchState = headName;
     }

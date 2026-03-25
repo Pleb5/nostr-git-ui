@@ -1,4 +1,5 @@
 import type { BookmarkAddress } from "@nostr-git/core/events";
+import { buildRepoNaddrFromEvent } from "@nostr-git/core/utils";
 
 // Singleton store for bookmarked repositories
 function createBookmarksStore() {
@@ -68,9 +69,9 @@ export type ComputeCardsOptions = {
   derivePatchGraph: (address: string) => { get: () => any };
   parseRepoAnnouncementEvent: (event: any) => any;
   Router: any;
-  nip19: any;
   Address: any;
   repoAnnouncements: any;
+  gitRelays?: string[];
 };
 
 // Minimal singleton repositories store that holds RepoCard[]
@@ -135,14 +136,8 @@ function createRepositoriesStore() {
     loadedBookmarkedRepos: LoadedBookmarkedRepo[],
     options: ComputeCardsOptions
   ): RepoCard[] {
-    const {
-      deriveRepoRefState,
-      derivePatchGraph,
-      parseRepoAnnouncementEvent,
-      Router,
-      nip19,
-      Address,
-    } = options;
+    const { deriveRepoRefState, derivePatchGraph, parseRepoAnnouncementEvent, Router, Address } =
+      options;
 
     // Validate that a string is a valid hex pubkey (exactly 64 hex characters)
     const isValidPubkey = (pubkey: string | undefined | null): boolean => {
@@ -267,8 +262,15 @@ function createRepositoriesStore() {
       const repoNaddr = (() => {
         try {
           if (!principal || !title) return "";
-          const relays = Router.get().FromPubkeys([principal]).getUrls();
-          return nip19.naddrEncode({ pubkey: principal, kind: 30617, identifier: title, relays });
+          const userOutboxRelays = Router.get().FromUser().getUrls();
+          return (
+            buildRepoNaddrFromEvent({
+              event: first,
+              fallbackPubkey: principal,
+              userOutboxRelays,
+              gitRelays: options.gitRelays || [],
+            }) || ""
+          );
         } catch {
           return "";
         }

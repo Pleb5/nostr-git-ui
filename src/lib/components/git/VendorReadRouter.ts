@@ -795,16 +795,35 @@ export class VendorReadRouter {
     const apiBase = this.getApiBase("github", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
 
-    const branchesUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
-      repo
-    )}/branches?per_page=100`;
-    const tagsUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
-      repo
-    )}/tags?per_page=100`;
+    const pageSize = 100;
+    const maxPages = 50;
+
+    const fetchAllPages = async (baseUrl: string): Promise<any[]> => {
+      const allItems: any[] = [];
+      for (let page = 1; page <= maxPages; page++) {
+        const separator = baseUrl.includes("?") ? "&" : "?";
+        const url = `${baseUrl}${separator}page=${page}&per_page=${pageSize}`;
+        const json = await this.fetchJsonWithOptionalTokenRetry({
+          host,
+          url,
+          vendor: "github",
+          ctx,
+        });
+
+        if (!Array.isArray(json)) break;
+        allItems.push(...json);
+        if (json.length < pageSize) break;
+      }
+      return allItems;
+    };
 
     const [branchesJson, tagsJson] = await Promise.all([
-      this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "github", ctx }),
-      this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "github", ctx }),
+      fetchAllPages(
+        `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`
+      ),
+      fetchAllPages(
+        `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`
+      ),
     ]);
 
     const out: VendorRef[] = [];
@@ -832,14 +851,34 @@ export class VendorReadRouter {
     const apiBase = this.getApiBase("gitea", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
 
-    const branchesUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
-      repo
-    )}/branches?limit=100`;
-    const tagsUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags?limit=100`;
+    const pageSize = 100;
+    const maxPages = 50;
+
+    const fetchAllPages = async (baseUrl: string): Promise<any[]> => {
+      const allItems: any[] = [];
+      for (let page = 1; page <= maxPages; page++) {
+        const separator = baseUrl.includes("?") ? "&" : "?";
+        const url = `${baseUrl}${separator}page=${page}&limit=${pageSize}`;
+        const json = await this.fetchJsonWithOptionalTokenRetry({
+          host,
+          url,
+          vendor: "gitea",
+          ctx,
+        });
+        if (!Array.isArray(json)) break;
+        allItems.push(...json);
+        if (json.length < pageSize) break;
+      }
+      return allItems;
+    };
 
     const [branchesJson, tagsJson] = await Promise.all([
-      this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "gitea", ctx }),
-      this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "gitea", ctx }),
+      fetchAllPages(
+        `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`
+      ),
+      fetchAllPages(
+        `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`
+      ),
     ]);
 
     const out: VendorRef[] = [];
@@ -965,12 +1004,30 @@ export class VendorReadRouter {
     const apiBase = this.getApiBase("gitlab", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
 
-    const branchesUrl = `${apiBase}/projects/${projectId}/repository/branches?per_page=100`;
-    const tagsUrl = `${apiBase}/projects/${projectId}/repository/tags?per_page=100`;
+    const pageSize = 100;
+    const maxPages = 50;
+
+    const fetchAllPages = async (baseUrl: string): Promise<any[]> => {
+      const allItems: any[] = [];
+      for (let page = 1; page <= maxPages; page++) {
+        const separator = baseUrl.includes("?") ? "&" : "?";
+        const url = `${baseUrl}${separator}page=${page}&per_page=${pageSize}`;
+        const json = await this.fetchJsonWithOptionalTokenRetry({
+          host,
+          url,
+          vendor: "gitlab",
+          ctx,
+        });
+        if (!Array.isArray(json)) break;
+        allItems.push(...json);
+        if (json.length < pageSize) break;
+      }
+      return allItems;
+    };
 
     const [branchesJson, tagsJson] = await Promise.all([
-      this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "gitlab", ctx }),
-      this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "gitlab", ctx }),
+      fetchAllPages(`${apiBase}/projects/${projectId}/repository/branches`),
+      fetchAllPages(`${apiBase}/projects/${projectId}/repository/tags`),
     ]);
 
     const out: VendorRef[] = [];
@@ -1093,22 +1150,43 @@ export class VendorReadRouter {
     const apiBase = this.getApiBase("bitbucket", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
 
-    const branchesUrl = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
-      repo
-    )}/refs/branches?pagelen=100`;
-    const tagsUrl = `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(
-      repo
-    )}/refs/tags?pagelen=100`;
+    const pageSize = 100;
+    const maxPages = 50;
 
-    const [branchesJson, tagsJson] = await Promise.all([
-      this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "bitbucket", ctx }),
-      this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "bitbucket", ctx }),
+    const fetchAllPages = async (baseUrl: string): Promise<any[]> => {
+      const allItems: any[] = [];
+      let nextUrl = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}pagelen=${pageSize}`;
+
+      for (let page = 1; page <= maxPages && nextUrl; page++) {
+        const json = await this.fetchJsonWithOptionalTokenRetry({
+          host,
+          url: nextUrl,
+          vendor: "bitbucket",
+          ctx,
+        });
+
+        const values = json && Array.isArray((json as any).values) ? (json as any).values : [];
+        allItems.push(...values);
+        nextUrl = typeof (json as any)?.next === "string" ? (json as any).next : "";
+        if (!nextUrl) break;
+      }
+
+      return allItems;
+    };
+
+    const [branchesValues, tagsValues] = await Promise.all([
+      fetchAllPages(
+        `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/refs/branches`
+      ),
+      fetchAllPages(
+        `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/refs/tags`
+      ),
     ]);
 
     const out: VendorRef[] = [];
 
-    if (branchesJson && Array.isArray((branchesJson as any).values)) {
-      for (const b of (branchesJson as any).values) {
+    if (Array.isArray(branchesValues)) {
+      for (const b of branchesValues) {
         const name = String(b?.name || "");
         const commitId = String(b?.target?.hash || "");
         if (!name) continue;
@@ -1116,8 +1194,8 @@ export class VendorReadRouter {
       }
     }
 
-    if (tagsJson && Array.isArray((tagsJson as any).values)) {
-      for (const t of (tagsJson as any).values) {
+    if (Array.isArray(tagsValues)) {
+      for (const t of tagsValues) {
         const name = String(t?.name || "");
         const commitId = String(t?.target?.hash || "");
         if (!name) continue;

@@ -45,8 +45,8 @@ import { nip19 } from "nostr-tools";
 import {
   createGraspAnnouncementAndState,
   didRelayAckGraspEvents,
+  extractPublishRelayAck,
   normalizeGraspOrigins,
-  publishGraspRepoEvents,
   toNpubOrSelf,
   waitForGraspProvisioning,
   type GraspPublishRelayAck,
@@ -326,6 +326,7 @@ interface ImportContext {
 
   // Remote sync results
   remotePushResults: ImportRemotePushResult[];
+  selectedBranchRefs?: ImportBranchPushRef[];
 }
 
 // ===== Batch Publishing Functions =====
@@ -365,7 +366,10 @@ async function flushEventQueue(context: ImportContext): Promise<void> {
 
   // Single delay after the batch (not per event)
   if (context.batchDelay > 0) {
-    await new Promise((resolve) => setTimeout(resolve, context.batchDelay));
+    await Promise.race([
+      new Promise<void>((resolve) => setTimeout(resolve, context.batchDelay)),
+      context.abortController.waitForAbort(),
+    ]);
   }
 }
 
@@ -394,6 +398,40 @@ function createRateLimiter(
  * Create rate limit wrapper function
  */
 function createWithRateLimit(rateLimiter: RateLimiter, abortController: ImportAbortController) {
+  const runAbortable = async <T>(
+    operation: () => Promise<T>,
+    label: string,
+    timeoutMs = 0
+  ): Promise<T> => {
+    abortController?.throwIfAborted();
+
+    const operationPromise = operation();
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const racePromises: Promise<T>[] = [
+      operationPromise,
+      abortController.waitForAbort() as Promise<T>,
+    ];
+
+    if (timeoutMs > 0) {
+      racePromises.push(
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        })
+      );
+    }
+
+    try {
+      return await Promise.race(racePromises);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  };
+
   return async function withRateLimit<T>(
     provider: string,
     method: string,
@@ -405,11 +443,18 @@ function createWithRateLimit(rateLimiter: RateLimiter, abortController: ImportAb
       abortController?.throwIfAborted();
 
       // Throttle before making the request
-      await rateLimiter.throttle(provider, method);
+      await runAbortable(
+        () => rateLimiter.throttle(provider, method),
+        `Rate limit wait for ${provider}:${method}`
+      );
 
       try {
         // Execute the operation
-        const result = await operation();
+        const result = await runAbortable(
+          operation,
+          `Rate-limited operation ${provider}:${method}`,
+          120000
+        );
         return result;
       } catch (error: any) {
         // Check if we should retry
@@ -422,13 +467,51 @@ function createWithRateLimit(rateLimiter: RateLimiter, abortController: ImportAb
 
         // Wait with progress updates if delay is significant
         if (retryDecision.delay > 0) {
-          await rateLimiter.waitWithProgress(provider, retryDecision.delay);
+          await runAbortable(
+            () => rateLimiter.waitWithProgress(provider, retryDecision.delay),
+            `Retry delay for ${provider}:${method}`
+          );
         }
 
         attempt++;
       }
     }
   };
+}
+
+async function runAbortableOperation<T>(
+  abortController: ImportAbortController,
+  operation: () => Promise<T>,
+  label: string,
+  timeoutMs = 0
+): Promise<T> {
+  abortController.throwIfAborted();
+
+  const operationPromise = operation();
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  const racePromises: Promise<T>[] = [
+    operationPromise,
+    abortController.waitForAbort() as Promise<T>,
+  ];
+
+  if (timeoutMs > 0) {
+    racePromises.push(
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      })
+    );
+  }
+
+  try {
+    return await Promise.race(racePromises);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 }
 
 /**
@@ -976,7 +1059,6 @@ async function fetchAndPublishIssuesStreaming(
  * Processes and publishes each PR immediately, keeping only ID mappings in memory
  */
 async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<number> {
-  console.log("[DEBUG] fetchAndPublishPRsStreaming START, finalRepo:", context.finalRepo?.name);
   context.updateProgress("Fetching and publishing pull requests...");
   context.abortController.throwIfAborted();
 
@@ -985,7 +1067,6 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
   let totalPRs = 0;
 
   while (true) {
-    console.log("[DEBUG] PR loop iteration, page:", page, "finalRepo:", context.finalRepo?.name);
     context.abortController.throwIfAborted();
 
     const sinceDate = context.config.sinceDate ? context.config.sinceDate.toISOString() : undefined;
@@ -1013,7 +1094,6 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
 
     // Process and publish each PR immediately
     for (const pr of filteredPrs) {
-      console.log("[DEBUG] Processing PR #", pr.number, "finalRepo:", context.finalRepo?.name);
       context.abortController.throwIfAborted();
 
       // Generate profile if needed (incremental)
@@ -1049,10 +1129,6 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
       }
 
       // Convert single PR to Nostr event (with title, body, branch, base, labels, commits)
-      console.log(
-        "[DEBUG] About to convert PR to Nostr event, finalRepo:",
-        context.finalRepo?.name
-      );
       const prEventData = convertPullRequestsToNostrEvents(
         [pr], // Single PR
         context.repoAddr,
@@ -1445,6 +1521,179 @@ function guessWebUrl(remoteUrl: string | undefined): string | undefined {
   return remoteUrl.replace(/\.git$/, "");
 }
 
+const IMPORT_BRANCH_PUSH_LIMIT = 5;
+
+interface ImportBranchPushRef {
+  name: string;
+  ref: string;
+  commit?: string;
+}
+
+function extractBranchCommitTimestampMs(commit: unknown): number {
+  if (!commit || typeof commit !== "object") return 0;
+
+  const candidate = commit as {
+    committer?: { date?: string };
+    author?: { date?: string };
+  };
+
+  const commitDate = candidate.committer?.date || candidate.author?.date;
+  if (!commitDate) return 0;
+
+  const parsed = Date.parse(commitDate);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+
+  const concurrency = Math.max(1, Math.min(limit, items.length));
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = cursor;
+      cursor += 1;
+      if (currentIndex >= items.length) return;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
+}
+
+async function resolveRecentBranchPushRefs(
+  context: ImportContext,
+  localRepoId: string,
+  sourceUrl: string,
+  fallbackBranch: string
+): Promise<ImportBranchPushRef[]> {
+  const branchByName = new Map<string, { name: string; commit?: string }>();
+
+  try {
+    const remoteRefs = await runAbortableOperation<any[]>(
+      context.abortController,
+      () =>
+        context.workerApi.listServerRefs({
+          url: sourceUrl,
+          prefix: "refs/heads/",
+          symrefs: false,
+        }),
+      "Listing source remote refs",
+      30000
+    );
+
+    for (const item of remoteRefs || []) {
+      const rawRef = String(item?.ref || "");
+      if (!rawRef.startsWith("refs/heads/")) continue;
+      const branchName = rawRef.replace(/^refs\/heads\//, "").trim();
+      if (!branchName) continue;
+      const oid = typeof item?.oid === "string" && item.oid.trim() ? item.oid.trim() : undefined;
+      branchByName.set(branchName, { name: branchName, commit: oid });
+    }
+  } catch {
+    // fallback handled below
+  }
+
+  if (branchByName.size === 0) {
+    try {
+      const localBranches = await runAbortableOperation<string[]>(
+        context.abortController,
+        () => context.workerApi.listBranches({ repoId: localRepoId }),
+        "Listing local branches",
+        30000
+      );
+      for (const branchName of localBranches || []) {
+        const trimmed = String(branchName || "").trim();
+        if (!trimmed) continue;
+        branchByName.set(trimmed, { name: trimmed });
+      }
+    } catch {
+      // pass
+    }
+  }
+
+  const normalizedFallbackBranch = String(fallbackBranch || "").trim() || "main";
+  if (!branchByName.has(normalizedFallbackBranch)) {
+    branchByName.set(normalizedFallbackBranch, { name: normalizedFallbackBranch });
+  }
+
+  const configuredSelectedBranches = Array.from(
+    new Set(
+      ((context.config as ImportConfig & { selectedBranches?: string[] }).selectedBranches || [])
+        .map((name) => String(name || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (configuredSelectedBranches.length > 0) {
+    const selectedBranchNames = Array.from(
+      new Set([
+        normalizedFallbackBranch,
+        ...configuredSelectedBranches.filter((name) => name !== normalizedFallbackBranch),
+      ])
+    );
+
+    return selectedBranchNames.map((name) => ({
+      name,
+      ref: `refs/heads/${name}`,
+      commit: branchByName.get(name)?.commit,
+    }));
+  }
+
+  const sourceRepo = (() => {
+    try {
+      return parseRepoUrl(sourceUrl);
+    } catch {
+      return context.parsed;
+    }
+  })();
+
+  const otherBranchNames = Array.from(branchByName.keys()).filter(
+    (branchName) => branchName !== normalizedFallbackBranch
+  );
+
+  const recencyScored = await mapWithConcurrency(otherBranchNames, 6, async (branchName) => {
+    try {
+      const commits = await context.withRateLimit(context.platform, "listCommits", () =>
+        context.api.listCommits(sourceRepo.owner, sourceRepo.repo, {
+          sha: branchName,
+          per_page: 1,
+        })
+      );
+      const timestampMs = extractBranchCommitTimestampMs(
+        Array.isArray(commits) ? commits[0] : undefined
+      );
+      return { name: branchName, timestampMs };
+    } catch {
+      return { name: branchName, timestampMs: 0 };
+    }
+  });
+
+  recencyScored.sort((a, b) => {
+    if (b.timestampMs !== a.timestampMs) return b.timestampMs - a.timestampMs;
+    return a.name.localeCompare(b.name);
+  });
+
+  const selectedOtherBranches = recencyScored.slice(0, Math.max(0, IMPORT_BRANCH_PUSH_LIMIT - 1));
+  const selectedBranchNames = [
+    normalizedFallbackBranch,
+    ...selectedOtherBranches.map((branch) => branch.name),
+  ];
+
+  return Array.from(new Set(selectedBranchNames)).map((name) => ({
+    name,
+    ref: `refs/heads/${name}`,
+    commit: branchByName.get(name)?.commit,
+  }));
+}
+
 async function syncRepositoryToRemotes(
   context: ImportContext,
   sourceUrl: string,
@@ -1474,11 +1723,38 @@ async function syncRepositoryToRemotes(
   context.updateProgress("Preparing local mirror for remote sync...");
   context.abortController.throwIfAborted();
 
-  await context.workerApi.cloneRemoteRepo({
-    url: sourceUrl,
-    dir: localCloneDir,
-    token: sourceToken,
-  });
+  await runAbortableOperation(
+    context.abortController,
+    () =>
+      context.workerApi.cloneRemoteRepo({
+        url: sourceUrl,
+        dir: localCloneDir,
+        token: sourceToken,
+      }),
+    "Cloning source repository",
+    0
+  );
+
+  const branchPushRefs = await resolveRecentBranchPushRefs(
+    context,
+    localRepoId,
+    sourceUrl,
+    targetBranch
+  );
+  context.selectedBranchRefs = branchPushRefs;
+
+  const pushPlanSummary =
+    branchPushRefs.length <= 8
+      ? branchPushRefs.map((branchRef) => branchRef.name).join(", ")
+      : `${branchPushRefs
+          .slice(0, 8)
+          .map((branchRef) => branchRef.name)
+          .join(", ")} (+${branchPushRefs.length - 8} more)`;
+  context.updateProgress(
+    `Prepared ${branchPushRefs.length} branch ref${branchPushRefs.length === 1 ? "" : "s"} for sync${
+      pushPlanSummary ? `: ${pushPlanSummary}` : ""
+    }`
+  );
 
   const orderedTargets = [...targets].sort((a, b) => {
     const aIsGrasp = a.provider === "grasp" ? 1 : 0;
@@ -1517,14 +1793,20 @@ async function syncRepositoryToRemotes(
         }
 
         if (!remoteUrl) {
-          const createResult = await context.workerApi.createRemoteRepo({
-            provider: "grasp",
-            token: context.userPubkey,
-            name: repoName,
-            description: repoDescription,
-            isPrivate: false,
-            baseUrl: target.relayUrl,
-          });
+          const createResult = await runAbortableOperation<any>(
+            context.abortController,
+            () =>
+              context.workerApi.createRemoteRepo({
+                provider: "grasp",
+                token: context.userPubkey,
+                name: repoName,
+                description: repoDescription,
+                isPrivate: false,
+                baseUrl: target.relayUrl,
+              }),
+            `Creating remote repository on ${target.label}`,
+            45000
+          );
 
           if (!createResult?.success || !createResult?.remoteUrl) {
             throw new Error(createResult?.error || "Failed to create GRASP repository");
@@ -1536,44 +1818,60 @@ async function syncRepositoryToRemotes(
             );
           }
 
+          const graspRelays = Array.from(
+            new Set([
+              normalizeGraspOrigins(target.relayUrl).wsOrigin,
+              ...(context.config.relays || []),
+            ])
+          );
+
+          const createdWebUrl = guessWebUrl(createResult.remoteUrl);
+
           const graspEvents = createGraspAnnouncementAndState({
             relayUrl: target.relayUrl,
             ownerPubkey: context.userPubkey,
             repoName,
             description: repoDescription,
-            relays: Array.from(
-              new Set([
-                normalizeGraspOrigins(target.relayUrl).wsOrigin,
-                ...(context.config.relays || []),
-              ])
-            ),
+            relays: graspRelays,
+            cloneUrls: [createResult.remoteUrl],
+            webUrls: createdWebUrl ? [createdWebUrl] : undefined,
             maintainers: [context.userPubkey],
           });
 
-          const relayAck = await publishGraspRepoEvents(
-            context.onPublishEvent as any,
-            graspEvents.announcementEvent,
-            graspEvents.stateEvent
+          const relayAck = extractPublishRelayAck(
+            await (context.onPublishEvent as any)(graspEvents.announcementEvent)
           );
           graspAckByRelay.set(target.relayUrl, relayAck);
 
           if (relayAck.hasRelayOutcomes && !didRelayAckGraspEvents(relayAck, target.relayUrl)) {
             throw new Error(
-              "Selected GRASP relay did not ACK announcement/state events; skipping push"
+              "Selected GRASP relay did not ACK repository announcement; skipping push"
             );
           }
 
           try {
-            await waitForGraspProvisioning({
-              relayUrl: target.relayUrl,
-              userPubkey: context.userPubkey,
-              owner: toNpubOrSelf(context.userPubkey),
-              repoName,
-              maxAttempts: 15,
-              delayMs: 3000,
-            });
-          } catch {
-            // continue to push; provisioning checks can lag behind relay acceptance
+            await runAbortableOperation(
+              context.abortController,
+              () =>
+                waitForGraspProvisioning({
+                  relayUrl: target.relayUrl!,
+                  userPubkey: context.userPubkey,
+                  owner: toNpubOrSelf(context.userPubkey),
+                  repoName,
+                  maxAttempts: 15,
+                  delayMs: 3000,
+                }),
+              `Waiting for GRASP provisioning on ${target.label}`,
+              0
+            );
+          } catch (provisionError) {
+            const message =
+              provisionError instanceof Error
+                ? provisionError.message
+                : String(provisionError || "Unknown provisioning error");
+            context.updateProgress(
+              `Provisioning check timed out (${message}). Continuing with push retries...`
+            );
           }
 
           remoteUrl = createResult.remoteUrl;
@@ -1592,16 +1890,123 @@ async function syncRepositoryToRemotes(
           throw new Error("Skipping GRASP push because target relay did not ACK published events");
         }
 
-        const pushResult = await context.workerApi.pushToRemote({
-          repoId: localRepoId,
-          remoteUrl,
-          branch: targetBranch,
-          token: context.userPubkey,
-          provider: "grasp",
-        });
+        const graspRefByFullRef = new Map(
+          branchPushRefs
+            .filter((item) => Boolean(item.commit))
+            .map((item) => [
+              item.ref,
+              {
+                type: "heads" as const,
+                name: item.name,
+                commit: item.commit as string,
+              },
+            ])
+        );
+        const acceptedRefsForState = new Set<string>();
 
-        if (!pushResult?.success) {
-          throw new Error(pushResult?.error || "Failed to push to GRASP target");
+        for (let refIndex = 0; refIndex < branchPushRefs.length; refIndex++) {
+          const branchRef = branchPushRefs[refIndex];
+          context.abortController.throwIfAborted();
+
+          if (context.onPublishEvent && graspRefByFullRef.size > 0) {
+            context.updateProgress(
+              `Publishing GRASP state for ${branchRef.name} (${refIndex + 1}/${branchPushRefs.length})...`
+            );
+
+            const stateRefKeys = Array.from(
+              new Set(
+                [...acceptedRefsForState, branchRef.ref].filter((fullRef) =>
+                  graspRefByFullRef.has(fullRef)
+                )
+              )
+            );
+            const stateRefs = stateRefKeys
+              .map((fullRef) => graspRefByFullRef.get(fullRef))
+              .filter(
+                (
+                  ref
+                ): ref is {
+                  type: "heads";
+                  name: string;
+                  commit: string;
+                } => Boolean(ref?.commit)
+              );
+
+            if (stateRefs.length > 0) {
+              const stateHead =
+                stateRefKeys.includes(`refs/heads/${targetBranch}`) ||
+                branchRef.name === targetBranch
+                  ? targetBranch
+                  : stateRefs[0]?.name || targetBranch;
+
+              const graspState = createGraspAnnouncementAndState({
+                relayUrl: target.relayUrl,
+                ownerPubkey: context.userPubkey,
+                repoName,
+                description: repoDescription,
+                relays: Array.from(
+                  new Set([
+                    normalizeGraspOrigins(target.relayUrl).wsOrigin,
+                    ...(context.config.relays || []),
+                  ])
+                ),
+                cloneUrls: [remoteUrl],
+                webUrls: [webUrl || guessWebUrl(remoteUrl) || remoteUrl.replace(/\.git$/, "")],
+                maintainers: [context.userPubkey],
+                refs: stateRefs,
+                head: stateHead,
+              });
+
+              const stateAck = extractPublishRelayAck(
+                await (context.onPublishEvent as any)(graspState.stateEvent)
+              );
+
+              if (stateAck.hasRelayOutcomes && !didRelayAckGraspEvents(stateAck, target.relayUrl)) {
+                throw new Error(
+                  `Selected GRASP relay did not ACK state for ${branchRef.name}; skipping push`
+                );
+              }
+
+              await runAbortableOperation(
+                context.abortController,
+                () => new Promise<void>((resolve) => setTimeout(resolve, 350)),
+                `Waiting for GRASP state propagation for ${branchRef.name}`,
+                1500
+              );
+            }
+          }
+
+          context.updateProgress(
+            `Pushing branch ${branchRef.name} to ${target.label} (${refIndex + 1}/${branchPushRefs.length})...`
+          );
+
+          const pushResult = await runAbortableOperation<any>(
+            context.abortController,
+            () =>
+              context.workerApi.pushToRemote({
+                repoId: localRepoId,
+                remoteUrl,
+                branch: targetBranch,
+                ref: branchRef.ref,
+                token: context.userPubkey,
+                provider: "grasp",
+              }),
+            `Pushing ${branchRef.name} to ${target.label}`,
+            0
+          );
+
+          if (!pushResult?.success) {
+            throw new Error(
+              pushResult?.error || `Failed to push branch ${branchRef.name} to GRASP target`
+            );
+          }
+
+          const pushedRefs = Array.isArray(pushResult?.details?.pushedRefs)
+            ? pushResult.details.pushedRefs
+            : [branchRef.ref];
+          if (pushedRefs.includes(branchRef.ref)) {
+            acceptedRefsForState.add(branchRef.ref);
+          }
         }
 
         results.push({
@@ -1623,14 +2028,20 @@ async function syncRepositoryToRemotes(
       let webUrl = target.existingWebUrl;
 
       if (!remoteUrl) {
-        const createResult = await context.workerApi.createRemoteRepo({
-          provider: target.provider,
-          token: target.token,
-          name: repoName,
-          description: repoDescription,
-          isPrivate: false,
-          baseUrl: getProviderBaseUrl(target.provider, target.host),
-        });
+        const createResult = await runAbortableOperation<any>(
+          context.abortController,
+          () =>
+            context.workerApi.createRemoteRepo({
+              provider: target.provider,
+              token: target.token,
+              name: repoName,
+              description: repoDescription,
+              isPrivate: false,
+              baseUrl: getProviderBaseUrl(target.provider, target.host),
+            }),
+          `Creating remote repository on ${target.label}`,
+          45000
+        );
 
         if (!createResult?.success || !createResult?.remoteUrl) {
           throw new Error(createResult?.error || "Failed to create remote repository");
@@ -1644,24 +2055,70 @@ async function syncRepositoryToRemotes(
         throw new Error("No remote URL available for push");
       }
 
-      const pushResult = await context.workerApi.safePushToRemote({
-        repoId: localRepoId,
-        remoteUrl,
-        branch: targetBranch,
-        token: target.token,
-        provider: target.provider,
-        preflight: {
-          blockIfUncommitted: false,
-          requireUpToDate: false,
-          blockIfShallow: false,
-        },
-      });
+      let targetApi: ReturnType<typeof getGitServiceApiFromUrl> | null = null;
+      let targetOwner = "";
+      let targetRepo = "";
+      try {
+        const parsedTarget = parseRepoUrl(remoteUrl);
+        targetOwner = parsedTarget.owner;
+        targetRepo = parsedTarget.repo;
+        targetApi = getGitServiceApiFromUrl(remoteUrl, target.token);
+      } catch {
+        targetApi = null;
+      }
 
-      if (!pushResult?.success) {
-        if (pushResult?.requiresConfirmation) {
-          throw new Error(pushResult?.warning || "Push requires confirmation");
+      for (let refIndex = 0; refIndex < branchPushRefs.length; refIndex++) {
+        const branchRef = branchPushRefs[refIndex];
+        context.abortController.throwIfAborted();
+
+        const isDefaultBranchRef = branchRef.name === targetBranch;
+        const canUseApiFastPath =
+          !isDefaultBranchRef && Boolean(branchRef.commit) && Boolean(targetApi?.upsertBranchRef);
+
+        if (canUseApiFastPath && targetApi && targetOwner && targetRepo) {
+          context.updateProgress(
+            `Syncing branch ${branchRef.name} via ${target.label} API (${refIndex + 1}/${branchPushRefs.length})...`
+          );
+
+          try {
+            await context.withRateLimit(target.provider, "upsertBranchRef", () =>
+              targetApi!.upsertBranchRef!(
+                targetOwner,
+                targetRepo,
+                branchRef.name,
+                branchRef.commit as string
+              )
+            );
+            continue;
+          } catch {
+            // fall back to git push below
+          }
         }
-        throw new Error(pushResult?.error || "Push failed");
+
+        context.updateProgress(
+          `Pushing branch ${branchRef.name} to ${target.label} (${refIndex + 1}/${branchPushRefs.length})...`
+        );
+
+        const pushResult = await runAbortableOperation<any>(
+          context.abortController,
+          () =>
+            context.workerApi.pushToRemote({
+              repoId: localRepoId,
+              remoteUrl,
+              branch: targetBranch,
+              ref: branchRef.ref,
+              token: target.token,
+              provider: target.provider,
+            }),
+          `Pushing ${branchRef.name} to ${target.label}`,
+          0
+        );
+
+        if (!pushResult?.success) {
+          throw new Error(
+            pushResult?.error || `Failed to push branch ${branchRef.name} to ${target.label}`
+          );
+        }
       }
 
       results.push({
@@ -1749,7 +2206,14 @@ function convertRepoEvents(context: ImportContext): {
 
   const repoStateEventTemplate = convertRepoToStateEvent(
     context.finalRepo,
-    context.importTimestamp
+    context.importTimestamp,
+    (context.selectedBranchRefs || [])
+      .filter((branchRef) => Boolean(branchRef.commit))
+      .map((branchRef) => ({
+        type: "heads" as const,
+        name: branchRef.name,
+        commit: branchRef.commit as string,
+      }))
   );
 
   return {
@@ -1949,6 +2413,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         prsPublished: 0,
         commentsPublished: 0,
         remotePushResults: [],
+        selectedBranchRefs: [],
       } as ImportContext;
 
       // Validation & Repository Setup
@@ -1966,7 +2431,6 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       // Set initial repo
       context.finalRepo = ownershipRepo;
-      console.log("[DEBUG] Set initial finalRepo:", context.finalRepo?.name);
 
       currentPhaseRef.current = "repository";
       // Fork if needed (this updates context.finalRepo)
@@ -1975,7 +2439,6 @@ export function useImportRepo(options: UseImportRepoOptions) {
         throw new Error("Failed to ensure repository access");
       }
       context.finalRepo = forkedOrOriginalRepo;
-      console.log("[DEBUG] After fork/ensure, finalRepo:", context.finalRepo?.name);
 
       // Fetch full metadata if needed
       const repoWithMetadata = await fetchRepoMetadata(context, ownershipRepo);
@@ -1983,7 +2446,6 @@ export function useImportRepo(options: UseImportRepoOptions) {
         throw new Error("Failed to fetch repository metadata");
       }
       context.finalRepo = repoWithMetadata;
-      console.log("[DEBUG] After metadata fetch, finalRepo:", context.finalRepo?.name);
 
       // Final safety check before proceeding
       if (!context.finalRepo) {
@@ -1991,9 +2453,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
       }
 
       // Initialize repo address and timestamps
-      console.log("[DEBUG] About to access finalRepo.name, finalRepo is:", context.finalRepo);
       const repoName = context.finalRepo.fullName.split("/").pop() || context.finalRepo.name;
-      console.log("[DEBUG] Successfully got repoName:", repoName);
       context.repoAddr = `30617:${userPubkey}:${repoName}`;
       context.startTimestamp = context.importTimestamp - 3600; // Start from 1 hour ago
       context.currentTimestamp = context.startTimestamp;
@@ -2056,9 +2516,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
       let prsImported = 0;
       if (config.mirrorPullRequests) {
         currentPhaseRef.current = "pull_requests";
-        console.log("[DEBUG] Before PRs, finalRepo:", context.finalRepo?.name);
         prsImported = await fetchAndPublishPRsStreaming(context);
-        console.log("[DEBUG] After PRs, finalRepo:", context.finalRepo?.name);
         completedCountsRef.current.pull_requests = prsImported;
       }
 
@@ -2066,11 +2524,9 @@ export function useImportRepo(options: UseImportRepoOptions) {
       let commentsImported = 0;
       if (config.mirrorComments) {
         currentPhaseRef.current = "comments";
-        console.log("[DEBUG] Before comments, finalRepo:", context.finalRepo?.name);
         const issueNumbers = new Set(Array.from(context.issueEventIdMap.keys()));
         const prNumbers = new Set(Array.from(context.prEventIdMap.keys()));
         commentsImported = await fetchAndPublishCommentsStreaming(context, issueNumbers, prNumbers);
-        console.log("[DEBUG] After comments, finalRepo:", context.finalRepo?.name);
         completedCountsRef.current.comments = commentsImported;
       }
 
@@ -2083,21 +2539,16 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       // Publish repo announcement/state at the end (after remote sync and mirror data)
       currentPhaseRef.current = "repository";
-      console.log("[DEBUG] Before convertRepoEvents, finalRepo:", context.finalRepo?.name);
       const repoEvents = convertRepoEvents(context);
-      console.log("[DEBUG] After convertRepoEvents, finalRepo:", context.finalRepo?.name);
       const publishedRepoEvents = await publishRepoEvents(context, repoEvents);
       signedRepoAnnouncement = publishedRepoEvents.announcement;
       signedRepoState = publishedRepoEvents.state;
-      console.log("[DEBUG] After publishRepoEvents, finalRepo:", context.finalRepo?.name);
 
       // Complete
       setProgress("complete", "Import completed successfully!");
 
       // Final validation before returning result
-      console.log("[DEBUG] Before creating result, finalRepo:", context.finalRepo);
       if (!context.finalRepo) {
-        console.error("[DEBUG] ERROR: finalRepo is null when creating result!");
         throw new Error("Repository metadata was lost during import");
       }
 
