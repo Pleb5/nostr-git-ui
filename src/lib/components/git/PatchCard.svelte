@@ -43,7 +43,7 @@
     patches?: PatchEvent[];
     comments?: CommentEvent[];
     currentCommenter: string;
-    onCommentCreated: (comment: CommentEvent) => Promise<void>;
+    onCommentCreated?: (comment: CommentEvent) => Promise<void>;
     extraLabels?: string[];
     // Optional for Status.svelte integration
     repo?: any;

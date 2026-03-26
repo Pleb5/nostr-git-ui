@@ -18,7 +18,7 @@
     currentCommenterProfile?: Profile;
     comments?: CommentEvent[] | undefined;
     commenterProfiles?: Profile[] | undefined;
-    onCommentCreated: (comment: CommentEvent) => Promise<void>;
+    onCommentCreated?: (comment: CommentEvent) => Promise<void>;
     relays?: string[];
     repoAddress?: string;
   }
@@ -130,7 +130,7 @@
 
     newComment = "";
 
-    onCommentCreated(commentEvent);
+    onCommentCreated?.(commentEvent);
   }
 </script>
 
@@ -208,25 +208,31 @@
         </div>
       {/each}
 
-      <form onsubmit={submit} class="flex flex-col gap-3 pt-4 border-t">
-        <div class="flex gap-3">
-          <div class="flex-shrink-0">
-            <ProfileComponent pubkey={currentCommenter} hideDetails={true} />
+      {#if currentCommenter && onCommentCreated}
+        <form onsubmit={submit} class="flex flex-col gap-3 pt-4 border-t">
+          <div class="flex gap-3">
+            <div class="flex-shrink-0">
+              <ProfileComponent pubkey={currentCommenter} hideDetails={true} />
+            </div>
+            <div class="flex-1">
+              <Textarea
+                bind:value={newComment}
+                placeholder="Write a comment..."
+                class="min-h-[80px] resize-none w-full"
+              />
+            </div>
           </div>
-          <div class="flex-1">
-            <Textarea
-              bind:value={newComment}
-              placeholder="Write a comment..."
-              class="min-h-[80px] resize-none w-full"
-            />
+          <div class="flex justify-end">
+            <Button type="submit" class="gap-2" disabled={!newComment.trim()}>
+              <MessageSquare class="h-4 w-4" /> Comment
+            </Button>
           </div>
+        </form>
+      {:else}
+        <div class="pt-4 border-t text-center text-sm text-muted-foreground">
+          Sign in to comment
         </div>
-        <div class="flex justify-end">
-          <Button type="submit" class="gap-2" disabled={!newComment.trim()}>
-            <MessageSquare class="h-4 w-4" /> Comment
-          </Button>
-        </div>
-      </form>
+      {/if}
     </div>
   </Card>
 </div>

@@ -151,6 +151,7 @@
           <span class="hidden sm:inline">{isWatching ? "Watching" : "Watch"}</span>
         </Button>
       {/if}
+      {#if forkRepo}
       <Button
         variant="outline"
         size="sm"
@@ -161,6 +162,7 @@
         <GitFork class="h-4 w-4" />
         <span class="hidden sm:inline">Fork</span>
       </Button>
+      {/if}
       <Button
         variant="outline"
         size="sm"
