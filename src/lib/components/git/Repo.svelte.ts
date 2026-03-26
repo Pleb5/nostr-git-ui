@@ -47,6 +47,7 @@ import {
 } from "@nostr-git/core/git";
 import { VendorReadRouter } from "./VendorReadRouter";
 import { normalizeGitRefName } from "./branch-ref";
+import { resolveLoadPageBranch } from "./load-page-branch";
 import { isGraspRepoHttpUrl } from "$lib/utils/grasp-url";
 
 export type PushFanoutMode = "best-effort" | "all-or-nothing";
@@ -1644,7 +1645,11 @@ export class Repo {
       this.commitManager.loadCommits = async () => {
         // Get the branch fresh at call time to avoid stale closure capture
         const storedBranch = this.commitManager.getCurrentBranch();
-        const currentBranchToLoad = storedBranch || this.selectedBranch || effectiveMainBranch;
+        const currentBranchToLoad = resolveLoadPageBranch({
+          selectedBranch: this.selectedBranch,
+          storedBranch,
+          mainBranch: effectiveMainBranch,
+        });
         console.log(
           `[Repo.loadPage] monkey-patched loadCommits called with branch=${currentBranchToLoad} (storedBranch=${storedBranch}, selectedBranch=${this.selectedBranch})`
         );
