@@ -5,6 +5,50 @@
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import { useRegistry } from "../../useRegistry";
   import { toast } from "../../stores/toast";
+  import markdownit from "markdown-it";
+  import hljs from "highlight.js/lib/core";
+  import javascript from "highlight.js/lib/languages/javascript";
+  import typescript from "highlight.js/lib/languages/typescript";
+  import python from "highlight.js/lib/languages/python";
+  import rust from "highlight.js/lib/languages/rust";
+  import go from "highlight.js/lib/languages/go";
+  import java from "highlight.js/lib/languages/java";
+  import cpp from "highlight.js/lib/languages/cpp";
+  import c from "highlight.js/lib/languages/c";
+  import csharp from "highlight.js/lib/languages/csharp";
+  import ruby from "highlight.js/lib/languages/ruby";
+  import php from "highlight.js/lib/languages/php";
+  import css from "highlight.js/lib/languages/css";
+  import scss from "highlight.js/lib/languages/scss";
+  import xml from "highlight.js/lib/languages/xml";
+  import json from "highlight.js/lib/languages/json";
+  import yaml from "highlight.js/lib/languages/yaml";
+  import markdown from "highlight.js/lib/languages/markdown";
+  import bash from "highlight.js/lib/languages/bash";
+  import sql from "highlight.js/lib/languages/sql";
+  import plaintext from "highlight.js/lib/languages/plaintext";
+
+  hljs.registerLanguage("javascript", javascript);
+  hljs.registerLanguage("typescript", typescript);
+  hljs.registerLanguage("python", python);
+  hljs.registerLanguage("rust", rust);
+  hljs.registerLanguage("go", go);
+  hljs.registerLanguage("java", java);
+  hljs.registerLanguage("cpp", cpp);
+  hljs.registerLanguage("c", c);
+  hljs.registerLanguage("csharp", csharp);
+  hljs.registerLanguage("ruby", ruby);
+  hljs.registerLanguage("php", php);
+  hljs.registerLanguage("css", css);
+  hljs.registerLanguage("scss", scss);
+  hljs.registerLanguage("xml", xml);
+  hljs.registerLanguage("html", xml);
+  hljs.registerLanguage("json", json);
+  hljs.registerLanguage("yaml", yaml);
+  hljs.registerLanguage("markdown", markdown);
+  hljs.registerLanguage("bash", bash);
+  hljs.registerLanguage("sql", sql);
+  hljs.registerLanguage("plaintext", plaintext);
 
   const { Card, Button } = useRegistry();
 
@@ -203,6 +247,102 @@
 
   const isTruncated = $derived(!!event.content && event.content.length > maxPreviewChars);
 
+  const getFileLanguage = (filepath: string): string => {
+    const ext = filepath.split(".").pop()?.toLowerCase();
+    const langMap: Record<string, string> = {
+      js: "javascript",
+      ts: "typescript",
+      jsx: "javascript",
+      tsx: "typescript",
+      py: "python",
+      rb: "ruby",
+      go: "go",
+      rs: "rust",
+      java: "java",
+      cpp: "cpp",
+      c: "c",
+      cs: "csharp",
+      php: "php",
+      html: "html",
+      svelte: "html",
+      css: "css",
+      scss: "scss",
+      sass: "scss",
+      json: "json",
+      xml: "xml",
+      yaml: "yaml",
+      yml: "yaml",
+      md: "markdown",
+      sh: "bash",
+      bash: "bash",
+      zsh: "bash",
+      fish: "bash",
+      sql: "sql",
+    };
+    return langMap[ext || ""] || "plaintext";
+  };
+
+  const highlightCode = (content: string, language: string): string => {
+    if (!content) return "";
+    try {
+      if (hljs.getLanguage(language)) {
+        return hljs.highlight(content, { language, ignoreIllegals: true }).value;
+      }
+      return hljs.highlightAuto(content).value;
+    } catch {
+      return content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+  };
+
+  const language = $derived(filePath ? getFileLanguage(filePath) : "plaintext");
+  const isMarkdown = $derived(language === "markdown");
+  const md = markdownit({ html: true, linkify: true, typographer: true });
+
+  type DiffLine = { type: "+" | "-" | " "; content: string; lineNum: number | null };
+
+  const parseDiffLines = (text: string, startLine: number | null): DiffLine[] => {
+    const raw = text.split("\n").map((line) => {
+      if (line === "…") return { type: " " as const, content: line };
+      if (line.startsWith("+")) return { type: "+" as const, content: line.slice(1) };
+      if (line.startsWith("-")) return { type: "-" as const, content: line.slice(1) };
+      if (line.startsWith(" ")) return { type: " " as const, content: line.slice(1) };
+      return { type: " " as const, content: line };
+    });
+    let oldNum = startLine ?? 1;
+    let newNum = startLine ?? 1;
+    return raw.map((r) => {
+      if (r.content === "…") return { ...r, lineNum: null };
+      if (r.type === "+") return { ...r, lineNum: newNum++ };
+      if (r.type === "-") return { ...r, lineNum: oldNum++ };
+      oldNum++;
+      return { ...r, lineNum: newNum++ };
+    });
+  };
+
+  const diffLines = $derived.by(() => {
+    if (!isDiff || !contentPreview) return [];
+    return parseDiffLines(contentPreview, lineStart);
+  });
+
+  const codeLines = $derived.by(() => {
+    if (isDiff || !contentPreview || isMarkdown) return [];
+    return contentPreview.split("\n").map((line, i) => ({
+      num: (lineStart ?? 1) + i,
+      content: line,
+    }));
+  });
+
+  const getDiffLineClass = (type: "+" | "-" | " ") => {
+    switch (type) {
+      case "+":
+        return "permalink-diff-add";
+      case "-":
+        return "permalink-diff-del";
+      default:
+        return "";
+    }
+  };
+
   const onOpen = () => {
     isOpening = true;
   };
@@ -262,7 +402,7 @@
   };
 </script>
 
-<Card class="git-card git-permalink-card hover:bg-accent/50 transition-colors">
+<Card class="git-card git-permalink-card">
   <div class="flex items-start gap-3">
     <IconComponent
       class={`h-6 w-6 mt-1 ${kindIconClass}`}
@@ -408,10 +548,22 @@
       </div>
 
       {#if contentPreview}
-        <div class="mt-3 rounded border bg-muted/30 p-3">
-          <pre class="whitespace-pre-wrap font-mono text-xs leading-snug">{contentPreview}</pre>
+        <div class="mt-3 rounded border border-border/40 bg-muted/30 overflow-hidden permalink-snippet">
+          {#if isDiff && diffLines.length > 0}
+            <div class="snippet-lines">
+              {#each diffLines as line}<div class="snippet-line {getDiffLineClass(line.type)}"><span class="snippet-num">{line.lineNum ?? ""}</span><span class="snippet-diff-ind">{line.type === " " ? "\u00a0" : line.type}</span><pre class="snippet-code">{@html highlightCode(line.content, language)}</pre></div>{/each}
+            </div>
+          {:else if isMarkdown}
+            <div class="p-3 prose prose-sm dark:prose-invert max-w-none permalink-markdown">
+              {@html md.render(contentPreview)}
+            </div>
+          {:else if codeLines.length > 0}
+            <div class="snippet-lines">
+              {#each codeLines as line}<div class="snippet-line"><span class="snippet-num">{line.num}</span><pre class="snippet-code">{@html highlightCode(line.content, language)}</pre></div>{/each}
+            </div>
+          {/if}
           {#if isTruncated}
-            <div class="mt-2 text-[11px] text-muted-foreground">Excerpt truncated</div>
+            <div class="px-3 pb-2 pt-1 text-[11px] text-muted-foreground">Excerpt truncated</div>
           {/if}
         </div>
       {/if}
@@ -427,10 +579,6 @@
 
 <style>
   @media (hover: none) {
-    :global(.git-permalink-card:hover) {
-      background-color: hsl(var(--card));
-    }
-
     :global(.git-share-button:hover) {
       background-color: hsl(var(--background));
       color: inherit;
@@ -440,5 +588,137 @@
       background-color: hsl(var(--background));
       color: inherit;
     }
+  }
+
+  /* oneDark-matched syntax highlighting for snippets */
+  :global(.permalink-snippet .hljs) {
+    background: transparent !important;
+    color: #abb2bf !important;
+  }
+
+  :global(.permalink-snippet .hljs-keyword),
+  :global(.permalink-snippet .hljs-selector-tag),
+  :global(.permalink-snippet .hljs-literal),
+  :global(.permalink-snippet .hljs-selector-attr) {
+    color: #c678dd;
+  }
+
+  :global(.permalink-snippet .hljs-title),
+  :global(.permalink-snippet .hljs-title.function_),
+  :global(.permalink-snippet .hljs-selector-id) {
+    color: #61afef;
+  }
+
+  :global(.permalink-snippet .hljs-title.class_),
+  :global(.permalink-snippet .hljs-type),
+  :global(.permalink-snippet .hljs-built_in),
+  :global(.permalink-snippet .hljs-selector-class) {
+    color: #e5c07b;
+  }
+
+  :global(.permalink-snippet .hljs-string),
+  :global(.permalink-snippet .hljs-template-tag) {
+    color: #98c379;
+  }
+
+  :global(.permalink-snippet .hljs-number),
+  :global(.permalink-snippet .hljs-symbol),
+  :global(.permalink-snippet .hljs-bullet),
+  :global(.permalink-snippet .hljs-attr),
+  :global(.permalink-snippet .hljs-attribute),
+  :global(.permalink-snippet .hljs-meta) {
+    color: #d19a66;
+  }
+
+  :global(.permalink-snippet .hljs-variable),
+  :global(.permalink-snippet .hljs-template-variable),
+  :global(.permalink-snippet .hljs-name),
+  :global(.permalink-snippet .hljs-tag),
+  :global(.permalink-snippet .hljs-property) {
+    color: #e06c75;
+  }
+
+  :global(.permalink-snippet .hljs-regexp),
+  :global(.permalink-snippet .hljs-selector-pseudo),
+  :global(.permalink-snippet .hljs-link) {
+    color: #56b6c2;
+  }
+
+  :global(.permalink-snippet .hljs-comment),
+  :global(.permalink-snippet .hljs-quote) {
+    color: #7d8799;
+    font-style: italic;
+  }
+
+  :global(.permalink-snippet .hljs-section) {
+    color: #61afef;
+  }
+
+  :global(.permalink-snippet .hljs-meta .hljs-keyword) {
+    color: #c678dd;
+  }
+
+  :global(.permalink-snippet .hljs-meta .hljs-string) {
+    color: #98c379;
+  }
+
+  /* Snippet line layout */
+  .snippet-lines {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.6875rem;
+    padding: 3px 0;
+  }
+
+  .snippet-line {
+    display: flex;
+    align-items: baseline;
+    line-height: 1.4;
+  }
+
+  .snippet-num {
+    flex-shrink: 0;
+    min-width: 2.5ch;
+    padding: 0 0.5ch;
+    text-align: right;
+    color: hsl(var(--muted-foreground) / 0.45);
+    user-select: none;
+  }
+
+  .snippet-diff-ind {
+    flex-shrink: 0;
+    width: 1.5ch;
+    text-align: center;
+    user-select: none;
+    opacity: 0.5;
+  }
+
+  :global(.snippet-code) {
+    flex: 1;
+    margin: 0 !important;
+    padding: 0 0.5ch !important;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font: inherit;
+    line-height: inherit;
+  }
+
+  :global(.permalink-diff-add) {
+    background-color: rgba(34, 197, 94, 0.12);
+    border-left: 2px solid rgb(22, 163, 74);
+  }
+
+  :global(.permalink-diff-del) {
+    background-color: rgba(239, 68, 68, 0.12);
+    border-left: 2px solid rgb(220, 38, 38);
+  }
+
+  :global(.dark .permalink-diff-add) {
+    background-color: rgba(34, 197, 94, 0.15);
+    border-left-color: rgb(34, 197, 94);
+  }
+
+  :global(.dark .permalink-diff-del) {
+    background-color: rgba(239, 68, 68, 0.15);
+    border-left-color: rgb(239, 68, 68);
   }
 </style>
