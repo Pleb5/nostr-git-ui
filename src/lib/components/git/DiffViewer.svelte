@@ -386,7 +386,14 @@
       if (Date.now() < ignoreMenuCloseUntil) return;
       const target = e.target as HTMLElement;
       const inMenu = target.closest?.(".permalink-menu-popup");
-      if (!inMenu) showPermalinkMenu = false;
+      if (!inMenu) {
+        if (showPermalinkMenu) {
+          selectedFilePath = null;
+          selectedStartIndex = null;
+          selectedEndIndex = null;
+        }
+        showPermalinkMenu = false;
+      }
     };
     window.addEventListener("click", handler);
     return () => window.removeEventListener("click", handler);
@@ -908,6 +915,9 @@
     event?.stopPropagation();
     showPermalinkMenu = false;
     const evt = buildPermalinkEvent();
+    selectedFilePath = null;
+    selectedStartIndex = null;
+    selectedEndIndex = null;
     if (!evt) {
       const missing = !repo ? "repo context" : "selected diff lines";
       toast.push({
@@ -947,6 +957,9 @@
     event?.stopPropagation();
     showPermalinkMenu = false;
     const selection = getSelectionRange();
+    selectedFilePath = null;
+    selectedStartIndex = null;
+    selectedEndIndex = null;
     if (!selection) {
       toast.push({
         title: "Select diff lines",
