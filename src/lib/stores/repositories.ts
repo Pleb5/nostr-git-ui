@@ -65,13 +65,14 @@ export type LoadedBookmarkedRepo = {
 
 export type ComputeCardsOptions = {
   deriveMaintainersForEuc: (euc: string) => { get: () => Set<string> | null };
-  deriveRepoRefState: (euc: string) => { get: () => any };
-  derivePatchGraph: (address: string) => { get: () => any };
+  deriveRepoRefState?: (euc: string) => { get: () => any };
+  derivePatchGraph?: (address: string) => { get: () => any };
   parseRepoAnnouncementEvent: (event: any) => any;
   Router: any;
   Address: any;
   repoAnnouncements: any;
   gitRelays?: string[];
+  includeDerivedMeta?: boolean;
 };
 
 // Minimal singleton repositories store that holds RepoCard[]
@@ -136,8 +137,8 @@ function createRepositoriesStore() {
     loadedBookmarkedRepos: LoadedBookmarkedRepo[],
     options: ComputeCardsOptions
   ): RepoCard[] {
-    const { deriveRepoRefState, derivePatchGraph, parseRepoAnnouncementEvent, Router, Address } =
-      options;
+    const { parseRepoAnnouncementEvent, Router, Address } = options;
+    const includeDerivedMeta = options.includeDerivedMeta === true;
 
     // Validate that a string is a valid hex pubkey (exactly 64 hex characters)
     const isValidPubkey = (pubkey: string | undefined | null): boolean => {
@@ -151,18 +152,26 @@ function createRepositoriesStore() {
     const getEucTag = (event: any): string =>
       (event?.tags || []).find((t: string[]) => t[0] === "r" && t[2] === "euc")?.[1] || "";
 
-    const isSameRepoIdentity = (baseEvent: any, candidateEvent: any): boolean => {
-      const baseD = getTagValue(baseEvent, "d");
-      const candidateD = getTagValue(candidateEvent, "d");
-      if (!baseD || !candidateD || baseD !== candidateD) return false;
-
-      const baseEuc = getEucTag(baseEvent);
-      const candidateEuc = getEucTag(candidateEvent);
-
-      if (baseEuc && candidateEuc) return baseEuc === candidateEuc;
-      if (baseEuc || candidateEuc) return false;
-      return true;
+    const getRepoIdentityKey = (event: any): string => {
+      const d = getTagValue(event, "d");
+      if (!d) return "";
+      const euc = getEucTag(event);
+      return `${d}::${euc || "_"}`;
     };
+
+    const announcingMaintainersByRepoIdentity = new Map<string, Set<string>>();
+    for (const announcement of options.repoAnnouncements || []) {
+      if (!announcement?.pubkey || !isValidPubkey(announcement.pubkey)) continue;
+      const identityKey = getRepoIdentityKey(announcement);
+      if (!identityKey) continue;
+
+      let maintainers = announcingMaintainersByRepoIdentity.get(identityKey);
+      if (!maintainers) {
+        maintainers = new Set<string>();
+        announcingMaintainersByRepoIdentity.set(identityKey, maintainers);
+      }
+      maintainers.add(announcement.pubkey);
+    }
 
     const getTaggedMaintainers = (event: any): string[] => {
       const raw = (event?.tags || [])
@@ -175,10 +184,11 @@ function createRepositoriesStore() {
       const announcers = new Set<string>();
       if (isValidPubkey(event?.pubkey)) announcers.add(event.pubkey);
 
-      for (const announcement of options.repoAnnouncements || []) {
-        if (!announcement?.pubkey || !isValidPubkey(announcement.pubkey)) continue;
-        if (!isSameRepoIdentity(event, announcement)) continue;
-        announcers.add(announcement.pubkey);
+      const identityKey = getRepoIdentityKey(event);
+      if (identityKey) {
+        for (const maintainer of announcingMaintainersByRepoIdentity.get(identityKey) || []) {
+          announcers.add(maintainer);
+        }
       }
 
       return announcers;
@@ -233,12 +243,15 @@ function createRepositoriesStore() {
         existing.clone = Array.from(new Set([...existing.clone, ...clone]));
         continue;
       }
-      let rStore = refStateStoreByEuc.get(euc);
-      if (!rStore) {
-        rStore = deriveRepoRefState(euc);
-        refStateStoreByEuc.set(euc, rStore);
+      let refs = {};
+      if (includeDerivedMeta && options.deriveRepoRefState) {
+        let rStore = refStateStoreByEuc.get(euc);
+        if (!rStore) {
+          rStore = options.deriveRepoRefState(euc);
+          refStateStoreByEuc.set(euc, rStore);
+        }
+        refs = rStore.get() || {};
       }
-      const refs = rStore.get() || {};
       const first = event;
       let title = euc;
       let description = "";
@@ -278,27 +291,29 @@ function createRepositoriesStore() {
 
       let rootsCount = 0;
       let revisionsCount = 0;
-      try {
-        if (first) {
-          const addrA = Address.fromEvent(first).toString();
-          let dStore = patchDagStoreByAddr.get(addrA);
-          if (!dStore) {
-            dStore = derivePatchGraph(addrA);
-            patchDagStoreByAddr.set(addrA, dStore);
+      if (includeDerivedMeta && options.derivePatchGraph) {
+        try {
+          if (first) {
+            const addrA = Address.fromEvent(first).toString();
+            let dStore = patchDagStoreByAddr.get(addrA);
+            if (!dStore) {
+              dStore = options.derivePatchGraph(addrA);
+              patchDagStoreByAddr.set(addrA, dStore);
+            }
+            const dag: any = dStore.get();
+            rootsCount = Array.isArray(dag?.roots)
+              ? dag.roots.length
+              : typeof dag?.nodeCount === "number"
+                ? Math.min(1, dag.nodeCount)
+                : 0;
+            revisionsCount = Array.isArray(dag?.rootRevisions)
+              ? dag.rootRevisions.length
+              : typeof dag?.edgesCount === "number"
+                ? dag.edgesCount
+                : 0;
           }
-          const dag: any = dStore.get();
-          rootsCount = Array.isArray(dag?.roots)
-            ? dag.roots.length
-            : typeof dag?.nodeCount === "number"
-              ? Math.min(1, dag.nodeCount)
-              : 0;
-          revisionsCount = Array.isArray(dag?.rootRevisions)
-            ? dag.rootRevisions.length
-            : typeof dag?.edgesCount === "number"
-              ? dag.edgesCount
-              : 0;
-        }
-      } catch {}
+        } catch {}
+      }
       const card: RepoCard = {
         euc,
         web: Array.from(new Set(web)) as string[],
