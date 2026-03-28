@@ -5,50 +5,7 @@
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import { useRegistry } from "../../useRegistry";
   import { toast } from "../../stores/toast";
-  import markdownit from "markdown-it";
-  import hljs from "highlight.js/lib/core";
-  import javascript from "highlight.js/lib/languages/javascript";
-  import typescript from "highlight.js/lib/languages/typescript";
-  import python from "highlight.js/lib/languages/python";
-  import rust from "highlight.js/lib/languages/rust";
-  import go from "highlight.js/lib/languages/go";
-  import java from "highlight.js/lib/languages/java";
-  import cpp from "highlight.js/lib/languages/cpp";
-  import c from "highlight.js/lib/languages/c";
-  import csharp from "highlight.js/lib/languages/csharp";
-  import ruby from "highlight.js/lib/languages/ruby";
-  import php from "highlight.js/lib/languages/php";
-  import css from "highlight.js/lib/languages/css";
-  import scss from "highlight.js/lib/languages/scss";
-  import xml from "highlight.js/lib/languages/xml";
-  import json from "highlight.js/lib/languages/json";
-  import yaml from "highlight.js/lib/languages/yaml";
-  import markdown from "highlight.js/lib/languages/markdown";
-  import bash from "highlight.js/lib/languages/bash";
-  import sql from "highlight.js/lib/languages/sql";
-  import plaintext from "highlight.js/lib/languages/plaintext";
-
-  hljs.registerLanguage("javascript", javascript);
-  hljs.registerLanguage("typescript", typescript);
-  hljs.registerLanguage("python", python);
-  hljs.registerLanguage("rust", rust);
-  hljs.registerLanguage("go", go);
-  hljs.registerLanguage("java", java);
-  hljs.registerLanguage("cpp", cpp);
-  hljs.registerLanguage("c", c);
-  hljs.registerLanguage("csharp", csharp);
-  hljs.registerLanguage("ruby", ruby);
-  hljs.registerLanguage("php", php);
-  hljs.registerLanguage("css", css);
-  hljs.registerLanguage("scss", scss);
-  hljs.registerLanguage("xml", xml);
-  hljs.registerLanguage("html", xml);
-  hljs.registerLanguage("json", json);
-  hljs.registerLanguage("yaml", yaml);
-  hljs.registerLanguage("markdown", markdown);
-  hljs.registerLanguage("bash", bash);
-  hljs.registerLanguage("sql", sql);
-  hljs.registerLanguage("plaintext", plaintext);
+  import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
 
   const { Card, Button } = useRegistry();
 
@@ -247,57 +204,10 @@
 
   const isTruncated = $derived(!!event.content && event.content.length > maxPreviewChars);
 
-  const getFileLanguage = (filepath: string): string => {
-    const ext = filepath.split(".").pop()?.toLowerCase();
-    const langMap: Record<string, string> = {
-      js: "javascript",
-      ts: "typescript",
-      jsx: "javascript",
-      tsx: "typescript",
-      py: "python",
-      rb: "ruby",
-      go: "go",
-      rs: "rust",
-      java: "java",
-      cpp: "cpp",
-      c: "c",
-      cs: "csharp",
-      php: "php",
-      html: "html",
-      svelte: "html",
-      css: "css",
-      scss: "scss",
-      sass: "scss",
-      json: "json",
-      xml: "xml",
-      yaml: "yaml",
-      yml: "yaml",
-      md: "markdown",
-      sh: "bash",
-      bash: "bash",
-      zsh: "bash",
-      fish: "bash",
-      sql: "sql",
-    };
-    return langMap[ext || ""] || "plaintext";
-  };
+  const highlightCode = (content: string, language: string): string =>
+    highlightCodeSnippet(content, language);
 
-  const highlightCode = (content: string, language: string): string => {
-    if (!content) return "";
-    try {
-      if (hljs.getLanguage(language)) {
-        return hljs.highlight(content, { language, ignoreIllegals: true }).value;
-      }
-      return hljs.highlightAuto(content).value;
-    } catch {
-      return content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-  };
-
-  const language = $derived(filePath ? getFileLanguage(filePath) : "plaintext");
-  const isMarkdown = $derived(language === "markdown");
-  const md = markdownit({ html: true, linkify: true, typographer: true });
-
+  const language = $derived(filePath ? getHighlightLanguageForPath(filePath) : "plaintext");
   type DiffLine = { type: "+" | "-" | " "; content: string; lineNum: number | null };
 
   const parseDiffLines = (text: string, startLine: number | null): DiffLine[] => {
@@ -325,12 +235,38 @@
   });
 
   const codeLines = $derived.by(() => {
-    if (isDiff || !contentPreview || isMarkdown) return [];
+    if (isDiff || !contentPreview) return [];
     return contentPreview.split("\n").map((line, i) => ({
       num: (lineStart ?? 1) + i,
       content: line,
     }));
   });
+
+  const openCurrentTarget = (href: string) => {
+    if (typeof window === "undefined") return false;
+
+    try {
+      const target = new URL(href, window.location.origin);
+      const current = new URL(window.location.href);
+      if (target.pathname !== current.pathname || target.search !== current.search) return false;
+      if (!target.hash) return false;
+
+      if (target.hash !== current.hash) {
+        window.location.hash = target.hash;
+      } else {
+        window.dispatchEvent(
+          new HashChangeEvent("hashchange", {
+            oldURL: current.href,
+            newURL: target.href,
+          })
+        );
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const getDiffLineClass = (type: "+" | "-" | " ") => {
     switch (type) {
@@ -343,8 +279,15 @@
     }
   };
 
-  const onOpen = () => {
+  const onOpen = (event?: MouseEvent) => {
     isOpening = true;
+    if (!targetHref) return;
+    if (!openCurrentTarget(targetHref)) return;
+
+    event?.preventDefault();
+    requestAnimationFrame(() => {
+      isOpening = false;
+    });
   };
 
   const setCopyState = (state: "idle" | "copied" | "error") => {
@@ -404,9 +347,7 @@
 
 <Card class="git-card git-permalink-card">
   <div class="flex items-start gap-3">
-    <IconComponent
-      class={`h-6 w-6 mt-1 ${kindIconClass}`}
-    />
+    <IconComponent class={`h-6 w-6 mt-1 ${kindIconClass}`} />
 
     <div class="flex-1 min-w-0">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -548,18 +489,24 @@
       </div>
 
       {#if contentPreview}
-        <div class="mt-3 rounded border border-border/40 bg-muted/30 overflow-hidden permalink-snippet">
+        <div
+          class="mt-3 rounded border border-border/40 bg-muted/30 overflow-hidden permalink-snippet"
+        >
           {#if isDiff && diffLines.length > 0}
             <div class="snippet-lines">
-              {#each diffLines as line}<div class="snippet-line {getDiffLineClass(line.type)}"><span class="snippet-num">{line.lineNum ?? ""}</span><span class="snippet-diff-ind">{line.type === " " ? "\u00a0" : line.type}</span><pre class="snippet-code">{@html highlightCode(line.content, language)}</pre></div>{/each}
-            </div>
-          {:else if isMarkdown}
-            <div class="p-3 prose prose-sm dark:prose-invert max-w-none permalink-markdown">
-              {@html md.render(contentPreview)}
+              {#each diffLines as line}<div class="snippet-line {getDiffLineClass(line.type)}">
+                  <span class="snippet-num">{line.lineNum ?? ""}</span><span
+                    class="snippet-diff-ind">{line.type === " " ? "\u00a0" : line.type}</span
+                  >
+                  <pre class="snippet-code">{@html highlightCode(line.content, language)}</pre>
+                </div>{/each}
             </div>
           {:else if codeLines.length > 0}
             <div class="snippet-lines">
-              {#each codeLines as line}<div class="snippet-line"><span class="snippet-num">{line.num}</span><pre class="snippet-code">{@html highlightCode(line.content, language)}</pre></div>{/each}
+              {#each codeLines as line}<div class="snippet-line">
+                  <span class="snippet-num">{line.num}</span>
+                  <pre class="snippet-code">{@html highlightCode(line.content, language)}</pre>
+                </div>{/each}
             </div>
           {/if}
           {#if isTruncated}
@@ -664,7 +611,8 @@
 
   /* Snippet line layout */
   .snippet-lines {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    font-family:
+      ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
     font-size: 0.6875rem;
     padding: 3px 0;
   }

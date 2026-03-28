@@ -33,3 +33,10 @@ export * from "./utils/eventKinds";
 // Export hash utilities
 export { sha256, md5 } from "./utils/hash";
 export { prChangeToParseDiffFile, type PrChangeInput } from "./utils/prDiffUtils";
+export {
+  getHighlightJs,
+  getHighlightLanguageForPath,
+  highlightCodeSnippet,
+  loadCodeMirrorLanguageExtensions,
+  normalizeHighlightLanguage,
+} from "./utils/codeHighlight";

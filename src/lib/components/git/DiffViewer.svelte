@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MessageSquare, Loader2, Share } from "@lucide/svelte";
+  import { MessageSquare, Loader2 } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
   import RichText from "../RichText.svelte";
   const { Avatar, AvatarFallback, AvatarImage, Button, Textarea, Markdown } = useRegistry();
@@ -10,29 +10,9 @@
   import { createCommentEvent, getTagValue } from "@nostr-git/core/events";
   import type { CommentEvent, CommentTag } from "@nostr-git/core/events";
   import type { NostrEvent } from "nostr-tools";
-  import hljs from "highlight.js/lib/core";
-  import javascript from "highlight.js/lib/languages/javascript";
-  import typescript from "highlight.js/lib/languages/typescript";
-  import python from "highlight.js/lib/languages/python";
-  import rust from "highlight.js/lib/languages/rust";
-  import go from "highlight.js/lib/languages/go";
-  import java from "highlight.js/lib/languages/java";
-  import cpp from "highlight.js/lib/languages/cpp";
-  import c from "highlight.js/lib/languages/c";
-  import csharp from "highlight.js/lib/languages/csharp";
-  import ruby from "highlight.js/lib/languages/ruby";
-  import php from "highlight.js/lib/languages/php";
-  import css from "highlight.js/lib/languages/css";
-  import scss from "highlight.js/lib/languages/scss";
-  import xml from "highlight.js/lib/languages/xml";
-  import json from "highlight.js/lib/languages/json";
-  import yaml from "highlight.js/lib/languages/yaml";
-  import markdown from "highlight.js/lib/languages/markdown";
-  import bash from "highlight.js/lib/languages/bash";
-  import sql from "highlight.js/lib/languages/sql";
-  import plaintext from "highlight.js/lib/languages/plaintext";
   import { toast } from "../../stores/toast.js";
   import { toUserMessage } from "../../utils/gitErrorUi.js";
+  import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
   import { GIT_PERMALINK, type PermalinkEvent } from "@nostr-git/core/types";
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import type { Repo } from "./Repo.svelte";
@@ -53,28 +33,6 @@
   // Use parse-diff File type
   type AnyFileChange = import("parse-diff").File;
 
-  hljs.registerLanguage("javascript", javascript);
-  hljs.registerLanguage("typescript", typescript);
-  hljs.registerLanguage("python", python);
-  hljs.registerLanguage("rust", rust);
-  hljs.registerLanguage("go", go);
-  hljs.registerLanguage("java", java);
-  hljs.registerLanguage("cpp", cpp);
-  hljs.registerLanguage("c", c);
-  hljs.registerLanguage("csharp", csharp);
-  hljs.registerLanguage("ruby", ruby);
-  hljs.registerLanguage("php", php);
-  hljs.registerLanguage("css", css);
-  hljs.registerLanguage("scss", scss);
-  hljs.registerLanguage("xml", xml);
-  hljs.registerLanguage("html", xml);
-  hljs.registerLanguage("json", json);
-  hljs.registerLanguage("yaml", yaml);
-  hljs.registerLanguage("markdown", markdown);
-  hljs.registerLanguage("bash", bash);
-  hljs.registerLanguage("sql", sql);
-  hljs.registerLanguage("plaintext", plaintext);
-
   function getFileLabel(file: AnyFileChange): string {
     // parse-diff: file.from and file.to
     if (file.from && file.to && file.from !== file.to) {
@@ -88,57 +46,10 @@
     return false;
   }
 
-  const getFileLanguage = (filepath: string): string => {
-    const ext = filepath.split(".").pop()?.toLowerCase();
-    const langMap: Record<string, string> = {
-      js: "javascript",
-      ts: "typescript",
-      jsx: "javascript",
-      tsx: "typescript",
-      py: "python",
-      rb: "ruby",
-      go: "go",
-      rs: "rust",
-      java: "java",
-      cpp: "cpp",
-      c: "c",
-      cs: "csharp",
-      php: "php",
-      html: "html",
-      svelte: "svelte",
-      css: "css",
-      scss: "scss",
-      sass: "scss",
-      json: "json",
-      xml: "xml",
-      yaml: "yaml",
-      yml: "yaml",
-      md: "markdown",
-      sh: "bash",
-      bash: "bash",
-      zsh: "bash",
-      fish: "bash",
-    };
-    return langMap[ext || ""] || "plaintext";
-  };
+  const getFileLanguage = (filepath: string): string => getHighlightLanguageForPath(filepath);
 
-  const highlightCode = (content: string, language: string): string => {
-    if (!content) return "";
-    try {
-      if (language === "svelte") {
-        const result = hljs.highlightAuto(content, ["xml", "typescript", "javascript", "css"]);
-        return result.value;
-      }
-      if (hljs.getLanguage(language)) {
-        const result = hljs.highlight(content, { language, ignoreIllegals: true });
-        return result.value;
-      }
-      const result = hljs.highlightAuto(content);
-      return result.value;
-    } catch (e) {
-      return content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-  };
+  const highlightCode = (content: string, language: string): string =>
+    highlightCodeSnippet(content, language);
 
   const getLineNumClass = (type: "add" | "del" | "normal") => {
     switch (type) {
@@ -307,6 +218,16 @@
     return null;
   };
 
+  const nextFrame = () =>
+    new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+
+  const waitMs = (ms: number) =>
+    new Promise<void>((resolve) => {
+      window.setTimeout(() => resolve(), ms);
+    });
+
   const scrollElementIntoView = (el: HTMLElement, align: "start" | "center" = "center") => {
     const scrollParent = diffContainer?.closest(".scroll-container") as HTMLElement | null;
     if (!scrollParent) {
@@ -318,6 +239,52 @@
     const offset = elRect.top - parentRect.top + scrollParent.scrollTop;
     const target = align === "center" ? offset - scrollParent.clientHeight / 2 : offset;
     scrollParent.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  };
+
+  const getDiffLineTarget = (anchor: string) => {
+    const lineEl = document.getElementById(anchor) as HTMLElement | null;
+    const lineRow = lineEl?.closest("[data-diff-index]") as HTMLElement | null;
+
+    return {
+      lineEl,
+      lineRow,
+      scrollTarget: lineRow || lineEl,
+    };
+  };
+
+  const waitForDiffLineTarget = async (anchor: string) => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const target = getDiffLineTarget(anchor);
+      if (target.scrollTarget) return target;
+      await tick();
+      await nextFrame();
+    }
+
+    return getDiffLineTarget(anchor);
+  };
+
+  const stabilizeScrollToTarget = async (
+    getTarget: () => HTMLElement | null,
+    align: "start" | "center"
+  ) => {
+    let didScroll = false;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const target = getTarget();
+      if (target) {
+        scrollElementIntoView(target, align);
+        didScroll = true;
+      }
+      await nextFrame();
+    }
+
+    if (didScroll) {
+      await waitMs(120);
+      const target = getTarget();
+      if (target) scrollElementIntoView(target, align);
+    }
+
+    return didScroll;
   };
 
   const ensureFileExpandedByPath = (filePath: string) => {
@@ -339,19 +306,24 @@
       const filePath = findFilePathByHash(lineAnchor.hash);
       if (filePath) ensureFileExpandedByPath(filePath);
       await tick();
-      const lineEl = document.getElementById(
+      const lineTarget = await waitForDiffLineTarget(
         `diff-${lineAnchor.hash}${lineAnchor.side}${lineAnchor.start}`
-      ) as HTMLElement | null;
-      if (lineEl) {
-        scrollElementIntoView(lineEl, "center");
-        const startIndex = Number(lineEl.dataset.diffIndex || "");
-        const startPath = lineEl.dataset.filePath || filePath || null;
+      );
+      if (lineTarget.scrollTarget) {
+        await stabilizeScrollToTarget(
+          () =>
+            getDiffLineTarget(`diff-${lineAnchor.hash}${lineAnchor.side}${lineAnchor.start}`)
+              .scrollTarget,
+          "center"
+        );
+        const startIndex = Number(lineTarget.lineRow?.dataset.diffIndex || "");
+        const startPath = lineTarget.lineRow?.dataset.filePath || filePath || null;
         let endIndex = startIndex;
         if (lineAnchor.end) {
-          const endEl = document.getElementById(
+          const endTarget = await waitForDiffLineTarget(
             `diff-${lineAnchor.hash}${lineAnchor.side}${lineAnchor.end}`
-          ) as HTMLElement | null;
-          const parsedEnd = Number(endEl?.dataset.diffIndex || "");
+          );
+          const parsedEnd = Number(endTarget.lineRow?.dataset.diffIndex || "");
           if (Number.isFinite(parsedEnd)) {
             endIndex = parsedEnd;
           }
@@ -365,11 +337,17 @@
       }
     }
     await tick();
+    await nextFrame();
     const hashMatch = anchor.match(/^diff-([a-f0-9]+)/i);
     const fileHash = hashMatch ? hashMatch[1] : null;
     if (!fileHash) return;
     const el = document.getElementById(`diff-${fileHash}`);
-    if (el) scrollElementIntoView(el as HTMLElement, "start");
+    if (el) {
+      await stabilizeScrollToTarget(
+        () => document.getElementById(`diff-${fileHash}`) as HTMLElement | null,
+        "start"
+      );
+    }
   };
 
   const scrollToCommentHash = async () => {
@@ -1210,21 +1188,6 @@
                         <div
                           class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                         >
-                          {#if enablePermalinks}
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onclick={(event) => {
-                                event.stopPropagation();
-                                selectedFilePath = currentFilePath;
-                                selectedStartIndex = lineIndex;
-                                selectedEndIndex = lineIndex;
-                                openPermalinkMenuAt(event.clientX, event.clientY);
-                              }}
-                            >
-                              <Share class="h-4 w-4" />
-                            </Button>
-                          {/if}
                           <Button
                             variant="ghost"
                             size="icon"

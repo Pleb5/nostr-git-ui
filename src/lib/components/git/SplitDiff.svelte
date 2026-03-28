@@ -1,29 +1,9 @@
 <script lang="ts">
-  import { Plus, Minus, Share } from "@lucide/svelte";
-  import hljs from "highlight.js/lib/core";
-  import javascript from "highlight.js/lib/languages/javascript";
-  import typescript from "highlight.js/lib/languages/typescript";
-  import python from "highlight.js/lib/languages/python";
-  import rust from "highlight.js/lib/languages/rust";
-  import go from "highlight.js/lib/languages/go";
-  import java from "highlight.js/lib/languages/java";
-  import cpp from "highlight.js/lib/languages/cpp";
-  import c from "highlight.js/lib/languages/c";
-  import csharp from "highlight.js/lib/languages/csharp";
-  import ruby from "highlight.js/lib/languages/ruby";
-  import php from "highlight.js/lib/languages/php";
-  import css from "highlight.js/lib/languages/css";
-  import scss from "highlight.js/lib/languages/scss";
-  import xml from "highlight.js/lib/languages/xml";
-  import json from "highlight.js/lib/languages/json";
-  import yaml from "highlight.js/lib/languages/yaml";
-  import markdown from "highlight.js/lib/languages/markdown";
-  import bash from "highlight.js/lib/languages/bash";
-  import sql from "highlight.js/lib/languages/sql";
-  import plaintext from "highlight.js/lib/languages/plaintext";
+  import { Plus, Minus } from "@lucide/svelte";
   import { toast } from "../../stores/toast.js";
   import { tick } from "svelte";
   import { toUserMessage } from "../../utils/gitErrorUi.js";
+  import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
   import { GIT_PERMALINK, type PermalinkEvent } from "@nostr-git/core/types";
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import type { Repo } from "./Repo.svelte";
@@ -46,28 +26,6 @@
   }
 
   let { hunks, filepath, repo, publish, commitSha, parentSha }: Props = $props();
-
-  hljs.registerLanguage("javascript", javascript);
-  hljs.registerLanguage("typescript", typescript);
-  hljs.registerLanguage("python", python);
-  hljs.registerLanguage("rust", rust);
-  hljs.registerLanguage("go", go);
-  hljs.registerLanguage("java", java);
-  hljs.registerLanguage("cpp", cpp);
-  hljs.registerLanguage("c", c);
-  hljs.registerLanguage("csharp", csharp);
-  hljs.registerLanguage("ruby", ruby);
-  hljs.registerLanguage("php", php);
-  hljs.registerLanguage("css", css);
-  hljs.registerLanguage("scss", scss);
-  hljs.registerLanguage("xml", xml);
-  hljs.registerLanguage("html", xml);
-  hljs.registerLanguage("json", json);
-  hljs.registerLanguage("yaml", yaml);
-  hljs.registerLanguage("markdown", markdown);
-  hljs.registerLanguage("bash", bash);
-  hljs.registerLanguage("sql", sql);
-  hljs.registerLanguage("plaintext", plaintext);
 
   let selectedFilePath = $state<string | null>(null);
   let selectedStartIndex = $state<number | null>(null);
@@ -176,8 +134,74 @@
     };
   };
 
+  const nextFrame = () =>
+    new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+
+  const waitMs = (ms: number) =>
+    new Promise<void>((resolve) => {
+      window.setTimeout(() => resolve(), ms);
+    });
+
   const scrollElementIntoView = (el: HTMLElement, align: "start" | "center" = "center") => {
-    el.scrollIntoView({ block: align, behavior: "smooth" });
+    const scrollParent = diffContainer?.closest(".scroll-container") as HTMLElement | null;
+    if (!scrollParent) {
+      el.scrollIntoView({ block: align, behavior: "smooth" });
+      return;
+    }
+
+    const parentRect = scrollParent.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const offset = elRect.top - parentRect.top + scrollParent.scrollTop;
+    const target = align === "center" ? offset - scrollParent.clientHeight / 2 : offset;
+    scrollParent.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  };
+
+  const getDiffLineTarget = (anchor: string) => {
+    const lineEl = document.getElementById(anchor) as HTMLElement | null;
+    const lineRow = lineEl?.closest("[data-diff-index]") as HTMLElement | null;
+
+    return {
+      lineEl,
+      lineRow,
+      scrollTarget: lineRow || lineEl,
+    };
+  };
+
+  const waitForDiffLineTarget = async (anchor: string) => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const target = getDiffLineTarget(anchor);
+      if (target.scrollTarget) return target;
+      await tick();
+      await nextFrame();
+    }
+
+    return getDiffLineTarget(anchor);
+  };
+
+  const stabilizeScrollToTarget = async (
+    getTarget: () => HTMLElement | null,
+    align: "start" | "center"
+  ) => {
+    let didScroll = false;
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const target = getTarget();
+      if (target) {
+        scrollElementIntoView(target, align);
+        didScroll = true;
+      }
+      await nextFrame();
+    }
+
+    if (didScroll) {
+      await waitMs(120);
+      const target = getTarget();
+      if (target) scrollElementIntoView(target, align);
+    }
+
+    return didScroll;
   };
 
   const scrollToDiffAnchor = async () => {
@@ -187,21 +211,24 @@
     const lineAnchor = parseDiffLineAnchor(anchor);
     if (lineAnchor && lineAnchor.hash === diffAnchor) {
       await tick();
-      const lineEl = document.getElementById(
+      const lineTarget = await waitForDiffLineTarget(
         `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.start}`
-      ) as HTMLElement | null;
-      if (lineEl) {
-        const lineRow = lineEl.closest("[data-diff-index]") as HTMLElement | null;
-        scrollElementIntoView(lineRow || lineEl, "center");
-        const startIndex = Number(lineRow?.dataset.diffIndex || "");
-        const startPath = lineRow?.dataset.filePath || filepath || null;
+      );
+      if (lineTarget.scrollTarget) {
+        await stabilizeScrollToTarget(
+          () =>
+            getDiffLineTarget(`diff-${diffAnchor}${lineAnchor.side}${lineAnchor.start}`)
+              .scrollTarget,
+          "center"
+        );
+        const startIndex = Number(lineTarget.lineRow?.dataset.diffIndex || "");
+        const startPath = lineTarget.lineRow?.dataset.filePath || filepath || null;
         let endIndex = startIndex;
         if (lineAnchor.end) {
-          const endEl = document.getElementById(
+          const endTarget = await waitForDiffLineTarget(
             `diff-${diffAnchor}${lineAnchor.side}${lineAnchor.end}`
-          ) as HTMLElement | null;
-          const endRow = endEl?.closest("[data-diff-index]") as HTMLElement | null;
-          const parsedEnd = Number(endRow?.dataset.diffIndex || "");
+          );
+          const parsedEnd = Number(endTarget.lineRow?.dataset.diffIndex || "");
           if (Number.isFinite(parsedEnd)) {
             endIndex = parsedEnd;
           }
@@ -215,8 +242,14 @@
       }
     }
     await tick();
+    await nextFrame();
     const el = document.getElementById(`diff-${diffAnchor}`);
-    if (el) scrollElementIntoView(el as HTMLElement, "start");
+    if (el) {
+      await stabilizeScrollToTarget(
+        () => document.getElementById(`diff-${diffAnchor}`) as HTMLElement | null,
+        "start"
+      );
+    }
   };
 
   $effect(() => {
@@ -451,57 +484,10 @@
     }
   };
 
-  const getFileLanguage = (path: string): string => {
-    const ext = path.split(".").pop()?.toLowerCase();
-    const langMap: Record<string, string> = {
-      js: "javascript",
-      ts: "typescript",
-      jsx: "javascript",
-      tsx: "typescript",
-      py: "python",
-      rb: "ruby",
-      go: "go",
-      rs: "rust",
-      java: "java",
-      cpp: "cpp",
-      c: "c",
-      cs: "csharp",
-      php: "php",
-      html: "html",
-      svelte: "svelte",
-      css: "css",
-      scss: "scss",
-      sass: "scss",
-      json: "json",
-      xml: "xml",
-      yaml: "yaml",
-      yml: "yaml",
-      md: "markdown",
-      sh: "bash",
-      bash: "bash",
-      zsh: "bash",
-      fish: "bash",
-    };
-    return langMap[ext || ""] || "plaintext";
-  };
+  const getFileLanguage = (path: string): string => getHighlightLanguageForPath(path);
 
-  const highlightCode = (content: string, language: string): string => {
-    if (!content) return "";
-    try {
-      if (language === "svelte") {
-        const result = hljs.highlightAuto(content, ["xml", "typescript", "javascript", "css"]);
-        return result.value;
-      }
-      if (hljs.getLanguage(language)) {
-        const result = hljs.highlight(content, { language, ignoreIllegals: true });
-        return result.value;
-      }
-      const result = hljs.highlightAuto(content);
-      return result.value;
-    } catch {
-      return content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-  };
+  const highlightCode = (content: string, language: string): string =>
+    highlightCodeSnippet(content, language);
 
   type DiffSelection = { filePath: string; start: number; end: number };
 
@@ -957,22 +943,6 @@
               <pre class="whitespace-pre m-0 inline"><span class="hljs"
                   >{@html highlightCode(line.content, language)}</span
                 ></pre>
-            </div>
-
-            <div class="w-8 px-1 py-1 shrink-0 opacity-0 hover:opacity-100 transition-opacity">
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  selectedFilePath = filepath || "unknown";
-                  selectedStartIndex = globalIndex;
-                  selectedEndIndex = globalIndex;
-                  openPermalinkMenuAt(event.clientX, event.clientY);
-                }}
-                class="w-6 h-6 rounded-sm bg-background border border-border hover:bg-muted flex items-center justify-center"
-                title="Permalink"
-              >
-                <Share class="h-3 w-3 text-muted-foreground" />
-              </button>
             </div>
           </div>
         {/each}

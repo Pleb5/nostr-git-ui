@@ -46,6 +46,8 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   go: "go",
   rs: "rust",
   kt: "kotlin",
+  kts: "kotlin",
+  dart: "dart",
   swift: "swift",
   scala: "scala",
   r: "r",
@@ -58,6 +60,8 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   zsh: "shell",
   fish: "shell",
   ps1: "powershell",
+  psm1: "powershell",
+  psd1: "powershell",
   bat: "batch",
   cmd: "batch",
 
@@ -68,6 +72,7 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   yml: "yaml",
   toml: "toml",
   ini: "ini",
+  properties: "ini",
   cfg: "ini",
   conf: "ini",
 
@@ -93,6 +98,10 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   lua: "lua",
   perl: "perl",
   pl: "perl",
+  proto: "protobuf",
+  pb: "protobuf",
+  graphql: "graphql",
+  gql: "graphql",
   vim: "vim",
   diff: "diff",
   patch: "diff",
@@ -379,7 +388,9 @@ function getBasename(filename: string): string {
  * Detect special files by name patterns
  */
 function detectSpecialFiles(basename: string, fullname: string): FileTypeInfo | null {
-  const lowerName = fullname.toLowerCase();
+  const lowerName = fullname
+    .slice(Math.max(fullname.lastIndexOf("/"), fullname.lastIndexOf("\\")) + 1)
+    .toLowerCase();
 
   // Configuration files
   if (["package.json", "composer.json", "tsconfig.json", "jsconfig.json"].includes(lowerName)) {

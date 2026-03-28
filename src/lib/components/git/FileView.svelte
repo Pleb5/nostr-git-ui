@@ -2,7 +2,6 @@
   import {
     FileCode,
     Folder,
-    Share,
     Download,
     Copy,
     Info,
@@ -28,10 +27,17 @@
     AudioViewer,
     BinaryViewer,
   } from "./viewers/index.js";
-  import { lineNumbers, EditorView } from "@codemirror/view";
+  import { drawSelection, lineNumbers, EditorView } from "@codemirror/view";
   import { EditorSelection, EditorState } from "@codemirror/state";
   import { nip19 } from "nostr-tools";
   import { normalizeGitRefName } from "./branch-ref";
+  import { loadCodeMirrorLanguageExtensions } from "../../utils/codeHighlight";
+  import {
+    buildSelectionHash,
+    replaceSelectionHashWithoutScroll,
+    selectedLineField,
+    setSelectedLineEffect,
+  } from "./file-view-selection";
 
   const {
     file,
@@ -93,13 +99,13 @@
   let selectedStart: number | null = $state(null);
   let selectedEnd: number | null = $state(null);
   let cmExtensions: any[] = $state([]);
-  let showPermalinkMenu = $state(false);
   let editorHost: HTMLElement | null = $state(null);
   let editorView: EditorView | null = $state(null);
   // Gutter context menu state (positioned near click)
   let showGutterMenu = $state(false);
   let gutterMenuX = $state(0);
   let gutterMenuY = $state(0);
+  let ignoreMenuCloseUntil = $state(0);
   let touchIdentifier = $state<number | null>(null);
   let lastInputWasTouch = $state(false);
   let isPointerSelecting = $state(false);
@@ -112,6 +118,7 @@
   let isTouchSelecting = $state(false);
   let selectionScrollParent: HTMLElement | null = $state(null);
   let autoScrollFrame: number | null = null;
+  let domHighlightFrame: number | null = null;
   let autoScrollClientY = 0;
   let autoScrollClientX = 0;
   let autoScrollActive = false;
@@ -130,6 +137,8 @@
   const MENU_PADDING = 8;
   const viewerExtensions = [
     oneDark,
+    selectedLineField,
+    drawSelection(),
     EditorState.readOnly.of(true),
     EditorView.editable.of(false),
     EditorView.contentAttributes.of({
@@ -169,6 +178,11 @@
         return true;
       },
     }),
+    EditorView.updateListener.of((update) => {
+      if (update.viewportChanged || update.selectionSet || update.docChanged) {
+        queueDomSelectionHighlight();
+      }
+    }),
   ];
 
   $effect(() => {
@@ -180,7 +194,6 @@
     selectedStart = null;
     selectedEnd = null;
     cmExtensions = [];
-    showPermalinkMenu = false;
     showGutterMenu = false;
     showFileMenu = false;
     lastAppliedHash = null;
@@ -195,6 +208,7 @@
 
   function handleEditorReady(view: EditorView) {
     editorView = view;
+    void applyHashSelection();
   }
 
   const containerClass = $derived.by(() => {
@@ -233,7 +247,6 @@
 
   function toggleFileMenu(event?: MouseEvent) {
     event?.stopPropagation();
-    showPermalinkMenu = false;
     showGutterMenu = false;
     refreshSelectionFromEditor();
     showFileMenu = !showFileMenu;
@@ -297,13 +310,91 @@
     return { start, end };
   }
 
+  const nextFrame = () =>
+    new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+
+  function canFocusEditor() {
+    return !!editorHost && editorHost.getClientRects().length > 0;
+  }
+
   function scrollLineIntoView(lineNumber: number) {
-    if (!editorHost) return;
+    if (editorView) {
+      const maxLine = editorView.state.doc.lines;
+      const safeLine = Math.max(1, Math.min(lineNumber, maxLine));
+      const line = editorView.state.doc.line(safeLine);
+      const scroller = editorView.scrollDOM;
+      const scrollLeft = scroller.scrollLeft;
+
+      editorView.dispatch({
+        effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+      });
+
+      requestAnimationFrame(() => {
+        scroller.scrollLeft = scrollLeft;
+      });
+
+      return true;
+    }
+
+    if (!editorHost) return false;
     const lines = Array.from(editorHost.querySelectorAll(".cm-line")) as HTMLElement[];
     const idx = lineNumber - 1;
     const lineEl = lines[idx];
-    if (!lineEl) return;
+    if (!lineEl) return false;
     lineEl.scrollIntoView({ block: "center" });
+    return true;
+  }
+
+  async function revealLineSelection(startLine: number, endLine: number) {
+    const start = Math.min(startLine, endLine);
+    const end = Math.max(startLine, endLine);
+    selectedStart = start;
+    selectedEnd = end;
+
+    if (editorView) {
+      const maxLine = editorView.state.doc.lines;
+      const safeStart = Math.max(1, Math.min(start, maxLine));
+      const safeEnd = Math.max(1, Math.min(end, maxLine));
+      const startPos = editorView.state.doc.line(safeStart).from;
+      const endPos = editorView.state.doc.line(safeEnd).to;
+      const scroller = editorView.scrollDOM;
+      const scrollLeft = scroller.scrollLeft;
+
+      editorView.dispatch({
+        selection: EditorSelection.single(startPos, endPos),
+        effects: [
+          setSelectedLineEffect.of({ start: safeStart, end: safeEnd }),
+          EditorView.scrollIntoView(startPos, { y: "center" }),
+        ],
+      });
+
+      if (canFocusEditor()) editorView.focus();
+      await nextFrame();
+      scroller.scrollLeft = scrollLeft;
+      queueDomSelectionHighlight();
+      await nextFrame();
+      if (canFocusEditor()) editorView.focus();
+      queueDomSelectionHighlight();
+      return true;
+    }
+
+    setLineSelection(start, end);
+    const didScroll = scrollLineIntoView(start);
+    await nextFrame();
+    queueDomSelectionHighlight();
+    return didScroll;
+  }
+
+  async function restorePersistedSelection() {
+    if (!editorView || !selectedStart || !selectedEnd) return;
+    await tick();
+    await nextFrame();
+    syncEditorLineHighlight();
+    if (canFocusEditor()) editorView.focus();
+    await nextFrame();
+    queueDomSelectionHighlight();
   }
 
   $effect(() => {
@@ -324,15 +415,28 @@
     if (!hash || hash === lastAppliedHash) return;
     const parsed = parseLineHash(hash);
     if (!parsed) return;
-    lastAppliedHash = hash;
     await tick();
-    setLineSelection(parsed.start, parsed.end);
-    scrollLineIntoView(parsed.start);
+    if (await revealLineSelection(parsed.start, parsed.end)) {
+      lastAppliedHash = hash;
+    }
   }
 
   $effect(() => {
     if (!shouldAutoOpen || !isExpanded || !editorHost || !content) return;
+    void editorView;
     void applyHashSelection();
+  });
+
+  $effect(() => {
+    void cmExtensions;
+    void restorePersistedSelection();
+  });
+
+  $effect(() => {
+    void editorView;
+    void selectedStart;
+    void selectedEnd;
+    syncEditorLineHighlight();
   });
 
   // Update URL hash from current selection when user selects lines
@@ -341,11 +445,11 @@
       `[${instanceId}:${path}] syncHash called, start=${selectedStart}, end=${selectedEnd}, current hash=${location.hash}`
     );
     if (selectedStart) {
-      const hash = `#L${selectedStart}${selectedEnd ? `-L${selectedEnd}` : ""}`;
+      const hash = buildSelectionHash(selectedStart, selectedEnd);
       if (location.hash !== hash) {
         console.log(`[${instanceId}:${path}] updating hash from ${location.hash} to ${hash}`);
-        // Just update the hash directly - simple and works
-        location.hash = hash;
+        replaceSelectionHashWithoutScroll(hash);
+        lastAppliedHash = hash;
         console.log(`[${instanceId}:${path}] hash is now ${location.hash}`);
       }
     }
@@ -396,6 +500,7 @@
       const endLine = editorView.state.doc.lineAt(selection.to).number;
       selectedStart = Math.min(startLine, endLine);
       selectedEnd = Math.max(startLine, endLine);
+      syncEditorLineHighlight();
       return true;
     }
     const lines = getLinesFromSelection();
@@ -435,18 +540,162 @@
     return null;
   }
 
+  function pinScroll(fn: () => void) {
+    const scroller = editorView?.scrollDOM;
+    const left = scroller?.scrollLeft ?? 0;
+    const top = scroller?.scrollTop ?? 0;
+    fn();
+    if (scroller) {
+      scroller.scrollLeft = left;
+      scroller.scrollTop = top;
+      requestAnimationFrame(() => {
+        scroller.scrollLeft = left;
+        scroller.scrollTop = top;
+      });
+    }
+  }
+
+  function syncEditorLineHighlight() {
+    if (!editorView) return;
+    const hasSelection = !!selectedStart && !!selectedEnd;
+
+    if (hasSelection) {
+      const maxLine = editorView.state.doc.lines;
+      const safeStart = Math.max(1, Math.min(selectedStart, maxLine));
+      const safeEnd = Math.max(1, Math.min(selectedEnd, maxLine));
+      const startPos = editorView.state.doc.line(safeStart).from;
+      const endPos = editorView.state.doc.line(safeEnd).to;
+      const scroller = editorView.scrollDOM;
+      const scrollLeft = scroller.scrollLeft;
+      const scrollTop = scroller.scrollTop;
+
+      editorView.dispatch({
+        selection: EditorSelection.single(startPos, endPos),
+        scrollIntoView: false,
+        effects: setSelectedLineEffect.of({ start: safeStart, end: safeEnd }),
+      });
+
+      scroller.scrollLeft = scrollLeft;
+      scroller.scrollTop = scrollTop;
+      requestAnimationFrame(() => {
+        scroller.scrollLeft = scrollLeft;
+        scroller.scrollTop = scrollTop;
+      });
+      queueDomSelectionHighlight();
+      return;
+    }
+
+    editorView.dispatch({
+      effects: setSelectedLineEffect.of(null),
+    });
+    queueDomSelectionHighlight();
+  }
+
+  function getRenderedLineNumbers() {
+    if (!editorHost) return [] as Array<number | null>;
+
+    const lineElements = Array.from(editorHost.querySelectorAll(".cm-line")) as HTMLElement[];
+    const gutterElements = Array.from(
+      editorHost.querySelectorAll(".cm-lineNumbers .cm-gutterElement")
+    ) as HTMLElement[];
+
+    if (!editorView) {
+      return lineElements.map((_, index) => index + 1);
+    }
+
+    return lineElements.map((lineEl, index) => {
+      const gutterLineNumber = Number.parseInt(
+        gutterElements[index]?.textContent?.trim() || "",
+        10
+      );
+      if (Number.isFinite(gutterLineNumber)) return gutterLineNumber;
+
+      try {
+        const domTarget = lineEl.firstChild ?? lineEl;
+        const pos = editorView!.posAtDOM(domTarget, 0);
+        const lineNumber = editorView!.state.doc.lineAt(pos).number;
+        return lineNumber;
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  function applyDomSelectionHighlight() {
+    if (!editorHost) return;
+
+    const range = selectedStart && selectedEnd ? { start: selectedStart, end: selectedEnd } : null;
+    const renderedLineNumbers = getRenderedLineNumbers();
+    const lineElements = Array.from(editorHost.querySelectorAll(".cm-line")) as HTMLElement[];
+    const gutterElements = Array.from(
+      editorHost.querySelectorAll(".cm-lineNumbers .cm-gutterElement")
+    ) as HTMLElement[];
+
+    lineElements.forEach((lineEl, index) => {
+      const lineNumber = renderedLineNumbers[index];
+      const isSelected =
+        !!range && lineNumber !== null && lineNumber >= range.start && lineNumber <= range.end;
+
+      lineEl.classList.toggle("cm-selected-line-dom", isSelected);
+      lineEl.classList.toggle("cm-selected-line-start", isSelected && lineNumber === range?.start);
+      lineEl.classList.toggle("cm-selected-line-end", isSelected && lineNumber === range?.end);
+    });
+
+    gutterElements.forEach((gutterEl, index) => {
+      const fallbackLineNumber = Number.parseInt(gutterEl.textContent?.trim() || "", 10);
+      const lineNumber =
+        renderedLineNumbers[index] ??
+        (Number.isFinite(fallbackLineNumber) ? fallbackLineNumber : null);
+      const isSelected =
+        !!range && lineNumber !== null && lineNumber >= range.start && lineNumber <= range.end;
+
+      gutterEl.classList.toggle("cm-selected-gutter", isSelected);
+      gutterEl.classList.toggle(
+        "cm-selected-gutter-start",
+        isSelected && lineNumber === range?.start
+      );
+      gutterEl.classList.toggle("cm-selected-gutter-end", isSelected && lineNumber === range?.end);
+    });
+  }
+
+  function queueDomSelectionHighlight() {
+    if (typeof window === "undefined") return;
+    if (domHighlightFrame !== null) {
+      window.cancelAnimationFrame(domHighlightFrame);
+    }
+
+    domHighlightFrame = window.requestAnimationFrame(() => {
+      domHighlightFrame = null;
+      applyDomSelectionHighlight();
+    });
+  }
+
   function setLineSelection(startLine: number, endLine: number) {
     const start = Math.min(startLine, endLine);
     const end = Math.max(startLine, endLine);
     selectedStart = start;
     selectedEnd = end;
     if (editorView) {
+      if (canFocusEditor()) editorView.focus();
       const maxLine = editorView.state.doc.lines;
       const safeStart = Math.max(1, Math.min(start, maxLine));
       const safeEnd = Math.max(1, Math.min(end, maxLine));
       const startPos = editorView.state.doc.line(safeStart).from;
       const endPos = editorView.state.doc.line(safeEnd).to;
-      editorView.dispatch({ selection: EditorSelection.single(startPos, endPos) });
+      const scroller = editorView.scrollDOM;
+      const scrollLeft = scroller.scrollLeft;
+      const scrollTop = scroller.scrollTop;
+      editorView.dispatch({
+        selection: EditorSelection.single(startPos, endPos),
+        scrollIntoView: false,
+      });
+      scroller.scrollLeft = scrollLeft;
+      scroller.scrollTop = scrollTop;
+      requestAnimationFrame(() => {
+        scroller.scrollLeft = scrollLeft;
+        scroller.scrollTop = scrollTop;
+      });
+      syncEditorLineHighlight();
       return;
     }
     selectLinesInEditor(start, end);
@@ -603,7 +852,6 @@
     const maxX = Math.max(minX, contentRect.right - rect.left - MENU_WIDTH - MENU_PADDING);
     gutterMenuX = clamp(clientX - rect.left, minX, maxX);
     gutterMenuY = Math.max(MENU_PADDING, clientY - rect.top);
-    showPermalinkMenu = false;
     showGutterMenu = true;
   }
 
@@ -650,6 +898,7 @@
 
   $effect(() => {
     const handler = (e: MouseEvent) => {
+      if (Date.now() < ignoreMenuCloseUntil) return;
       const target = e.target as HTMLElement;
       // Check if click is inside any menu popup
       const inMenu =
@@ -657,7 +906,6 @@
 
       // Close menus if clicking outside
       if (!inMenu) {
-        showPermalinkMenu = false;
         showGutterMenu = false;
         showFileMenu = false;
       }
@@ -668,7 +916,10 @@
 
   $effect(() => {
     if (typeof window === "undefined") return;
-    const handler = () => void applyHashSelection();
+    const handler = () => {
+      lastAppliedHash = null;
+      void applyHashSelection();
+    };
     window.addEventListener("hashchange", handler);
     return () => window.removeEventListener("hashchange", handler);
   });
@@ -723,6 +974,8 @@
       openSelectionMenuAt(e.clientX, e.clientY);
     };
 
+    let pointerDragged = false;
+
     const handlePointerDown = (e: PointerEvent) => {
       if (e.pointerType === "touch") return;
       lastInputWasTouch = false;
@@ -734,9 +987,9 @@
       pointerId = e.pointerId;
       pointerStartLine = line;
       isPointerSelecting = true;
+      pointerDragged = false;
       setLineSelection(line, line);
       editorHost?.setPointerCapture?.(e.pointerId);
-      updateAutoScroll(e.clientX, e.clientY);
       e.preventDefault();
     };
 
@@ -746,8 +999,9 @@
       if (pointerStartLine === null) return;
       const line = getLineNumberFromPoint(e.clientX, e.clientY);
       if (!line) return;
+      if (line !== pointerStartLine) pointerDragged = true;
       setLineSelection(pointerStartLine, line);
-      updateAutoScroll(e.clientX, e.clientY);
+      autoScrollForSelection(e.clientY);
       e.preventDefault();
     };
 
@@ -759,12 +1013,18 @@
         editorHost?.releasePointerCapture?.(pointerId);
       }
       pointerId = null;
+      const dragged = pointerDragged;
       pointerStartLine = null;
+      pointerDragged = false;
+      if (!dragged) return;
       if (!refreshSelectionFromEditor()) return;
+      ignoreMenuCloseUntil = Date.now() + 300;
       syncHashFromSelection();
-      if (!openSelectionMenuFromDomSelection()) {
-        openSelectionMenuAt(clientX, clientY);
-      }
+      pinScroll(() => {
+        if (!openSelectionMenuFromDomSelection()) {
+          openSelectionMenuAt(clientX, clientY);
+        }
+      });
     };
 
     const handlePointerUp = (e: PointerEvent) => {
@@ -849,6 +1109,7 @@
       window.setTimeout(() => {
         if (showGutterMenu) return;
         if (!refreshSelectionFromEditor()) return;
+        ignoreMenuCloseUntil = Date.now() + 300;
         syncHashFromSelection();
         if (!openSelectionMenuFromDomSelection()) {
           openSelectionMenuAt(touch.clientX, touch.clientY);
@@ -1041,111 +1302,9 @@
     isMetadataPanelOpen = true;
   }
 
-  function togglePermalinkMenu(event?: MouseEvent) {
-    event?.stopPropagation();
-    showGutterMenu = false;
-    showFileMenu = false;
-    refreshSelectionFromEditor();
-    showPermalinkMenu = !showPermalinkMenu;
-  }
-
   async function loadLanguageExtension(filename: string, info: FileTypeInfo | null) {
     try {
-      const lowerName = filename.toLowerCase();
-      const ext = (filename.split(".").pop() || "").toLowerCase();
-      const language = info?.language?.toLowerCase() || "";
-      const languageKey =
-        lowerName === "go.mod" || lowerName === "go.sum"
-          ? "go"
-          : language && language !== "text"
-            ? language
-            : ext;
-      let mod: any | null = null;
-      switch (languageKey) {
-        case "typescript":
-        case "javascript":
-        case "ts":
-        case "tsx":
-        case "js":
-        case "jsx":
-          mod = await import("@codemirror/lang-javascript");
-          cmExtensions = [mod.javascript({ jsx: true, typescript: ext.startsWith("ts") })];
-          break;
-        case "go":
-          mod = await import("@codemirror/lang-go");
-          cmExtensions = [mod.go()];
-          break;
-        case "rust":
-        case "rs":
-          mod = await import("@codemirror/lang-rust");
-          cmExtensions = [mod.rust()];
-          break;
-        case "json":
-          mod = await import("@codemirror/lang-json");
-          cmExtensions = [mod.json()];
-          break;
-        case "css":
-        case "sass":
-        case "scss":
-        case "less":
-          mod = await import("@codemirror/lang-css");
-          cmExtensions = [mod.css()];
-          break;
-        case "html":
-        case "svelte":
-          mod = await import("@codemirror/lang-html");
-          cmExtensions = [mod.html()];
-          break;
-        case "xml":
-          mod = await import("@codemirror/lang-xml");
-          cmExtensions = [mod.xml()];
-          break;
-        case "markdown":
-        case "md":
-          mod = await import("@codemirror/lang-markdown");
-          cmExtensions = [mod.markdown()];
-          break;
-        case "python":
-        case "py":
-          mod = await import("@codemirror/lang-python");
-          cmExtensions = [mod.python()];
-          break;
-        case "shell":
-        case "sh":
-        case "bash":
-        case "zsh":
-        case "fish": {
-          const languageMod = await import("@codemirror/language");
-          const shellModeMod = await import("@codemirror/legacy-modes/mode/shell");
-          cmExtensions = [languageMod.StreamLanguage.define(shellModeMod.shell)];
-          break;
-        }
-        case "java":
-          mod = await import("@codemirror/lang-java");
-          cmExtensions = [mod.java()];
-          break;
-        case "c":
-        case "cpp":
-        case "h":
-        case "cc":
-        case "cxx":
-        case "hpp":
-        case "hh":
-          mod = await import("@codemirror/lang-cpp");
-          cmExtensions = [mod.cpp()];
-          break;
-        case "yaml":
-        case "yml":
-          mod = await import("@codemirror/lang-yaml");
-          cmExtensions = [mod.yaml()];
-          break;
-        case "sql":
-          mod = await import("@codemirror/lang-sql");
-          cmExtensions = [mod.sql()];
-          break;
-        default:
-          cmExtensions = [];
-      }
+      cmExtensions = await loadCodeMirrorLanguageExtensions(filename, info);
     } catch (e) {
       console.warn(`Failed to load language extension for ${filename}`, e);
       cmExtensions = [];
@@ -1214,7 +1373,6 @@
   async function createPermalink(event?: MouseEvent) {
     event?.stopPropagation();
     refreshSelectionFromEditor();
-    showPermalinkMenu = false;
     showGutterMenu = false;
 
     const evt = buildPermalinkEvent();
@@ -1253,7 +1411,6 @@
   function copyLinkToLines(event?: MouseEvent) {
     event?.stopPropagation();
     refreshSelectionFromEditor();
-    showPermalinkMenu = false;
     showGutterMenu = false;
     shareLink();
   }
@@ -1325,37 +1482,6 @@
         <Button variant="ghost" size="sm" class="h-8 w-8 p-0" onclick={showMetadata}>
           <Info class="h-4 w-4" />
         </Button>
-        <div class="relative" data-permalink-menu>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-8 w-8 p-0"
-            onclick={togglePermalinkMenu}
-            title="Permalink actions"
-          >
-            <Share class="h-4 w-4" />
-          </Button>
-          {#if showPermalinkMenu}
-            <div
-              class="permalink-menu-popup absolute right-0 mt-1 z-10 w-44 rounded border bg-popover text-popover-foreground shadow-md"
-              style="border-color: hsl(var(--border));"
-            >
-              <button
-                class="w-full text-left px-3 py-2 hover:bg-secondary/50"
-                onclick={copyLinkToLines}
-                >Copy link to {selectedStart
-                  ? selectedEnd
-                    ? `lines ${selectedStart}-${selectedEnd}`
-                    : `line ${selectedStart}`
-                  : "file"}</button
-              >
-              <button
-                class="w-full text-left px-3 py-2 hover:bg-secondary/50"
-                onclick={createPermalink}>Create permalink</button
-              >
-            </div>
-          {/if}
-        </div>
         <Button variant="ghost" size="sm" class="h-8 w-8 p-0" onclick={downloadFile}>
           <Download class="h-4 w-4" />
         </Button>
@@ -1552,6 +1678,77 @@
 
   :global(.file-view .cm-activeLine) {
     background-color: hsl(var(--secondary) / 0.5) !important;
+  }
+
+  :global(.file-view .cm-selected-line),
+  :global(.file-view .cm-selected-line-dom) {
+    background-color: hsl(var(--primary) / 0.22) !important;
+    box-shadow:
+      inset 3px 0 0 hsl(var(--primary)),
+      inset 0 1px 0 hsl(var(--primary) / 0.36),
+      inset 0 -1px 0 hsl(var(--primary) / 0.36),
+      inset 0 0 0 1px hsl(var(--primary) / 0.3);
+  }
+
+  :global(.file-view .cm-selected-line-text) {
+    background-color: hsl(var(--primary) / 0.3) !important;
+    color: hsl(var(--foreground)) !important;
+    border-radius: 0.125rem;
+    box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.45);
+  }
+
+  :global(.file-view .cm-selected-line-text *) {
+    color: hsl(var(--foreground)) !important;
+  }
+
+  :global(.file-view .cm-selected-gutter) {
+    background: linear-gradient(
+      90deg,
+      rgb(245 158 11 / 0.52) 0%,
+      rgb(251 191 36 / 0.3) 100%
+    ) !important;
+    color: rgb(255 251 235) !important;
+    font-weight: 700;
+    text-shadow: 0 0 10px rgb(251 191 36 / 0.28);
+    box-shadow:
+      inset -3px 0 0 rgb(251 191 36 / 0.98),
+      inset 0 1px 0 rgb(253 224 71 / 0.55),
+      inset 0 -1px 0 rgb(245 158 11 / 0.45),
+      inset 0 0 0 1px rgb(245 158 11 / 0.55);
+  }
+
+  :global(.file-view .cm-selected-line-start),
+  :global(.file-view .cm-selected-gutter-start) {
+    box-shadow:
+      inset 3px 0 0 hsl(var(--primary)),
+      inset 0 1px 0 hsl(var(--primary) / 0.6),
+      inset 0 -1px 0 hsl(var(--primary) / 0.28),
+      inset 0 0 0 1px hsl(var(--primary) / 0.28);
+  }
+
+  :global(.file-view .cm-selected-gutter-start) {
+    box-shadow:
+      inset -3px 0 0 rgb(251 191 36 / 1),
+      inset 0 1px 0 rgb(254 240 138 / 0.95),
+      inset 0 -1px 0 rgb(245 158 11 / 0.45),
+      inset 0 0 0 1px rgb(245 158 11 / 0.6);
+  }
+
+  :global(.file-view .cm-selected-line-end),
+  :global(.file-view .cm-selected-gutter-end) {
+    box-shadow:
+      inset 3px 0 0 hsl(var(--primary)),
+      inset 0 1px 0 hsl(var(--primary) / 0.28),
+      inset 0 -1px 0 hsl(var(--primary) / 0.6),
+      inset 0 0 0 1px hsl(var(--primary) / 0.28);
+  }
+
+  :global(.file-view .cm-selected-gutter-end) {
+    box-shadow:
+      inset -3px 0 0 rgb(251 191 36 / 1),
+      inset 0 1px 0 rgb(245 158 11 / 0.45),
+      inset 0 -1px 0 rgb(254 240 138 / 0.95),
+      inset 0 0 0 1px rgb(245 158 11 / 0.6);
   }
 
   :global(.file-view .cm-line) {
