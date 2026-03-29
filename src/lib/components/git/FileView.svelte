@@ -269,13 +269,14 @@
 
       if (!content) {
         isLoading = true;
+        const fileIdentifier = path || name;
         getFileContent(path)
-          .then((c) => {
+          .then(async (c) => {
+            fileTypeInfo = detectFileType(fileIdentifier, c);
+            await loadLanguageExtension(fileIdentifier, fileTypeInfo);
+
             content = c;
             isLoading = false;
-
-            fileTypeInfo = detectFileType(name, c);
-            void loadLanguageExtension(name, fileTypeInfo);
           })
           .catch((error) => {
             pushErrorToast("Failed to load file content", error, "Failed to load file content");
@@ -1290,12 +1291,14 @@
 
     // Ensure fileTypeInfo is populated
     if (!fileTypeInfo) {
+      const fileIdentifier = path || name;
+
       // If content is already loaded, detect type from it
       if (content) {
-        fileTypeInfo = detectFileType(name, content);
+        fileTypeInfo = detectFileType(fileIdentifier, content);
       } else {
         // Otherwise, detect from filename only
-        fileTypeInfo = detectFileType(name, "");
+        fileTypeInfo = detectFileType(fileIdentifier, "");
       }
     }
 

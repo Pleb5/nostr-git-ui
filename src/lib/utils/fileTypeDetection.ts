@@ -55,6 +55,7 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   m: "matlab",
 
   // Shell and config
+  nix: "nix",
   sh: "shell",
   bash: "shell",
   zsh: "shell",
@@ -75,6 +76,19 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   properties: "ini",
   cfg: "ini",
   conf: "ini",
+  env: "ini",
+  service: "ini",
+  socket: "ini",
+  timer: "ini",
+  mount: "ini",
+  automount: "ini",
+  path: "ini",
+  target: "ini",
+  slice: "ini",
+  swap: "ini",
+  network: "ini",
+  netdev: "ini",
+  link: "ini",
 
   // Markup
   md: "markdown",
@@ -95,6 +109,10 @@ const LANGUAGE_MAPPINGS: Record<string, string> = {
   cmake: "cmake",
   gradle: "groovy",
   groovy: "groovy",
+  pp: "puppet",
+  nginx: "nginx",
+  apacheconf: "apache",
+  htaccess: "apache",
   lua: "lua",
   perl: "perl",
   pl: "perl",
@@ -416,6 +434,42 @@ function detectSpecialFiles(basename: string, fullname: string): FileTypeInfo | 
     };
   }
 
+  // Cargo lock files
+  if (lowerName === "cargo.lock") {
+    return {
+      category: "text",
+      mimeType: "text/plain",
+      language: "toml",
+      icon: "FileCode",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
+  // Nix lock files
+  if (lowerName === "flake.lock") {
+    return {
+      category: "text",
+      mimeType: "application/json",
+      language: "json",
+      icon: "Settings",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
+  // Dotenv files
+  if (lowerName === ".env" || lowerName.startsWith(".env.")) {
+    return {
+      category: "text",
+      mimeType: "text/plain",
+      language: "ini",
+      icon: "Settings",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
   // Docker files
   if (lowerName === "dockerfile" || lowerName.startsWith("dockerfile.")) {
     return {
@@ -423,6 +477,35 @@ function detectSpecialFiles(basename: string, fullname: string): FileTypeInfo | 
       mimeType: "text/plain",
       language: "dockerfile",
       icon: "Container",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
+  // Nginx files
+  if (
+    lowerName === "nginx.conf" ||
+    ["mime.types", "fastcgi_params", "uwsgi_params", "scgi_params", "proxy_params"].includes(
+      lowerName
+    )
+  ) {
+    return {
+      category: "text",
+      mimeType: "text/plain",
+      language: "nginx",
+      icon: "Settings",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
+  // Apache files
+  if ([".htaccess", "httpd.conf", "apache2.conf"].includes(lowerName)) {
+    return {
+      category: "text",
+      mimeType: "text/plain",
+      language: "apache",
+      icon: "Settings",
       canPreview: true,
       canEdit: true,
     };

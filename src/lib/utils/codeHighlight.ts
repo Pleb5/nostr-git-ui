@@ -40,6 +40,10 @@ import matlab from "highlight.js/lib/languages/matlab";
 import perl from "highlight.js/lib/languages/perl";
 import vim from "highlight.js/lib/languages/vim";
 import latex from "highlight.js/lib/languages/latex";
+import nix from "highlight.js/lib/languages/nix";
+import nginx from "highlight.js/lib/languages/nginx";
+import apache from "highlight.js/lib/languages/apache";
+import puppet from "highlight.js/lib/languages/puppet";
 
 import { detectFileType, type FileTypeInfo } from "./fileTypeDetection";
 
@@ -70,6 +74,9 @@ const HIGHLIGHT_LANGUAGE_ALIASES: Record<string, string> = {
   proto: "protobuf",
   pb: "protobuf",
   gql: "graphql",
+  nixos: "nix",
+  nginxconf: "nginx",
+  apacheconf: "apache",
   rst: "plaintext",
   batch: "plaintext",
   log: "plaintext",
@@ -148,6 +155,13 @@ export function getHighlightJs() {
   registerLanguage("vim", vim);
   registerLanguage("latex", latex);
   registerLanguage("tex", latex);
+  registerLanguage("nix", nix);
+  registerLanguage("nixos", nix);
+  registerLanguage("nginx", nginx);
+  registerLanguage("nginxconf", nginx);
+  registerLanguage("apache", apache);
+  registerLanguage("apacheconf", apache);
+  registerLanguage("puppet", puppet);
 
   hasRegisteredHighlightLanguages = true;
   return hljs;
@@ -208,6 +222,14 @@ const getCodeMirrorLanguageKey = (filename: string, info: FileTypeInfo | null) =
     case "proto":
     case "pb":
       return "protobuf";
+    case "nix":
+      return "nix";
+    case "nginxconf":
+      return "nginx";
+    case "apacheconf":
+      return "apache";
+    case "pp":
+      return "puppet";
     default:
       return detectedLanguage || ext;
   }
@@ -383,6 +405,20 @@ export async function loadCodeMirrorLanguageExtensions(
       const languageMod = await import("@codemirror/language");
       const protobufModeMod = await import("@codemirror/legacy-modes/mode/protobuf");
       return [languageMod.StreamLanguage.define(protobufModeMod.protobuf)];
+    }
+    case "nix": {
+      const mod = await import("./nixLanguage");
+      return [mod.nixLanguage];
+    }
+    case "nginx": {
+      const languageMod = await import("@codemirror/language");
+      const nginxModeMod = await import("@codemirror/legacy-modes/mode/nginx");
+      return [languageMod.StreamLanguage.define(nginxModeMod.nginx)];
+    }
+    case "puppet": {
+      const languageMod = await import("@codemirror/language");
+      const puppetModeMod = await import("@codemirror/legacy-modes/mode/puppet");
+      return [languageMod.StreamLanguage.define(puppetModeMod.puppet)];
     }
     default:
       return [];

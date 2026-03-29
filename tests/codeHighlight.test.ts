@@ -16,6 +16,12 @@ describe("code highlighting helpers", () => {
     expect(getHighlightLanguageForPath("scripts/profile.ps1")).toBe("powershell");
     expect(getHighlightLanguageForPath("queries/schema.graphql")).toBe("graphql");
     expect(getHighlightLanguageForPath("gradle.properties")).toBe("ini");
+    expect(getHighlightLanguageForPath("nix/flake.nix")).toBe("nix");
+    expect(getHighlightLanguageForPath("nix/module.nix")).toBe("nix");
+    expect(getHighlightLanguageForPath("Cargo.lock")).toBe("toml");
+    expect(getHighlightLanguageForPath("infra/nginx.conf")).toBe("nginx");
+    expect(getHighlightLanguageForPath("puppet/site.pp")).toBe("puppet");
+    expect(getHighlightLanguageForPath(".env.production")).toBe("ini");
   });
 
   it("registers shared highlight.js languages once", () => {
@@ -27,10 +33,17 @@ describe("code highlighting helpers", () => {
     expect(highlighter.getLanguage("toml")).toBeTruthy();
     expect(highlighter.getLanguage("powershell")).toBeTruthy();
     expect(highlighter.getLanguage("graphql")).toBeTruthy();
+    expect(highlighter.getLanguage("nix")).toBeTruthy();
+    expect(highlighter.getLanguage("nginx")).toBeTruthy();
+    expect(highlighter.getLanguage("apache")).toBeTruthy();
+    expect(highlighter.getLanguage("puppet")).toBeTruthy();
   });
 
   it("highlights newly supported snippet languages", () => {
-    const highlighted = highlightCodeSnippet('fun main() = println("hi")', "kotlin");
+    const highlighted = highlightCodeSnippet(
+      "{pkgs, ...}: { services.nginx.enable = true; }",
+      "nix"
+    );
 
     expect(highlighted).toContain("hljs");
   });
@@ -44,5 +57,11 @@ describe("code highlighting helpers", () => {
       1
     );
     await expect(loadCodeMirrorLanguageExtensions("src/index.php", null)).resolves.toHaveLength(1);
+    await expect(loadCodeMirrorLanguageExtensions("nix/flake.nix", null)).resolves.toHaveLength(1);
+    await expect(loadCodeMirrorLanguageExtensions("Cargo.lock", null)).resolves.toHaveLength(1);
+    await expect(loadCodeMirrorLanguageExtensions("infra/nginx.conf", null)).resolves.toHaveLength(
+      1
+    );
+    await expect(loadCodeMirrorLanguageExtensions("puppet/site.pp", null)).resolves.toHaveLength(1);
   });
 });
