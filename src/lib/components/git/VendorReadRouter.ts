@@ -8,11 +8,7 @@ import {
   wrapError,
 } from "@nostr-git/core/errors";
 import { detectVendorFromUrl } from "@nostr-git/core/git";
-import {
-  withUrlFallback,
-  filterValidCloneUrls,
-  type ReadFallbackResult,
-} from "@nostr-git/core/utils";
+import { withUrlFallback, filterValidCloneUrls } from "@nostr-git/core/utils";
 import { nip19 } from "nostr-tools";
 
 import type { Token } from "$lib/stores/tokens";
@@ -88,6 +84,7 @@ type SupportedVendor = "github" | "gitlab" | "gitea" | "bitbucket" | "grasp-rest
  * Callback for reporting clone URL errors to the UI
  */
 export type CloneUrlErrorCallback = (url: string, error: string, status?: number) => void;
+export type CloneUrlSuccessCallback = (url: string) => void;
 
 /**
  * VendorReadRouter performs vendor API reads first (when supported) and falls back to worker git RPC.
@@ -98,6 +95,7 @@ export class VendorReadRouter {
   private getTokens: () => Promise<Token[]>;
   private preferVendorReads: boolean;
   private onCloneUrlError?: CloneUrlErrorCallback;
+  private onCloneUrlSuccess?: CloneUrlSuccessCallback;
 
   constructor(config: VendorReadRouterConfig) {
     this.getTokens = config.getTokens;
@@ -112,12 +110,22 @@ export class VendorReadRouter {
     this.onCloneUrlError = callback;
   }
 
+  setCloneUrlSuccessCallback(callback: CloneUrlSuccessCallback | undefined): void {
+    this.onCloneUrlSuccess = callback;
+  }
+
   /**
    * Report a clone URL error to the registered callback
    */
   private reportCloneUrlError(url: string, error: string, status?: number): void {
     if (this.onCloneUrlError) {
       this.onCloneUrlError(url, error, status);
+    }
+  }
+
+  private reportCloneUrlSuccess(url: string): void {
+    if (this.onCloneUrlSuccess) {
+      this.onCloneUrlSuccess(url);
     }
   }
 
@@ -171,6 +179,9 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          if (vendorResult.usedUrl) {
+            this.reportCloneUrlSuccess(vendorResult.usedUrl);
+          }
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { ...vendorResult.result, fromVendor: true };
         }
@@ -263,6 +274,9 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          if (vendorResult.usedUrl) {
+            this.reportCloneUrlSuccess(vendorResult.usedUrl);
+          }
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { ...vendorResult.result, fromVendor: true };
         }
@@ -332,6 +346,9 @@ export class VendorReadRouter {
         });
 
         if (vendorResult.success && vendorResult.result) {
+          if (vendorResult.usedUrl) {
+            this.reportCloneUrlSuccess(vendorResult.usedUrl);
+          }
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { refs: vendorResult.result, fromVendor: true };
         }
@@ -416,6 +433,9 @@ export class VendorReadRouter {
         );
 
         if (vendorResult.success && vendorResult.result) {
+          if (vendorResult.usedUrl) {
+            this.reportCloneUrlSuccess(vendorResult.usedUrl);
+          }
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return { ...vendorResult.result, fromVendor: true };
         }

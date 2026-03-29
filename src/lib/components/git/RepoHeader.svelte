@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from "../../utils";
+  import { filterValidCloneUrls } from "@nostr-git/core/utils";
   import {
     GitBranch,
     GitFork,
@@ -34,6 +35,7 @@
     updateRepoState,
     hasRepoStateUpdate = false,
     isCheckingRepoStateUpdate = false,
+    resolveCloneUrlIssues,
   }: {
     repoClass: Repo;
     activeTab?: string;
@@ -52,6 +54,7 @@
     updateRepoState?: () => void | Promise<void>;
     hasRepoStateUpdate?: boolean;
     isCheckingRepoStateUpdate?: boolean;
+    resolveCloneUrlIssues?: () => void;
   } = $props();
   const name = $derived.by(() => repoClass.name);
   const description = $derived.by(() => repoClass.description);
@@ -59,12 +62,56 @@
     typeof canEditSettings === "boolean" ? canEditSettings : !!repoClass.editable
   );
 
-  // Track clone URL errors from the Repo class
-  // DISABLED: Returning false positives, needs investigation
-  // const cloneUrlErrors = $derived(repoClass.cloneUrlErrors);
-  // const hasCloneUrlErrors = $derived(cloneUrlErrors.length > 0);
-  const cloneUrlErrors: Array<{ url: string; error: string; status?: number }> = [];
-  const hasCloneUrlErrors = false;
+  const normalizeUrl = (url: string): string => {
+    const raw = String(url || "").trim();
+    if (!raw) return "";
+
+    const stripGit = (value: string) => value.replace(/\.git$/i, "");
+    try {
+      const parsed = new URL(raw);
+      return `${parsed.hostname.toLowerCase()}${stripGit(parsed.pathname.replace(/\/+$/, "").toLowerCase())}`;
+    } catch {
+      return stripGit(
+        raw
+          .replace(/^https?:\/\//i, "")
+          .replace(/\/+$/, "")
+          .toLowerCase()
+      );
+    }
+  };
+
+  const primaryCloneUrl = $derived.by(() =>
+    normalizeUrl(filterValidCloneUrls(repoClass.cloneUrls || [])[0] || "")
+  );
+
+  const cloneUrlErrors = $derived.by(() => {
+    const errors = repoClass.cloneUrlErrors || [];
+    return errors.filter((error) => {
+      const status = Number(error?.status || 0);
+      if (status >= 400) return true;
+      const text = String(error?.error || "").toLowerCase();
+      return (
+        text.includes("timeout") ||
+        text.includes("failed to fetch") ||
+        text.includes("network") ||
+        text.includes("cors") ||
+        text.includes("not found") ||
+        text.includes("forbidden") ||
+        text.includes("unauthorized")
+      );
+    });
+  });
+
+  const primaryCloneErrors = $derived.by(() => {
+    if (!primaryCloneUrl) return [] as Array<{ url: string; error: string; status?: number }>;
+    return cloneUrlErrors.filter((error) => normalizeUrl(error.url) === primaryCloneUrl);
+  });
+
+  const displayCloneUrlErrors = $derived.by(() =>
+    (primaryCloneErrors.length > 0 ? primaryCloneErrors : cloneUrlErrors).slice(0, 4)
+  );
+
+  const hasCloneUrlErrors = $derived.by(() => cloneUrlErrors.length > 0);
 
   // Dismiss errors
   function dismissErrors() {
@@ -92,21 +139,36 @@
         <div class="flex items-start gap-2 min-w-0">
           <AlertTriangle class="h-5 w-5 text-destructive flex-shrink-0 mt-0.5" />
           <div class="min-w-0">
-            <p class="text-sm font-medium text-destructive">Clone URL Error</p>
+            <p class="text-sm font-medium text-destructive">
+              {primaryCloneErrors.length > 0
+                ? "Primary clone URL is failing"
+                : "Clone URL issues detected"}
+            </p>
             <ul class="mt-1 text-sm text-muted-foreground space-y-1">
-              {#each cloneUrlErrors as error}
+              {#each displayCloneUrlErrors as error}
                 <li class="truncate" title={error.error}>{formatError(error)}</li>
               {/each}
             </ul>
           </div>
         </div>
-        <button
-          onclick={dismissErrors}
-          class="text-muted-foreground hover:text-foreground p-1 rounded-sm hover:bg-muted flex-shrink-0"
-          title="Dismiss"
-        >
-          <X class="h-4 w-4" />
-        </button>
+        <div class="flex items-center gap-1 flex-shrink-0">
+          {#if resolveCloneUrlIssues}
+            <button
+              onclick={resolveCloneUrlIssues}
+              class="text-xs px-2 py-1 rounded border border-destructive/30 text-destructive hover:bg-destructive/10"
+              title="Resolve clone URL issue"
+            >
+              Resolve
+            </button>
+          {/if}
+          <button
+            onclick={dismissErrors}
+            class="text-muted-foreground hover:text-foreground p-1 rounded-sm hover:bg-muted"
+            title="Dismiss"
+          >
+            <X class="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -152,16 +214,16 @@
         </Button>
       {/if}
       {#if forkRepo}
-      <Button
-        variant="outline"
-        size="sm"
-        class="gap-1 sm:gap-2 px-2 sm:px-3 flex-shrink-0"
-        onclick={forkRepo}
-        title="Fork"
-      >
-        <GitFork class="h-4 w-4" />
-        <span class="hidden sm:inline">Fork</span>
-      </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          class="gap-1 sm:gap-2 px-2 sm:px-3 flex-shrink-0"
+          onclick={forkRepo}
+          title="Fork"
+        >
+          <GitFork class="h-4 w-4" />
+          <span class="hidden sm:inline">Fork</span>
+        </Button>
       {/if}
       <Button
         variant="outline"

@@ -52,7 +52,6 @@
   const {
     repoRef,
     fs,
-    relays = [],
     theme = "retro",
     height = 320,
     initialCwd = "/",
@@ -69,7 +68,7 @@
     repoEvent,
     provider: defaultProvider,
     token: defaultToken,
-  } = $props();
+  }: TerminalProps = $props();
 
   let containerEl: HTMLDivElement;
   let term: Terminal;
@@ -79,7 +78,7 @@
 
   let runningId: string | null = null;
   let cwd = $state("/");
-  let history: string[] = [];
+  const history: string[] = [];
   let historyIdx = -1;
   // Track the branch the terminal operates on; initialized from defaultBranch prop
   let currentBranch = $state<string | undefined>(undefined);
@@ -190,11 +189,6 @@
     const i = n.lastIndexOf("/");
     return i <= 0 ? "/" : n.slice(0, i);
   }
-  function ensureDirPath(p: string) {
-    const n = normPath(p);
-    if (!vfsDirs.has(n)) vfsDirs.add(n);
-  }
-
   async function repoExistsDir(path: string): Promise<boolean> {
     if (!repoEvent) return false;
     const mgr = await ensureWM();
@@ -318,7 +312,6 @@
         }
       }
       if (!vfsDirs.has(n) && !(repoEvent && (await repoExistsDir(n)))) throw new Error("ENOTDIR");
-      const prefix = n === "/" ? "/" : n + "/";
       return Array.from(seen.values()).sort();
     },
     async mkdir(path: string): Promise<void> {
@@ -452,7 +445,9 @@
             : ownerRaw;
         return parseRepoId(`${owner}:${name}`);
       }
-    } catch {}
+    } catch (error) {
+      void error;
+    }
     return repoRef?.repoId;
   }
 
@@ -627,43 +622,44 @@
     }
     if (op === "git.push") {
       const { repoId, remoteUrl: ru, branch, provider, token, cloneUrls } = params || {};
-      const remoteUrl =
-        ru ||
-        defaultRemoteUrl ||
-        (Array.isArray(cloneUrls) && cloneUrls.length > 0
-          ? cloneUrls[0]
-          : Array.isArray(repoCloneUrls) && repoCloneUrls.length > 0
-            ? repoCloneUrls[0]
-            : undefined);
+      const remoteCandidates = Array.from(
+        new Set(
+          [
+            ...(ru ? [ru] : []),
+            ...(!ru && defaultRemoteUrl ? [defaultRemoteUrl] : []),
+            ...(!ru && !defaultRemoteUrl && Array.isArray(cloneUrls) ? cloneUrls : []),
+            ...(!ru && !defaultRemoteUrl && Array.isArray(repoCloneUrls) ? repoCloneUrls : []),
+          ]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+        )
+      );
       const useProvider = provider ?? defaultProvider;
       const useBranch = branch ?? currentBranch;
-      if (!repoId || !remoteUrl) {
+      if (!repoId || remoteCandidates.length === 0) {
         return { text: "error: git push requires repoId and remoteUrl (or cloneUrls[])\n" };
       }
-      try {
+
+      const pushToRemote = async (remoteUrl: string) => {
         // Extract hostname for token matching
         let hostname: string;
         try {
-          // Handle SSH URLs like git@github.com:owner/repo.git
           if (remoteUrl.startsWith("git@")) {
             const match = remoteUrl.match(/git@([^:]+):/);
             hostname = match ? match[1] : "";
           } else {
-            // Handle HTTPS URLs
             const urlObj = new URL(remoteUrl);
             hostname = urlObj.hostname;
           }
         } catch {
           hostname = "";
         }
+
         const tokens = await tokensStore.waitForInitialization();
         const matchingTokens = getTokensForHost(tokens, hostname);
 
-        // Determine which token to use (explicit token from params, or from token store)
-        let pushResult;
         if (token) {
-          // If token explicitly provided, use it directly (no retry)
-          pushResult = await mgr.safePushToRemote({
+          return await mgr.safePushToRemote({
             repoId,
             remoteUrl,
             branch: useBranch,
@@ -676,30 +672,28 @@
               blockIfShallow: true,
             },
           });
-        } else if (matchingTokens.length > 0) {
-          // Try all tokens for this host until one succeeds
-          pushResult = await tryTokensForHost(
-            tokens,
-            hostname,
-            async (token: string, host: string) => {
-              return await mgr.safePushToRemote({
-                repoId,
-                remoteUrl,
-                branch: useBranch,
-                provider: useProvider,
-                token,
-                allowForce: false,
-                preflight: {
-                  blockIfUncommitted: true,
-                  requireUpToDate: true,
-                  blockIfShallow: true,
-                },
-              });
-            }
-          );
-        } else if (defaultToken) {
-          // Fallback to defaultToken if no matching tokens found
-          pushResult = await mgr.safePushToRemote({
+        }
+
+        if (matchingTokens.length > 0) {
+          return await tryTokensForHost(tokens, hostname, async (resolvedToken: string) => {
+            return await mgr.safePushToRemote({
+              repoId,
+              remoteUrl,
+              branch: useBranch,
+              provider: useProvider,
+              token: resolvedToken,
+              allowForce: false,
+              preflight: {
+                blockIfUncommitted: true,
+                requireUpToDate: true,
+                blockIfShallow: true,
+              },
+            });
+          });
+        }
+
+        if (defaultToken) {
+          return await mgr.safePushToRemote({
             repoId,
             remoteUrl,
             branch: useBranch,
@@ -712,40 +706,57 @@
               blockIfShallow: true,
             },
           });
-        } else {
-          // No tokens available - try pushing without authentication (may fail for private repos)
-          pushResult = await mgr.safePushToRemote({
-            repoId,
-            remoteUrl,
-            branch: useBranch,
-            provider: useProvider,
-            allowForce: false,
-            preflight: {
-              blockIfUncommitted: true,
-              requireUpToDate: true,
-              blockIfShallow: true,
-            },
-          });
         }
 
-        if (pushResult?.success) {
-          const b = pushResult.branch || useBranch || "";
-          return { text: `Pushed ${b} to ${remoteUrl}\n` };
+        return await mgr.safePushToRemote({
+          repoId,
+          remoteUrl,
+          branch: useBranch,
+          provider: useProvider,
+          allowForce: false,
+          preflight: {
+            blockIfUncommitted: true,
+            requireUpToDate: true,
+            blockIfShallow: true,
+          },
+        });
+      };
+
+      try {
+        const errors: string[] = [];
+
+        for (const remoteUrl of remoteCandidates) {
+          const pushResult = await pushToRemote(remoteUrl);
+
+          if (pushResult?.success) {
+            const b = pushResult.branch || useBranch || "";
+            return { text: `Pushed ${b} to ${remoteUrl}\n` };
+          }
+
+          if (pushResult?.requiresConfirmation) {
+            errors.push(
+              `${remoteUrl}: ${pushResult?.warning || "force push requires confirmation"}`
+            );
+            continue;
+          }
+
+          const reason = pushResult?.reason ? ` (${pushResult.reason})` : "";
+          if (pushResult?.reason === "workflow_scope_missing") {
+            errors.push(
+              `${remoteUrl}: ${pushResult?.error || "workflow scope missing"}. GitHub requires workflow token scope for .github/workflows changes.`
+            );
+            continue;
+          }
+
+          errors.push(`${remoteUrl}: ${pushResult?.error || `push blocked${reason}`}`);
         }
-        if (pushResult?.requiresConfirmation) {
-          return {
-            text: `error: push blocked: ${pushResult?.warning || "force push requires confirmation"}\n`,
-          };
-        }
-        const reason = pushResult?.reason ? ` (${pushResult.reason})` : "";
-        if (pushResult?.reason === "workflow_scope_missing") {
-          return {
-            text:
-              `error: push blocked${reason}: ${pushResult?.error || "unknown error"}\n` +
-              "hint: GitHub requires the workflow token scope for .github/workflows changes. Update your token or remove those changes.\n",
-          };
-        }
-        return { text: `error: push blocked${reason}: ${pushResult?.error || "unknown error"}\n` };
+
+        return {
+          text:
+            `error: push failed for all ${remoteCandidates.length} remote candidates\n` +
+            errors.map((entry) => `- ${entry}`).join("\n") +
+            "\n",
+        };
       } catch (e: any) {
         return { text: `error: push exception: ${e?.message || String(e)}\n` };
       }
@@ -816,13 +827,17 @@
             if (branches.length && !branches.includes(branch)) {
               return { text: `error: branch '${branch}' not found\n` };
             }
-          } catch {}
+          } catch (error) {
+            void error;
+          }
         }
         // Sync to the target branch to ensure local state, if clone URLs available
         if (Array.isArray(repoCloneUrls) && repoCloneUrls.length > 0) {
           try {
             await mgr.syncWithRemote({ repoId, cloneUrls: repoCloneUrls, branch });
-          } catch {}
+          } catch (error) {
+            void error;
+          }
         }
         currentBranch = branch;
         return { text: `Switched to branch '${branch}'\n` };
@@ -1111,7 +1126,9 @@
     if (g?.crypto && typeof g.crypto.randomUUID === "function") {
       try {
         return g.crypto.randomUUID();
-      } catch {}
+      } catch (error) {
+        void error;
+      }
     }
     return `${Date.now().toString(36)}-${rnd()}-${rnd()}`;
   }

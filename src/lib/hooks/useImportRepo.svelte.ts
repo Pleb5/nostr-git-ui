@@ -35,12 +35,7 @@ import type {
   NostrFilter,
   EventIO,
 } from "@nostr-git/core";
-import type {
-  GitIssue as Issue,
-  GitComment as Comment,
-  GitPullRequest as PullRequest,
-  RepoMetadata,
-} from "@nostr-git/core";
+import type { GitComment as Comment, RepoMetadata } from "@nostr-git/core";
 import { nip19 } from "nostr-tools";
 import {
   createGraspAnnouncementAndState,
@@ -930,8 +925,6 @@ async function fetchAndPublishIssuesStreaming(
   let totalIssues = 0;
   let statusEventsPublished = 0;
   // Track pages to estimate progress (we don't know total upfront, so we'll gradually progress through the range)
-  let totalPages = 1; // Start with 1, will update as we discover more pages
-
   while (true) {
     context.abortController.throwIfAborted();
 
@@ -1038,13 +1031,6 @@ async function fetchAndPublishIssuesStreaming(
       }
     }
 
-    // Estimate total pages if this page was full (for progress estimation)
-    if (pageIssues.length === perPage) {
-      totalPages = page + 1; // Likely more pages ahead
-    } else {
-      totalPages = page; // This was likely the last page
-    }
-
     page++;
   }
 
@@ -1068,8 +1054,6 @@ async function fetchAndPublishPRsStreaming(context: ImportContext): Promise<numb
 
   while (true) {
     context.abortController.throwIfAborted();
-
-    const sinceDate = context.config.sinceDate ? context.config.sinceDate.toISOString() : undefined;
 
     // Fetch one page of PRs
     const pagePrs = await context.withRateLimit(context.platform, "GET", () =>
@@ -1568,37 +1552,67 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+function buildSourceCloneCandidates(...urls: Array<string | undefined>): string[] {
+  const candidates: string[] = [];
+  const add = (value?: string) => {
+    const normalized = String(value || "")
+      .trim()
+      .replace(/\/+$/, "");
+    if (!normalized || candidates.includes(normalized)) return;
+    candidates.push(normalized);
+
+    if (/^https?:\/\//i.test(normalized)) {
+      if (!normalized.endsWith(".git")) {
+        const withGit = `${normalized}.git`;
+        if (!candidates.includes(withGit)) candidates.push(withGit);
+      } else {
+        const withoutGit = normalized.replace(/\.git$/i, "");
+        if (withoutGit && !candidates.includes(withoutGit)) candidates.push(withoutGit);
+      }
+    }
+  };
+
+  for (const url of urls) add(url);
+  return candidates;
+}
+
 async function resolveRecentBranchPushRefs(
   context: ImportContext,
   localRepoId: string,
-  sourceUrl: string,
+  sourceUrls: string[],
   fallbackBranch: string
 ): Promise<ImportBranchPushRef[]> {
   const branchByName = new Map<string, { name: string; commit?: string }>();
 
-  try {
-    const remoteRefs = await runAbortableOperation<any[]>(
-      context.abortController,
-      () =>
-        context.workerApi.listServerRefs({
-          url: sourceUrl,
-          prefix: "refs/heads/",
-          symrefs: false,
-        }),
-      "Listing source remote refs",
-      30000
-    );
+  for (const sourceUrl of sourceUrls) {
+    try {
+      const remoteRefs = await runAbortableOperation<any[]>(
+        context.abortController,
+        () =>
+          context.workerApi.listServerRefs({
+            url: sourceUrl,
+            prefix: "refs/heads/",
+            symrefs: false,
+          }),
+        "Listing source remote refs",
+        20000
+      );
 
-    for (const item of remoteRefs || []) {
-      const rawRef = String(item?.ref || "");
-      if (!rawRef.startsWith("refs/heads/")) continue;
-      const branchName = rawRef.replace(/^refs\/heads\//, "").trim();
-      if (!branchName) continue;
-      const oid = typeof item?.oid === "string" && item.oid.trim() ? item.oid.trim() : undefined;
-      branchByName.set(branchName, { name: branchName, commit: oid });
+      for (const item of remoteRefs || []) {
+        const rawRef = String(item?.ref || "");
+        if (!rawRef.startsWith("refs/heads/")) continue;
+        const branchName = rawRef.replace(/^refs\/heads\//, "").trim();
+        if (!branchName) continue;
+        const oid = typeof item?.oid === "string" && item.oid.trim() ? item.oid.trim() : undefined;
+        branchByName.set(branchName, { name: branchName, commit: oid });
+      }
+
+      if (branchByName.size > 0) {
+        break;
+      }
+    } catch {
+      // try next source URL candidate
     }
-  } catch {
-    // fallback handled below
   }
 
   if (branchByName.size === 0) {
@@ -1648,11 +1662,14 @@ async function resolveRecentBranchPushRefs(
   }
 
   const sourceRepo = (() => {
-    try {
-      return parseRepoUrl(sourceUrl);
-    } catch {
-      return context.parsed;
+    for (const sourceUrl of sourceUrls) {
+      try {
+        return parseRepoUrl(sourceUrl);
+      } catch {
+        // continue
+      }
     }
+    return context.parsed;
   })();
 
   const otherBranchNames = Array.from(branchByName.keys()).filter(
@@ -1719,26 +1736,51 @@ async function syncRepositoryToRemotes(
     `${context.userPubkey}:import-${repoName}-${context.importTimestamp}`
   );
   const localCloneDir = `/repos/${localRepoId}`;
+  const sourceUrlCandidates = buildSourceCloneCandidates(sourceUrl, context.parsed?.url);
+
+  if (sourceUrlCandidates.length === 0) {
+    throw new Error("No valid source clone URL candidates available");
+  }
 
   context.updateProgress("Preparing local mirror for remote sync...");
   context.abortController.throwIfAborted();
 
-  await runAbortableOperation(
-    context.abortController,
-    () =>
-      context.workerApi.cloneRemoteRepo({
-        url: sourceUrl,
-        dir: localCloneDir,
-        token: sourceToken,
-      }),
-    "Cloning source repository",
-    0
-  );
+  let clonedFrom = "";
+  let cloneFailure = "";
+  for (let sourceIndex = 0; sourceIndex < sourceUrlCandidates.length; sourceIndex++) {
+    const candidateUrl = sourceUrlCandidates[sourceIndex];
+    try {
+      context.updateProgress(
+        `Cloning source repository (${sourceIndex + 1}/${sourceUrlCandidates.length})...`
+      );
+      await runAbortableOperation(
+        context.abortController,
+        () =>
+          context.workerApi.cloneRemoteRepo({
+            url: candidateUrl,
+            dir: localCloneDir,
+            token: sourceToken,
+          }),
+        "Cloning source repository",
+        90000
+      );
+      clonedFrom = candidateUrl;
+      break;
+    } catch (error) {
+      cloneFailure = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  if (!clonedFrom) {
+    throw new Error(
+      `Failed to clone source repository from ${sourceUrlCandidates.length} candidate URL(s): ${cloneFailure || "unknown error"}`
+    );
+  }
 
   const branchPushRefs = await resolveRecentBranchPushRefs(
     context,
     localRepoId,
-    sourceUrl,
+    sourceUrlCandidates,
     targetBranch
   );
   context.selectedBranchRefs = branchPushRefs;
@@ -2280,7 +2322,7 @@ async function publishProfileEvents(context: ImportContext): Promise<void> {
   context.abortController.throwIfAborted();
 
   let profileCount = 0;
-  for (const [profileKey, profileEvent] of context.profileEvents.entries()) {
+  for (const [, profileEvent] of context.profileEvents.entries()) {
     context.abortController.throwIfAborted();
     context.updateProgress(
       `Publishing profile ${++profileCount}/${context.profileEvents.size}...`,

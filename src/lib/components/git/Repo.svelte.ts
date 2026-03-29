@@ -316,6 +316,9 @@ export class Repo {
     this.vendorReadRouter.setCloneUrlErrorCallback((url, error, status) => {
       this.recordCloneUrlError(url, error, status);
     });
+    this.vendorReadRouter.setCloneUrlSuccessCallback((url: string) => {
+      this.clearCloneUrlError(url);
+    });
 
     // Initialize CommitManager with dependencies and vendor router for API-first commit reads
     this.commitManager = new CommitManager(this.workerManager, this.cacheManager, {
@@ -1179,14 +1182,27 @@ export class Repo {
 
   // Record a clone URL error (called by VendorReadRouter or other components)
   recordCloneUrlError(url: string, error: string, status?: number): void {
+    const normalized = this.#normalizeCloneUrl(url);
+
     // Avoid duplicates
-    const existing = this.#cloneUrlErrors.find((e) => e.url === url);
+    const existing = this.#cloneUrlErrors.find(
+      (e) => this.#normalizeCloneUrl(e.url) === normalized
+    );
     if (existing) {
+      existing.url = url;
       existing.error = error;
       existing.status = status;
     } else {
       this.#cloneUrlErrors = [...this.#cloneUrlErrors, { url, error, status }];
     }
+  }
+
+  // Clear a specific clone URL error after a successful operation
+  clearCloneUrlError(url: string): void {
+    const normalized = this.#normalizeCloneUrl(url);
+    this.#cloneUrlErrors = this.#cloneUrlErrors.filter(
+      (entry) => this.#normalizeCloneUrl(entry.url) !== normalized
+    );
   }
 
   // Clear clone URL errors (e.g., after successful operation)
@@ -1197,6 +1213,27 @@ export class Repo {
   // Check if any clone URLs have errors
   get hasCloneUrlErrors(): boolean {
     return this.#cloneUrlErrors.length > 0;
+  }
+
+  #normalizeCloneUrl(url: string): string {
+    const raw = String(url || "").trim();
+    if (!raw) return "";
+
+    const stripGitSuffix = (value: string) => value.replace(/\.git$/i, "");
+
+    try {
+      const parsed = new URL(raw);
+      const host = parsed.hostname.toLowerCase();
+      const path = stripGitSuffix(parsed.pathname.replace(/\/+$/, "").toLowerCase());
+      return `${host}${path}`;
+    } catch {
+      return stripGitSuffix(
+        raw
+          .replace(/^https?:\/\//i, "")
+          .replace(/\/+$/, "")
+          .toLowerCase()
+      );
+    }
   }
 
   // Expose relays from the parsed repo announcement

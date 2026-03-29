@@ -140,6 +140,8 @@
   let dialogEl = $state<HTMLDivElement | null>(null);
   let initialFocusEl = $state<HTMLInputElement | null>(null);
   let workflowDecision = $state<{ workflowFiles: string[]; error: string } | null>(null);
+  let shouldCloseAfterAbort = $state(false);
+  let isCancelingFork = $state(false);
 
   // Extract repository information from Repo instance
   const cloneUrl = $derived(
@@ -539,7 +541,7 @@
   });
 
   // Filter commits based on search query
-  let filteredCommits = $derived.by(() => {
+  const filteredCommits = $derived.by(() => {
     if (!commitSearchQuery) return availableCommits.slice(0, 20);
     const query = commitSearchQuery.toLowerCase();
     return availableCommits
@@ -606,9 +608,6 @@
       originalRepo,
     });
   });
-
-  // Computed properties
-  const progressLength = $derived(progress?.length || 0);
 
   // UI state
   let validationError = $state<string | undefined>();
@@ -959,18 +958,35 @@
 
   function handleClose() {
     console.log("🔄 ForkRepoDialog: handleClose called", { isForking, isOpen });
-    if (!isForking) {
-      completedResult = null;
-      showDetails = false;
-      console.log(
-        "✅ ForkRepoDialog: Closing dialog - setting isOpen to false and navigating back"
-      );
-      isOpen = false;
-      // Use browser history API to go back (framework-agnostic)
-      window.history.back();
-    } else {
-      console.log("⚠️ ForkRepoDialog: Cannot close - fork operation in progress");
+    if (isForking) {
+      shouldCloseAfterAbort = true;
+      void requestForkAbort("User cancelled fork");
+      return;
     }
+
+    completedResult = null;
+    showDetails = false;
+    console.log("✅ ForkRepoDialog: Closing dialog - setting isOpen to false and navigating back");
+    isOpen = false;
+    // Use browser history API to go back (framework-agnostic)
+    window.history.back();
+  }
+
+  async function requestForkAbort(reason: string) {
+    if (isCancelingFork) return;
+    isCancelingFork = true;
+    try {
+      forkState.abortFork?.(reason);
+    } finally {
+      if (!isForking) {
+        isCancelingFork = false;
+      }
+    }
+  }
+
+  function handleAbort() {
+    shouldCloseAfterAbort = true;
+    void requestForkAbort("User cancelled fork");
   }
 
   async function copyForkUrl() {
@@ -1138,6 +1154,28 @@
     }
   }
 
+  $effect(() => {
+    if (shouldCloseAfterAbort && !isForking) {
+      shouldCloseAfterAbort = false;
+      isCancelingFork = false;
+      handleClose();
+    }
+  });
+
+  $effect(() => {
+    if (!isForking) {
+      isCancelingFork = false;
+    }
+  });
+
+  $effect(() => {
+    return () => {
+      if (isForking) {
+        forkState.abortFork?.("Fork dialog closed");
+      }
+    };
+  });
+
   // Trap focus within the dialog
   function handleKeydownTrap(event: KeyboardEvent) {
     if (event.key !== "Tab" || !dialogEl) return;
@@ -1184,6 +1222,7 @@
     <div
       bind:this={dialogEl}
       class="bg-gray-900 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden border border-gray-700 relative z-[60] outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 transform-gpu"
+      onkeydown={handleKeydownTrap}
     >
       <!-- Header -->
       <div class="flex items-center justify-between p-6 border-b border-gray-700">
@@ -1771,11 +1810,7 @@
                         </div>
                       {:else}
                         <!-- User already has a fork -->
-                        {@const provider = getProviderFromService(selectedService)}
                         {@const restrictions = getProviderRestrictions(selectedService)}
-                        {@const providerLabel =
-                          availableServices.find((s) => s.host === selectedService)?.label ||
-                          selectedService}
                         <div class="text-gray-300 text-sm space-y-2">
                           <p>
                             <strong class="text-white">
@@ -2135,11 +2170,15 @@
         <div class="flex items-center justify-end space-x-3 p-6 border-t border-gray-700">
           <button
             type="button"
-            onclick={handleClose}
-            disabled={isForking}
+            onclick={isForking ? handleAbort : handleClose}
+            disabled={isCancelingFork}
             class="px-4 py-2 text-gray-300 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Cancel
+            {#if isForking}
+              {isCancelingFork ? "Canceling..." : "Cancel fork"}
+            {:else}
+              Cancel
+            {/if}
           </button>
           <button
             type="submit"

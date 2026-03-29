@@ -67,6 +67,13 @@ export interface UseForkRepoOptions {
   onRollbackPublishedRepoEvents?: (params: { repoName: string; relays: string[] }) => Promise<void>;
 }
 
+class ForkAbortedError extends Error {
+  constructor(message = "Fork cancelled") {
+    super(message);
+    this.name = "ForkAbortedError";
+  }
+}
+
 /**
  * Parsed fork error information
  */
@@ -396,6 +403,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
   let progress = $state<ForkProgress[]>([]);
   let error = $state<string | null>(null);
   let warning = $state<string | null>(null);
+  let abortController = $state<AbortController | null>(null);
 
   let tokens = $state<Token[]>([]);
 
@@ -433,6 +441,38 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     onProgress?.($state.snapshot(progress) as ForkProgress[]);
   }
 
+  function getAbortMessage(reason: unknown): string {
+    if (typeof reason === "string" && reason.trim()) return reason.trim();
+    if (reason instanceof Error && reason.message) return reason.message;
+    return "Fork cancelled";
+  }
+
+  function throwIfAborted(signal: AbortSignal): void {
+    if (signal.aborted) {
+      throw new ForkAbortedError(getAbortMessage(signal.reason));
+    }
+  }
+
+  async function runAbortable<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+    throwIfAborted(signal);
+
+    let onAbort: (() => void) | null = null;
+    const abortPromise = new Promise<never>((_, reject) => {
+      onAbort = () => {
+        reject(new ForkAbortedError(getAbortMessage(signal.reason)));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+
+    try {
+      return await Promise.race([operation(), abortPromise]);
+    } finally {
+      if (onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    }
+  }
+
   /**
    * Fork a repository with full workflow
    * 1. Create remote fork via GitHub API
@@ -458,6 +498,9 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     error = null;
     warning = null;
     progress = [];
+    const sessionAbortController = new AbortController();
+    abortController = sessionAbortController;
+    const abortSignal = sessionAbortController.signal;
 
     let graspEventsPublished = false;
     let graspPushCompleted = false;
@@ -488,6 +531,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     };
 
     const handleForkWorkerProgress = (event: MessageEvent | { data?: any } | any): void => {
+      if (!isForking) return;
+
       const payload = event?.data && typeof event.data === "object" ? event.data : event;
       if (!payload || typeof payload !== "object") return;
       if (payload.type !== "clone-progress") return;
@@ -581,6 +626,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     };
 
     try {
+      throwIfAborted(abortSignal);
       // Validate inputs early
       if (!originalRepo?.owner || !originalRepo?.name) {
         throw new Error(
@@ -605,7 +651,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
                 : "github.com";
 
       let providerToken: string | undefined;
-      let pubkey: string | undefined;
       let relayUrl: string | undefined;
 
       if (provider === "grasp") {
@@ -619,7 +664,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         }
         relayUrl = config.relayUrl;
         // For GRASP, the "token" parameter is actually the user's pubkey
-        pubkey = userPubkey;
         providerToken = userPubkey; // Use actual pubkey for GraspApiProvider
         updateProgress("validate", "GRASP configuration validated", "completed");
       } else {
@@ -637,18 +681,16 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       updateProgress("user", "Getting current user info...", "running");
 
       // Use passed workerApi if available, otherwise create new worker
-      let gitWorkerApi: any, worker: Worker;
+      let gitWorkerApi: any;
       if (options.workerApi) {
         gitWorkerApi = options.workerApi;
         // Need worker for GRASP - create temporary one if not available
         const { getGitWorker } = await import("@nostr-git/core/worker");
-        const workerInstance = getGitWorker({ onProgress: handleForkWorkerProgress });
-        worker = workerInstance.worker;
+        getGitWorker({ onProgress: handleForkWorkerProgress });
       } else {
         const { getGitWorker } = await import("@nostr-git/core/worker");
         const workerInstance = getGitWorker({ onProgress: handleForkWorkerProgress });
         gitWorkerApi = workerInstance.api;
-        worker = workerInstance.worker;
       }
 
       // Use fork name as default local directory path (browser virtual file system).
@@ -660,6 +702,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       let graspCurrentUser: string | undefined;
 
       if (provider === "grasp") {
+        throwIfAborted(abortSignal);
         // EventIO will be configured by the worker internally
         // For GRASP, proceed directly without token retry
         const gitServiceApi = getGitServiceApi(provider as any, providerToken!, relayUrl);
@@ -677,27 +720,28 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
         // Step 3: Fork and clone repository using git-worker
         updateProgress("fork", "Creating fork and cloning repository...", "running");
-        workerResult = await gitWorkerApi.forkAndCloneRepo({
-          owner: originalRepo.owner,
-          repo: originalRepo.name,
-          forkName: config.forkName,
-          visibility: config.visibility,
-          token: providerToken!,
-          provider: provider,
-          baseUrl: relayUrl,
-          dir: destinationPath,
-          sourceCloneUrls: originalRepo.cloneUrls ? [...originalRepo.cloneUrls] : undefined, // Convert to plain array for Comlink
-          sourceRepoId: originalRepo.sourceRepoId || undefined, // Pass source repo ID for finding existing local clone
-          workflowFilesAction: config.workflowFilesAction,
-          // Note: onProgress callback removed - functions cannot be serialized through Comlink
-        });
+        workerResult = await runAbortable(abortSignal, () =>
+          gitWorkerApi.forkAndCloneRepo({
+            owner: originalRepo.owner,
+            repo: originalRepo.name,
+            forkName: config.forkName,
+            visibility: config.visibility,
+            token: providerToken!,
+            provider: provider,
+            baseUrl: relayUrl,
+            dir: destinationPath,
+            sourceCloneUrls: originalRepo.cloneUrls ? [...originalRepo.cloneUrls] : undefined, // Convert to plain array for Comlink
+            sourceRepoId: originalRepo.sourceRepoId || undefined, // Pass source repo ID for finding existing local clone
+            workflowFilesAction: config.workflowFilesAction,
+            // Note: onProgress callback removed - functions cannot be serialized through Comlink
+          })
+        );
         console.log("[useForkRepo] forkAndCloneRepo returned", workerResult);
       } else {
         // For standard Git providers, use tryTokensForHost for fallback retries
-        workerResult = await tryTokensForHost(
-          tokens,
-          providerHost,
-          async (token: string, host: string) => {
+        workerResult = await runAbortable(abortSignal, () =>
+          tryTokensForHost(tokens, providerHost, async (token: string, host: string) => {
+            throwIfAborted(abortSignal);
             // Get current user with this token
             const gitServiceApi = getGitServiceApi(provider as any, token, relayUrl);
             const userData = await gitServiceApi.getCurrentUser();
@@ -731,10 +775,11 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
             }
 
             return result;
-          }
+          })
         );
       }
 
+      throwIfAborted(abortSignal);
       if (workerResult?.requiresWorkflowDecision) {
         return {
           requiresWorkflowDecision: true,
@@ -802,7 +847,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       // Only locally-resolved refs go into the state event and push plan.
       // This prevents the auth mismatch where the relay rejects a push because
       // the pushed refs don't match what was declared in the state event.
-      const localRepoIdForVerify = workerResult.localRepoId || workerResult.repoId;
       const unresolvedRefs: Array<{ ref: string; reason: string }> = [];
       const refs: Array<{ type: "heads" | "tags"; name: string; commit: string }> = [];
 
@@ -882,6 +926,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       // Step 5: Publish announcement + provisioning, then per-ref state/push cycles
       if (onPublishEvent) {
         try {
+          throwIfAborted(abortSignal);
           if (provider === "grasp") {
             // GRASP step 1: publish ONLY the announcement (30617).
             // The state (30618) is published before each push and must represent the
@@ -1044,6 +1089,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         // the relay plus the ref we're about to push. This keeps state aligned with the
         // repository's effective ref set during multi-step pushes.
         for (let i = 0; i < refPushPlan.length; i++) {
+          throwIfAborted(abortSignal);
           const item = refPushPlan[i];
           updateProgress(
             "push",
@@ -1276,7 +1322,10 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         }
       }
 
-      const errorMessage = parseForkError(err, config.provider || "github");
+      const errorMessage =
+        err instanceof ForkAbortedError
+          ? err.message
+          : parseForkError(err, config.provider || "github");
       error = errorMessage;
 
       // Update the current step to error status
@@ -1285,11 +1334,24 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         updateProgress(currentStep.step, `Failed: ${errorMessage}`, "error", errorMessage);
       }
 
-      console.error("Repository fork failed:", err);
+      if (err instanceof ForkAbortedError) {
+        updateProgress("fork", errorMessage, "error", errorMessage);
+        console.log("Repository fork cancelled:", errorMessage);
+      } else {
+        console.error("Repository fork failed:", err);
+      }
       return null;
     } finally {
       isForking = false;
+      if (abortController === sessionAbortController) {
+        abortController = null;
+      }
     }
+  }
+
+  function abortFork(reason?: string): void {
+    if (!abortController || abortController.signal.aborted) return;
+    abortController.abort(reason || "Fork cancelled by user");
   }
 
   /**
@@ -1299,6 +1361,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
   function reset(): void {
     progress = [];
     error = null;
+    warning = null;
+    abortFork("Fork reset");
     isForking = false;
   }
 
@@ -1320,6 +1384,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
     // Methods
     forkRepository,
+    abortFork,
     reset,
   };
 }
