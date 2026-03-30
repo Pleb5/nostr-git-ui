@@ -32,7 +32,12 @@ export { pushRepoAlert } from "./alertsAdapter";
 export * from "./utils/eventKinds";
 // Export hash utilities
 export { sha256, md5 } from "./utils/hash";
-export { prChangeToParseDiffFile, type PrChangeInput } from "./utils/prDiffUtils";
+export {
+  prChangeToParseDiffFile,
+  prChangeToReviewParseDiffFile,
+  type PrChangeInput,
+  type PrReviewDiffOptions,
+} from "./utils/prDiffUtils";
 export {
   getHighlightJs,
   getHighlightLanguageForPath,

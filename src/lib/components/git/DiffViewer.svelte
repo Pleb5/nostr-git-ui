@@ -73,6 +73,10 @@
     repo,
     publish,
     enablePermalinks = true,
+    showFileHeaders = true,
+    compact = false,
+    framed = true,
+    showFileAnchors = true,
   }: {
     diff: AnyFileChange[] | string | undefined;
     showLineNumbers?: boolean;
@@ -84,6 +88,10 @@
     repo?: Repo;
     publish?: (permalink: PermalinkEvent) => Promise<void>;
     enablePermalinks?: boolean;
+    showFileHeaders?: boolean;
+    compact?: boolean;
+    framed?: boolean;
+    showFileAnchors?: boolean;
   } = $props();
 
   let selectedLine = $state<number | null>(null);
@@ -145,6 +153,36 @@
       variant: theme === "warning" ? "default" : "destructive",
     });
   };
+
+  function getCommentOffsetClass() {
+    return showLineNumbers ? "ml-20 sm:ml-24" : "ml-0";
+  }
+
+  function getLineNumberCellClass(type: "add" | "del" | "normal") {
+    const densityClass = compact ? "py-px" : "py-0.5";
+    return `w-10 shrink-0 px-1 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs border-r border-border flex items-center justify-end ${densityClass} ${getLineNumClass(
+      type
+    )}`;
+  }
+
+  function getLineContentClass() {
+    const densityClass = compact ? "py-px" : "py-0.5";
+    return `flex flex-1 items-center px-1 font-mono text-[13px] leading-4 whitespace-nowrap sm:px-2 ${densityClass}`;
+  }
+
+  function getCommentButtonClass() {
+    const sizeClass = compact ? "h-6 w-6 rounded-sm p-0" : "h-10 w-10";
+    return `${sizeClass} opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100`;
+  }
+
+  function getCommentThreadClass() {
+    const densityClass = compact ? "space-y-2 py-2" : "space-y-3 py-2";
+    return `bg-secondary/30 border-l-4 border-primary ${getCommentOffsetClass()} pl-4 ${densityClass}`;
+  }
+
+  function getCommentComposerClass() {
+    return `bg-secondary/20 border-l-4 border-primary ${getCommentOffsetClass()} pl-4 py-2`;
+  }
 
   // Accept both AST and raw string for dev ergonomics
   let parsed = $state<AnyFileChange[]>([]);
@@ -1061,7 +1099,9 @@
 </script>
 
 <div
-  class="git-diff-view border border-border rounded-md relative"
+  class={framed
+    ? "git-diff-view relative rounded-md border border-border"
+    : "git-diff-view relative"}
   style="border-color: hsl(var(--border));"
   bind:this={diffContainer}
 >
@@ -1071,39 +1111,52 @@
   {#each parsed as file, fileIdx (getFileLabel(file))}
     {@const fileId = getFileLabel(file)}
     {@const filePath = file.to || file.from || "unknown"}
-    {@const isExpanded = expandedFiles.has(fileId)}
-    <div class="mb-4" id={diffAnchors[filePath] ? `diff-${diffAnchors[filePath]}` : undefined}>
-      <button
-        type="button"
-        class="font-bold mb-1 flex items-center w-full text-left hover:bg-muted/50 p-1 rounded"
-        onclick={() => {
-          const newSet = new Set(expandedFiles);
-          if (isExpanded) {
-            newSet.delete(fileId);
-          } else {
-            newSet.add(fileId);
-          }
-          expandedFiles = newSet;
-        }}
-        aria-expanded={isExpanded}
-        aria-controls={`file-diff-${fileIdx}`}
-      >
-        {#if isExpanded}
-          <ChevronUp class="h-4 w-4 mr-2 shrink-0" />
-        {:else}
-          <ChevronDown class="h-4 w-4 mr-2 shrink-0" />
-        {/if}
-        <span>{fileId}</span>
-        {#if getFileIsBinary(file)}
-          <span class="ml-2 text-xs text-orange-400 shrink-0">[binary]</span>
-        {/if}
-      </button>
+    {@const isExpanded = showFileHeaders ? expandedFiles.has(fileId) : true}
+    <div
+      class={showFileHeaders ? (compact ? "mb-3" : "mb-4") : ""}
+      id={showFileAnchors && diffAnchors[filePath] ? `diff-${diffAnchors[filePath]}` : undefined}
+    >
+      {#if showFileHeaders}
+        <button
+          type="button"
+          class={compact
+            ? "mb-1 flex w-full items-center rounded px-1.5 py-1 text-left text-sm font-medium hover:bg-muted/50"
+            : "font-bold mb-1 flex items-center w-full text-left hover:bg-muted/50 p-1 rounded"}
+          onclick={() => {
+            const newSet = new Set(expandedFiles);
+            if (isExpanded) {
+              newSet.delete(fileId);
+            } else {
+              newSet.add(fileId);
+            }
+            expandedFiles = newSet;
+          }}
+          aria-expanded={isExpanded}
+          aria-controls={`file-diff-${fileIdx}`}
+        >
+          {#if isExpanded}
+            <ChevronUp class="mr-2 h-4 w-4 shrink-0" />
+          {:else}
+            <ChevronDown class="mr-2 h-4 w-4 shrink-0" />
+          {/if}
+          <span>{fileId}</span>
+          {#if getFileIsBinary(file)}
+            <span class="ml-2 shrink-0 text-xs text-orange-400">[binary]</span>
+          {/if}
+        </button>
+      {/if}
       {#if isExpanded && file.chunks}
         <div id={`file-diff-${fileIdx}`}>
           {#each file.chunks as chunk, chunkIdx}
-            <div class="mb-2">
+            <div class={compact ? "mb-1.5" : "mb-2"}>
               {#if "changes" in chunk}
-                <div class="text-xs text-muted-foreground mb-1">{chunk.content}</div>
+                <div
+                  class={compact
+                    ? "mb-1 px-2 text-[11px] leading-4 text-muted-foreground"
+                    : "mb-1 text-xs text-muted-foreground"}
+                >
+                  {chunk.content}
+                </div>
                 <div class="divide-y divide-border/60">
                   {#each chunk.changes as change, i}
                     {@const ln = i + 1}
@@ -1128,9 +1181,13 @@
                     {@const lineIndex = chunkOffset + i}
                     {@const isSelected = isLineWithinSelection(currentFilePath, lineIndex)}
                     {@const bgClass = isAdd
-                      ? "border-l-4 border-emerald-600 bg-emerald-200/70 dark:bg-emerald-900/50"
+                      ? compact
+                        ? "border-l-2 border-emerald-600 bg-emerald-200/70 dark:bg-emerald-900/50"
+                        : "border-l-4 border-emerald-600 bg-emerald-200/70 dark:bg-emerald-900/50"
                       : isDel
-                        ? "border-l-4 border-rose-600 bg-rose-200/70 dark:bg-rose-900/50"
+                        ? compact
+                          ? "border-l-2 border-rose-600 bg-rose-200/70 dark:bg-rose-900/50"
+                          : "border-l-4 border-rose-600 bg-rose-200/70 dark:bg-rose-900/50"
                         : "hover:bg-secondary/50"}
 
                     <div class="w-full">
@@ -1146,11 +1203,7 @@
                       >
                         <div class="flex shrink-0 text-foreground select-none">
                           {#if showLineNumbers}
-                            <div
-                              class="w-10 shrink-0 px-1 py-0.5 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs border-r border-border flex items-center justify-end {getLineNumClass(
-                                change.type
-                              )}"
-                            >
+                            <div class={getLineNumberCellClass(change.type)}>
                               <span
                                 class="block cursor-pointer"
                                 style="touch-action: none;"
@@ -1161,11 +1214,7 @@
                                 {leftLine ?? ""}
                               </span>
                             </div>
-                            <div
-                              class="w-10 shrink-0 px-1 py-0.5 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs border-r border-border flex items-center justify-end {getLineNumClass(
-                                change.type
-                              )}"
-                            >
+                            <div class={getLineNumberCellClass(change.type)}>
                               <span
                                 class="block cursor-pointer"
                                 style="touch-action: none;"
@@ -1178,30 +1227,27 @@
                             </div>
                           {/if}
                         </div>
-                        <div
-                          class="flex flex-1 items-center px-1 py-0.5 font-mono text-[13px] leading-4 whitespace-nowrap sm:px-2"
-                        >
+                        <div class={getLineContentClass()}>
                           <pre class="whitespace-pre m-0 inline-block align-middle"><span
                               class="hljs">{@html highlightCode(change.content, language)}</span
                             ></pre>
                         </div>
-                        <div
-                          class="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                        >
+                        <div class="ml-auto flex shrink-0 items-center px-1 sm:px-1.5">
                           <Button
                             variant="ghost"
                             size="icon"
+                            class={getCommentButtonClass()}
+                            title="Add inline comment"
+                            aria-label="Add inline comment"
                             onclick={() => toggleCommentBox(ln, fileIdx, chunkIdx)}
                           >
-                            <MessageSquare class="h-4 w-4" />
+                            <MessageSquare class={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
                           </Button>
                         </div>
                       </div>
 
                       {#if hasComments}
-                        <div
-                          class="bg-secondary/30 border-l-4 border-primary ml-10 pl-4 py-2 space-y-3"
-                        >
+                        <div class={getCommentThreadClass()}>
                           {#each lineComments as c}
                             <div id={`comment-${c.id}`} data-event={c.id} class="flex gap-2">
                               <Avatar class="h-8 w-8">
@@ -1239,7 +1285,7 @@
                         </div>
                       {/if}
                       {#if selectedLine === ln && selectedFileIdx === fileIdx && selectedChunkIdx === chunkIdx}
-                        <div class="bg-secondary/20 border-l-4 border-primary ml-10 pl-4 py-2">
+                        <div class={getCommentComposerClass()}>
                           <div class="flex gap-2">
                             <Avatar class="h-8 w-8">
                               <AvatarFallback>ME</AvatarFallback>
@@ -1248,7 +1294,9 @@
                               <Textarea
                                 bind:value={newComment}
                                 placeholder="Add a comment..."
-                                class="min-h-[60px] resize-none"
+                                class={compact
+                                  ? "min-h-[52px] resize-none"
+                                  : "min-h-[60px] resize-none"}
                                 disabled={isSubmitting}
                               />
                               <div class="flex justify-end gap-2">
