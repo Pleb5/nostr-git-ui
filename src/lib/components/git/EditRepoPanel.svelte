@@ -22,7 +22,6 @@
   import { PeoplePicker } from "@nostr-git/ui";
   import { Repo } from "./Repo.svelte";
   import { nip19 } from "nostr-tools";
-  import { parseRepoId } from "@nostr-git/core/utils";
   import { commonHashtags } from "../../stores/hashtags";
 
   // Types for edit configuration and progress
@@ -639,17 +638,6 @@
       const nextName = formData.name.trim();
       const renamed = previousName !== nextName;
 
-      let targetRepositoryId = repo.key;
-      try {
-        const currentRepoId = parseRepoId(repo.key);
-        const currentOwner = currentRepoId.split("/")[0] || repo.repoEvent?.pubkey || "";
-        if (currentOwner) {
-          targetRepositoryId = parseRepoId(`${currentOwner}:${nextName}`);
-        }
-      } catch {
-        // pass
-      }
-
       // Create updated repository announcement event using all NIP-34 fields
       const updatedAnnouncementEvent = repo.createRepoAnnouncementEvent({
         name: nextName,
@@ -680,7 +668,7 @@
         })) || [];
 
       const updatedStateEvent = repo.createRepoStateEvent({
-        repositoryId: targetRepositoryId,
+        repositoryId: nextName,
         headBranch: formData.defaultBranch,
         branches: branchNames,
         refs: refs,

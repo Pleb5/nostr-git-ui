@@ -1898,6 +1898,9 @@ export class Repo {
   async reset() {
     console.log("Resetting repository state...");
 
+    const branchBeforeReset =
+      this.selectedBranch || this.mainBranch || this.branchManager?.getMainBranch() || "main";
+
     // Reset managers that have reset methods
     this.commitManager?.reset();
     this.branchManager?.reset();
@@ -1933,7 +1936,7 @@ export class Repo {
     if (this.repoEvent) {
       try {
         console.log("Resetting local git repository to match remote...");
-        const resetResult = await this.workerManager.resetRepoToRemote(this.key, this.mainBranch);
+        const resetResult = await this.workerManager.resetRepoToRemote(this.key, branchBeforeReset);
 
         if (resetResult.success) {
           console.log(`Git reset successful: ${resetResult.message}`);
