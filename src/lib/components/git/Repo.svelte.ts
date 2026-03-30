@@ -563,9 +563,16 @@ export class Repo {
           }
         } catch {}
 
-        // Only reload refs from worker if we still don't have any
-        // (refs should already be loaded from RepoStateEvent subscriptions)
-        if (this.refs.length === 0 || this.#refsSeededFromHead) {
+        // Reload refs when the immediate repo-state snapshot is missing, synthetic,
+        // or suspiciously partial (for example a stale 30618 that only advertises
+        // one branch while the remote has more).
+        const currentHeadRefs = this.refs.filter((ref) => ref.type === "heads");
+        const shouldRefreshRefs =
+          this.refs.length === 0 ||
+          this.#refsSeededFromHead ||
+          (!!this.#repoStateEvent && currentHeadRefs.length <= 1);
+
+        if (shouldRefreshRefs) {
           try {
             this.#refsLoading = true;
             // Set repoEvent for vendor API fallback when no RepoStateEvent is available

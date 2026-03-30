@@ -70,14 +70,16 @@ export interface ProcessedBranch extends Branch {
 export class BranchManager {
   private workerManager: WorkerManager;
   private cacheManager?: CacheManager;
-  private config: Required<Omit<BranchManagerConfig, 'vendorReadRouter'>> & Pick<BranchManagerConfig, 'vendorReadRouter'>;
+  private config: Required<Omit<BranchManagerConfig, "vendorReadRouter">> &
+    Pick<BranchManagerConfig, "vendorReadRouter">;
 
   // Branch state
   private branches: ProcessedBranch[] = [];
   private selectedBranch?: string;
   private mainBranch?: string;
   private nip34References: Map<string, NIP34Reference> = new Map();
-  private refs: Array<{name: string; type: "heads" | "tags"; fullRef: string; commitId: string}> = [];
+  private refs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> =
+    [];
   private loadingRefs: boolean = false;
   private vendorReadRouter?: VendorReadRouter;
   private repoEventSnapshot?: RepoAnnouncementEvent;
@@ -339,7 +341,7 @@ export class BranchManager {
             const isHead = newMainBranch && ref.shortName === newMainBranch;
             //const exists = await this.branchExists(repoEvent, ref.shortName);
             //if (exists || isDefault || isHead) {
-              this.nip34References.set(ref.shortName, ref);
+            this.nip34References.set(ref.shortName, ref);
             //} else {
             //  this.handleBranchNotFound(ref.shortName, new Error("Branch missing in repo"));
             //}
@@ -374,7 +376,7 @@ export class BranchManager {
   /**
    * Get all refs (branches and tags)
    */
-  getAllRefs(): Array<{name: string; type: "heads" | "tags"; fullRef: string; commitId: string}> {
+  getAllRefs(): Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> {
     return this.refs;
   }
 
@@ -467,7 +469,9 @@ export class BranchManager {
    * This is the primary method that should be used to load branch/tag data
    */
   async loadAllRefs(
-    getAllRefsWithFallback: () => Promise<Array<{name: string; type: "heads" | "tags"; fullRef: string; commitId: string}>>
+    getAllRefsWithFallback: () => Promise<
+      Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }>
+    >
   ): Promise<void> {
     const now = Date.now();
     if (this.loadingRefs && now - this.lastLoadRefsAt < BranchManager.MIN_LOADREFS_INTERVAL_MS) {
@@ -477,14 +481,18 @@ export class BranchManager {
     try {
       this.loadingRefs = true;
       this.lastLoadRefsAt = now;
-      
+
       // Use the Repo's getAllRefsWithFallback which has proper fallback logic
       let loadedRefs = await getAllRefsWithFallback();
 
-      // If Repo fallback yields no refs, attempt vendor-first refs as best-effort fallback.
-      // This preserves NIP-34 trust logic: vendor refs are only used when state/git derived refs are missing.
+      // If Repo fallback yields no refs, or only a suspiciously small branch set,
+      // attempt vendor-first refs as a best-effort augmentation.
+      // This preserves NIP-34 trust logic for existing refs while recovering when
+      // a stale/partial state event only advertises one branch.
+      const loadedHeadCount = (loadedRefs || []).filter((ref) => ref.type === "heads").length;
+      const shouldAugmentFromVendor = loadedHeadCount <= 1;
       if (
-        (!loadedRefs || loadedRefs.length === 0) &&
+        (!loadedRefs || loadedRefs.length === 0 || shouldAugmentFromVendor) &&
         this.vendorReadRouter &&
         this.repoEventSnapshot
       ) {
@@ -504,9 +512,31 @@ export class BranchManager {
           }));
 
           if (vendorRefs.length > 0) {
-            loadedRefs = vendorRefs.sort((a, b) =>
-              a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
-            );
+            const shouldReplace = !loadedRefs || loadedRefs.length === 0;
+            if (shouldReplace) {
+              loadedRefs = vendorRefs.sort((a, b) =>
+                a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
+              );
+            } else {
+              const mergedRefs = new Map(
+                (loadedRefs || []).map((ref) => [ref.fullRef || `${ref.type}:${ref.name}`, ref])
+              );
+              for (const ref of vendorRefs) {
+                const key = ref.fullRef || `${ref.type}:${ref.name}`;
+                if (!mergedRefs.has(key)) {
+                  mergedRefs.set(key, ref);
+                }
+              }
+
+              const augmentedRefs = Array.from(mergedRefs.values()).sort((a, b) =>
+                a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
+              );
+              const augmentedHeadCount = augmentedRefs.filter((ref) => ref.type === "heads").length;
+
+              if (augmentedHeadCount > loadedHeadCount) {
+                loadedRefs = augmentedRefs;
+              }
+            }
           }
         } catch (e) {
           console.warn("VendorReadRouter.listRefs failed; continuing with empty refs:", e);
@@ -514,10 +544,10 @@ export class BranchManager {
       }
 
       this.refs = loadedRefs || [];
-      
+
       // Convert refs to ProcessedBranch format for backward compatibility
       this.branches = this.refs
-        .filter(ref => ref.type === "heads")
+        .filter((ref) => ref.type === "heads")
         .map((ref): ProcessedBranch => {
           const nip34Ref = this.nip34References.get(ref.name);
           return {
@@ -531,9 +561,11 @@ export class BranchManager {
             isNIP34Head: ref.name === this.mainBranch,
           };
         });
-      
+
       this.loadingRefs = false;
-      console.log(`Loaded ${this.refs.length} refs (${this.branches.length} branches, ${this.refs.filter(r => r.type === "tags").length} tags)`);
+      console.log(
+        `Loaded ${this.refs.length} refs (${this.branches.length} branches, ${this.refs.filter((r) => r.type === "tags").length} tags)`
+      );
     } catch (error) {
       console.error("Error loading refs:", error);
       this.refs = [];

@@ -450,6 +450,7 @@ export class WorkerManager {
     branch?: string;
     requireRemoteSync?: boolean;
     requireTrackingRef?: boolean;
+    preferredUrl?: string;
   }): Promise<any> {
     await this.initialize();
     return this.execute("syncWithRemote", params);
