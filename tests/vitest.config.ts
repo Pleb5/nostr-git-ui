@@ -18,9 +18,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(__dirname, "../src"),
-      "@app": resolve(__dirname, "../../../src"),
+      "@app": resolve(__dirname, "../../../src/app"),
       "@src": resolve(__dirname, "../../../src"),
       "@lib": resolve(__dirname, "../../../src/lib"),
+      $lib: resolve(__dirname, "../src/lib"),
     },
   },
 });
