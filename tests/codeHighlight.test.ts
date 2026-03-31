@@ -22,6 +22,7 @@ describe("code highlighting helpers", () => {
     expect(getHighlightLanguageForPath("infra/nginx.conf")).toBe("nginx");
     expect(getHighlightLanguageForPath("puppet/site.pp")).toBe("puppet");
     expect(getHighlightLanguageForPath(".env.production")).toBe("ini");
+    expect(getHighlightLanguageForPath("src/App.svelte")).toBe("svelte");
   });
 
   it("registers shared highlight.js languages once", () => {
@@ -46,6 +47,13 @@ describe("code highlighting helpers", () => {
     );
 
     expect(highlighted).toContain("hljs");
+  });
+
+  it("detects script-style Svelte snippets as code instead of plain markup", () => {
+    const highlighted = highlightCodeSnippet('import {writable} from "svelte/store"', "svelte");
+
+    expect(highlighted).toContain("hljs-keyword");
+    expect(highlighted).toContain("hljs-string");
   });
 
   it("loads CodeMirror support for newly added file-view languages", async () => {

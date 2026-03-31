@@ -3,7 +3,11 @@
   import { toast } from "../../stores/toast.js";
   import { tick } from "svelte";
   import { toUserMessage } from "../../utils/gitErrorUi.js";
-  import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
+  import {
+    getHighlightLanguageForPath,
+    highlightCodeLines,
+    highlightCodeSnippet,
+  } from "../../utils/codeHighlight";
   import { GIT_PERMALINK, type PermalinkEvent } from "@nostr-git/core/types";
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import type { Repo } from "./Repo.svelte";
@@ -30,6 +34,10 @@
   let selectedFilePath = $state<string | null>(null);
   let selectedStartIndex = $state<number | null>(null);
   let selectedEndIndex = $state<number | null>(null);
+  let isPointerSelecting = $state(false);
+  let pointerStartIndex = $state<number | null>(null);
+  let pointerStartFilePath = $state<string | null>(null);
+  let pointerId = $state<number | null>(null);
   let touchTimer: number | null = $state(null);
   let touchStartX = $state(0);
   let touchStartY = $state(0);
@@ -73,11 +81,6 @@
       const target = e.target as HTMLElement;
       const inMenu = target.closest?.(".permalink-menu-popup");
       if (!inMenu) {
-        if (showPermalinkMenu) {
-          selectedFilePath = null;
-          selectedStartIndex = null;
-          selectedEndIndex = null;
-        }
         showPermalinkMenu = false;
       }
     };
@@ -271,6 +274,7 @@
     const container = diffContainer;
     if (!container || typeof window === "undefined") return;
     const handleSelectionChange = () => {
+      if (isPointerSelecting) return;
       if (isTouchSelecting) return;
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
@@ -295,19 +299,91 @@
         e.preventDefault();
         return;
       }
-      const selection = setSelectionFromDom();
+      const selection = setSelectionFromDom() ?? getSelectionRange();
       if (!selection) return;
       e.preventDefault();
       openPermalinkMenuAt(e.clientX, e.clientY);
     };
 
+    let pointerDragged = false;
+
     const handlePointerDown = (e: PointerEvent) => {
       lastInputWasTouch = e.pointerType === "touch";
+      if (e.pointerType === "touch") return;
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      if (!container.contains(target) || shouldIgnoreSelectionTarget(target)) return;
+      const hit = getLineFromPoint(e.clientX, e.clientY);
+      if (!hit) return;
+      showPermalinkMenu = false;
+      clearDomSelection();
+      pointerId = e.pointerId;
+      pointerStartFilePath = hit.filePath;
+      pointerStartIndex = hit.index;
+      isPointerSelecting = true;
+      pointerDragged = false;
+      setDiffSelection(hit.filePath, hit.index, hit.index);
+      container.setPointerCapture?.(e.pointerId);
+      e.preventDefault();
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
+      if (!isPointerSelecting || pointerId !== e.pointerId) return;
+      if (!pointerStartFilePath || pointerStartIndex === null) return;
+
+      const hit = getLineFromPoint(e.clientX, e.clientY);
+      if (hit && hit.filePath === pointerStartFilePath) {
+        if (hit.index !== pointerStartIndex) pointerDragged = true;
+        setDiffSelection(pointerStartFilePath, pointerStartIndex, hit.index);
+      }
+
+      updateAutoScroll(e.clientX, e.clientY);
+      e.preventDefault();
+    };
+
+    const finishPointerSelection = (clientX: number, clientY: number) => {
+      if (!isPointerSelecting) return;
+      isPointerSelecting = false;
+      stopAutoScroll();
+      if (pointerId !== null) {
+        container.releasePointerCapture?.(pointerId);
+      }
+
+      const dragged = pointerDragged;
+      pointerDragged = false;
+      pointerId = null;
+      pointerStartFilePath = null;
+      pointerStartIndex = null;
+
+      if (!dragged) return;
+      ignoreMenuCloseUntil = Date.now() + 300;
+      if (!openPermalinkMenuFromSelection()) {
+        openPermalinkMenuAt(clientX, clientY);
+      }
+    };
+
+    const handlePointerUp = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
+      if (e.button !== 0) return;
+      finishPointerSelection(e.clientX, e.clientY);
+    };
+
+    const handlePointerCancel = () => {
+      isPointerSelecting = false;
+      if (pointerId !== null) {
+        container.releasePointerCapture?.(pointerId);
+      }
+      pointerId = null;
+      pointerStartFilePath = null;
+      pointerStartIndex = null;
+      pointerDragged = false;
+      stopAutoScroll();
     };
 
     const handleTouchStart = (e: TouchEvent) => {
       const target = e.target as HTMLElement;
-      if (!container.contains(target)) return;
+      if (!container.contains(target) || shouldIgnoreSelectionTarget(target)) return;
       if (touchIdentifier !== null) return;
       const touch = e.changedTouches[0];
       if (!touch) return;
@@ -325,6 +401,8 @@
         touchLongPress = true;
         const hit = getLineFromPoint(touchStartX, touchStartY);
         if (!hit) return;
+        showPermalinkMenu = false;
+        clearDomSelection();
         isTouchSelecting = true;
         touchStartFilePath = hit.filePath;
         touchStartIndex = hit.index;
@@ -367,12 +445,8 @@
       stopAutoScroll();
       if (!isTouchSelecting) return;
 
-      const selection = getSelectionRange();
-      const rect = getSelectionAnchorRect(selection) ?? getSelectionRect();
-      ignoreMenuCloseUntil = Date.now() + 500;
-      if (rect) {
-        openPermalinkMenuAt(rect.left + MENU_PADDING, rect.bottom + 4);
-      } else {
+      ignoreMenuCloseUntil = Date.now() + 300;
+      if (!openPermalinkMenuFromSelection()) {
         openPermalinkMenuAt(touch.clientX, touch.clientY);
       }
 
@@ -395,6 +469,9 @@
 
     container.addEventListener("contextmenu", handleContextMenu, { capture: true } as any);
     container.addEventListener("pointerdown", handlePointerDown, { capture: true } as any);
+    container.addEventListener("pointermove", handlePointerMove, { capture: true } as any);
+    container.addEventListener("pointerup", handlePointerUp, { capture: true } as any);
+    container.addEventListener("pointercancel", handlePointerCancel, { capture: true } as any);
     container.addEventListener("touchstart", handleTouchStart, {
       capture: true,
       passive: true,
@@ -408,6 +485,11 @@
     return () => {
       container.removeEventListener("contextmenu", handleContextMenu, { capture: true } as any);
       container.removeEventListener("pointerdown", handlePointerDown, { capture: true } as any);
+      container.removeEventListener("pointermove", handlePointerMove, { capture: true } as any);
+      container.removeEventListener("pointerup", handlePointerUp, { capture: true } as any);
+      container.removeEventListener("pointercancel", handlePointerCancel, {
+        capture: true,
+      } as any);
       container.removeEventListener("touchstart", handleTouchStart, { capture: true } as any);
       container.removeEventListener("touchmove", handleTouchMove, { capture: true } as any);
       container.removeEventListener("touchend", handleTouchEnd, { capture: true } as any);
@@ -484,6 +566,16 @@
     }
   };
 
+  const getLineNumberCellClass = (
+    type: "+" | "-" | " ",
+    filePath: string,
+    lineIndex: number,
+    lineNumber: number | null
+  ) =>
+    `w-10 px-1 py-1 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs border-r border-border ${getLineNumClass(
+      type
+    )} ${getSelectedGutterClass(filePath, lineIndex, lineNumber)}`.trim();
+
   const getFileLanguage = (path: string): string => getHighlightLanguageForPath(path);
 
   const highlightCode = (content: string, language: string): string =>
@@ -526,6 +618,21 @@
     selectedStartIndex = selection.start;
     selectedEndIndex = selection.end;
     return selection;
+  }
+
+  function clearDomSelection() {
+    if (typeof window === "undefined") return;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0) {
+      selection.removeAllRanges();
+    }
+  }
+
+  function shouldIgnoreSelectionTarget(target: HTMLElement | null) {
+    if (!target) return true;
+    return !!target.closest(
+      ".permalink-menu-popup, button, a, input, textarea, select, option, summary, [role='button'], [contenteditable='true']"
+    );
   }
 
   function clearTouchTimer() {
@@ -593,6 +700,12 @@
         return;
       }
       autoScrollForSelection(autoScrollClientY);
+      if (isPointerSelecting && pointerStartFilePath && pointerStartIndex !== null) {
+        const hit = getLineFromPoint(autoScrollClientX, autoScrollClientY);
+        if (hit && hit.filePath === pointerStartFilePath) {
+          setDiffSelection(pointerStartFilePath, pointerStartIndex, hit.index);
+        }
+      }
       if (isTouchSelecting && touchStartFilePath && touchStartIndex !== null) {
         const hit = getLineFromPoint(autoScrollClientX, autoScrollClientY);
         if (hit && hit.filePath === touchStartFilePath) {
@@ -676,6 +789,13 @@
     showPermalinkMenu = true;
   }
 
+  function openPermalinkMenuFromSelection(selection: DiffSelection | null = getSelectionRange()) {
+    const rect = getSelectionAnchorRect(selection) ?? getSelectionRect();
+    if (!rect) return false;
+    openPermalinkMenuAt(rect.left + MENU_PADDING, rect.bottom + 4);
+    return true;
+  }
+
   function getSelectionRange(): DiffSelection | null {
     if (!selectedFilePath || selectedStartIndex === null) return null;
     const endValue = selectedEndIndex ?? selectedStartIndex;
@@ -689,6 +809,18 @@
     if (!selection) return false;
     if (selection.filePath !== filePath) return false;
     return lineIndex >= selection.start && lineIndex <= selection.end;
+  }
+
+  function getSelectedGutterClass(filePath: string, lineIndex: number, lineNumber: number | null) {
+    const selection = getSelectionRange();
+    if (!selection || lineNumber === null || !isLineWithinSelection(filePath, lineIndex)) {
+      return "";
+    }
+
+    const classes = ["diff-selected-gutter"];
+    if (lineIndex === selection.start) classes.push("diff-selected-gutter-start");
+    if (lineIndex === selection.end) classes.push("diff-selected-gutter-end");
+    return classes.join(" ");
   }
 
   function getSelectionContent(selection: DiffSelection): string {
@@ -773,9 +905,6 @@
     event?.stopPropagation();
     showPermalinkMenu = false;
     const evt = buildPermalinkEvent();
-    selectedFilePath = null;
-    selectedStartIndex = null;
-    selectedEndIndex = null;
     if (!evt) {
       const missing = !repo ? "repo context" : "selected diff lines";
       toast.push({
@@ -815,9 +944,6 @@
     event?.stopPropagation();
     showPermalinkMenu = false;
     const selection = getSelectionRange();
-    selectedFilePath = null;
-    selectedStartIndex = null;
-    selectedEndIndex = null;
     if (!selection) {
       toast.push({
         title: "Select diff lines",
@@ -846,11 +972,17 @@
 {:else}
   <div
     class="split-diff-view min-w-fit rounded-md border border-border relative"
+    class:select-none={isPointerSelecting || isTouchSelecting}
     bind:this={diffContainer}
     id={diffAnchor ? `diff-${diffAnchor}` : undefined}
   >
     {#each hunks as hunk, hunkIndex}
       {@const lines = calculateLineNumbers(hunk)}
+      {@const language = getFileLanguage(filepath || "")}
+      {@const highlightedLines = highlightCodeLines(
+        lines.map((line) => line.content),
+        language
+      )}
 
       <!-- Hunk Header -->
       <div
@@ -876,12 +1008,10 @@
       <!-- Diff Lines -->
       <div class="divide-y divide-border">
         {#each lines as line, lineIndex}
-          {@const language = getFileLanguage(filepath || "")}
           {@const hunkOffset = hunkOffsets[hunkIndex] ?? 0}
           {@const globalIndex = hunkOffset + lineIndex}
-          {@const isSelected = isLineWithinSelection(filepath || "unknown", globalIndex)}
           <div
-            class={`flex ${getLineClass(line.type)} ${isSelected ? "diff-line-selected" : ""}`}
+            class={`flex ${getLineClass(line.type)}`}
             data-diff-index={globalIndex}
             data-file-path={filepath || "unknown"}
             data-line-left={line.oldLineNum ?? ""}
@@ -891,9 +1021,12 @@
             <div class="flex shrink-0">
               <!-- Old Line Number -->
               <div
-                class="w-10 px-1 py-1 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs {getLineNumClass(
-                  line.type
-                )} border-r border-border"
+                class={getLineNumberCellClass(
+                  line.type,
+                  filepath || "unknown",
+                  globalIndex,
+                  line.oldLineNum
+                )}
               >
                 <span
                   class="block cursor-pointer"
@@ -907,9 +1040,12 @@
               </div>
               <!-- New Line Number -->
               <div
-                class="w-10 px-1 py-1 text-right text-[10px] font-mono sm:w-12 sm:px-2 sm:text-xs {getLineNumClass(
-                  line.type
-                )} border-r border-border"
+                class={getLineNumberCellClass(
+                  line.type,
+                  filepath || "unknown",
+                  globalIndex,
+                  line.newLineNum
+                )}
               >
                 <span
                   class="block cursor-pointer"
@@ -941,7 +1077,8 @@
             <!-- Line Content -->
             <div class="flex-1 px-1 py-1 font-mono text-sm whitespace-nowrap sm:px-2">
               <pre class="whitespace-pre m-0 inline"><span class="hljs"
-                  >{@html highlightCode(line.content, language)}</span
+                  >{@html highlightedLines[lineIndex] ??
+                    highlightCode(line.content, language)}</span
                 ></pre>
             </div>
           </div>
@@ -1001,81 +1138,36 @@
     background-color: hsl(var(--muted-foreground) / 0.55);
   }
 
-  /* oneDark-matched syntax highlighting */
-  :global(.hljs) {
-    background: transparent !important;
-    color: #abb2bf !important;
+  :global(.diff-selected-gutter) {
+    background: linear-gradient(
+      90deg,
+      rgb(245 158 11 / 0.52) 0%,
+      rgb(251 191 36 / 0.3) 100%
+    ) !important;
+    color: rgb(255 251 235) !important;
+    font-weight: 700;
+    text-shadow: 0 0 10px rgb(251 191 36 / 0.28);
+    box-shadow:
+      inset -3px 0 0 rgb(251 191 36 / 0.98),
+      inset 0 1px 0 rgb(253 224 71 / 0.55),
+      inset 0 -1px 0 rgb(245 158 11 / 0.45),
+      inset 0 0 0 1px rgb(245 158 11 / 0.55);
   }
 
-  :global(.hljs-keyword),
-  :global(.hljs-selector-tag),
-  :global(.hljs-literal),
-  :global(.hljs-selector-attr) {
-    color: #c678dd;
+  :global(.diff-selected-gutter-start) {
+    box-shadow:
+      inset -3px 0 0 rgb(251 191 36 / 1),
+      inset 0 1px 0 rgb(254 240 138 / 0.95),
+      inset 0 -1px 0 rgb(245 158 11 / 0.45),
+      inset 0 0 0 1px rgb(245 158 11 / 0.6);
   }
 
-  :global(.hljs-title),
-  :global(.hljs-title.function_),
-  :global(.hljs-selector-id) {
-    color: #61afef;
-  }
-
-  :global(.hljs-title.class_),
-  :global(.hljs-type),
-  :global(.hljs-built_in),
-  :global(.hljs-selector-class) {
-    color: #e5c07b;
-  }
-
-  :global(.hljs-string),
-  :global(.hljs-template-tag) {
-    color: #98c379;
-  }
-
-  :global(.hljs-number),
-  :global(.hljs-symbol),
-  :global(.hljs-bullet),
-  :global(.hljs-attr),
-  :global(.hljs-attribute),
-  :global(.hljs-meta) {
-    color: #d19a66;
-  }
-
-  :global(.hljs-variable),
-  :global(.hljs-template-variable),
-  :global(.hljs-name),
-  :global(.hljs-tag),
-  :global(.hljs-property) {
-    color: #e06c75;
-  }
-
-  :global(.hljs-regexp),
-  :global(.hljs-selector-pseudo),
-  :global(.hljs-link) {
-    color: #56b6c2;
-  }
-
-  :global(.hljs-comment),
-  :global(.hljs-quote) {
-    color: #7d8799;
-    font-style: italic;
-  }
-
-  :global(.hljs-section) {
-    color: #61afef;
-  }
-
-  :global(.hljs-meta .hljs-keyword) {
-    color: #c678dd;
-  }
-
-  :global(.hljs-meta .hljs-string) {
-    color: #98c379;
-  }
-
-  :global(.diff-line-selected) {
-    outline: 1px solid hsl(var(--ring));
-    outline-offset: -1px;
+  :global(.diff-selected-gutter-end) {
+    box-shadow:
+      inset -3px 0 0 rgb(251 191 36 / 1),
+      inset 0 1px 0 rgb(245 158 11 / 0.45),
+      inset 0 -1px 0 rgb(254 240 138 / 0.95),
+      inset 0 0 0 1px rgb(245 158 11 / 0.6);
   }
 
   @media (pointer: coarse) {

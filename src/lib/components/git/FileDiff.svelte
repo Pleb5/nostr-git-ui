@@ -9,7 +9,11 @@
     FileIcon,
   } from "@lucide/svelte";
   import type { FileDiff } from "@nostr-git/core/types";
-  import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
+  import {
+    getHighlightLanguageForPath,
+    highlightCodeLines,
+    highlightCodeSnippet,
+  } from "../../utils/codeHighlight";
 
   interface Props {
     fileDiff: FileDiff;
@@ -232,6 +236,10 @@
     <div class="divide-y divide-border">
       {#each fileDiff.diffHunks as hunk, hunkIndex}
         {@const lines = calculateLineNumbers(hunk)}
+        {@const highlightedLines = highlightCodeLines(
+          lines.map((line) => line.content),
+          language
+        )}
 
         <!-- Hunk Header -->
         <div
@@ -293,10 +301,10 @@
 
               <!-- Line Content -->
               <div class="flex-1 px-2 py-1 font-mono text-sm overflow-x-auto">
-                <pre class="whitespace-pre-wrap break-all">{@html highlightCode(
-                    line.content,
-                    language
-                  )}</pre>
+                <pre class="whitespace-pre-wrap break-all"><span class="hljs"
+                    >{@html highlightedLines[lineIndex] ??
+                      highlightCode(line.content, language)}</span
+                  ></pre>
               </div>
 
               <!-- Add Comment Button -->
@@ -356,77 +364,5 @@
 
   .overflow-x-auto::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground) / 0.55);
-  }
-
-  /* oneDark-matched syntax highlighting */
-  :global(.hljs) {
-    background: transparent !important;
-    color: #abb2bf !important;
-  }
-
-  :global(.hljs-keyword),
-  :global(.hljs-selector-tag),
-  :global(.hljs-literal),
-  :global(.hljs-selector-attr) {
-    color: #c678dd;
-  }
-
-  :global(.hljs-title),
-  :global(.hljs-title.function_),
-  :global(.hljs-selector-id) {
-    color: #61afef;
-  }
-
-  :global(.hljs-title.class_),
-  :global(.hljs-type),
-  :global(.hljs-built_in),
-  :global(.hljs-selector-class) {
-    color: #e5c07b;
-  }
-
-  :global(.hljs-string),
-  :global(.hljs-template-tag) {
-    color: #98c379;
-  }
-
-  :global(.hljs-number),
-  :global(.hljs-symbol),
-  :global(.hljs-bullet),
-  :global(.hljs-attr),
-  :global(.hljs-attribute),
-  :global(.hljs-meta) {
-    color: #d19a66;
-  }
-
-  :global(.hljs-variable),
-  :global(.hljs-template-variable),
-  :global(.hljs-name),
-  :global(.hljs-tag),
-  :global(.hljs-property) {
-    color: #e06c75;
-  }
-
-  :global(.hljs-regexp),
-  :global(.hljs-selector-pseudo),
-  :global(.hljs-link) {
-    color: #56b6c2;
-  }
-
-  :global(.hljs-comment),
-  :global(.hljs-quote) {
-    color: #7d8799;
-    font-style: italic;
-  }
-
-  :global(.hljs-section) {
-    color: #61afef;
-  }
-
-  :global(.hljs-meta .hljs-keyword) {
-    color: #c678dd;
-  }
-
-  :global(.hljs-meta .hljs-string) {
-    color: #98c379;
   }
 </style>

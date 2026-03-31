@@ -46,6 +46,7 @@ export {
 export {
   getHighlightJs,
   getHighlightLanguageForPath,
+  highlightCodeLines,
   highlightCodeSnippet,
   loadCodeMirrorLanguageExtensions,
   normalizeHighlightLanguage,

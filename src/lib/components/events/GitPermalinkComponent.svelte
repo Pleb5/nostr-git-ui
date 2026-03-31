@@ -5,7 +5,11 @@
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import { useRegistry } from "../../useRegistry";
   import { toast } from "../../stores/toast";
-  import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
+  import {
+    getHighlightLanguageForPath,
+    highlightCodeLines,
+    highlightCodeSnippet,
+  } from "../../utils/codeHighlight";
 
   const { Card, Button } = useRegistry();
 
@@ -52,12 +56,14 @@
     return deriveRelayFromLocation();
   });
 
+  const relayHints = $derived.by(() => Array.from(new Set([relay, relayValue].filter(Boolean))));
+
   const shareLink = $derived.by(() => {
     if (!event?.id) return "";
     try {
       return nip19.neventEncode({
         id: event.id,
-        relays: relayValue ? [relayValue] : [],
+        relays: relayHints,
         author: event.pubkey,
         kind: event.kind,
       });
@@ -242,6 +248,32 @@
     }));
   });
 
+  const highlightedDiffLines = $derived.by(() => {
+    if (diffLines.length === 0) return [];
+    const highlighted = highlightCodeLines(
+      diffLines.map((line) => line.content),
+      language
+    );
+
+    return diffLines.map((line, index) => ({
+      ...line,
+      html: highlighted[index] ?? highlightCode(line.content, language),
+    }));
+  });
+
+  const highlightedCodeLines = $derived.by(() => {
+    if (codeLines.length === 0) return [];
+    const highlighted = highlightCodeLines(
+      codeLines.map((line) => line.content),
+      language
+    );
+
+    return codeLines.map((line, index) => ({
+      ...line,
+      html: highlighted[index] ?? highlightCode(line.content, language),
+    }));
+  });
+
   const openCurrentTarget = (href: string) => {
     if (typeof window === "undefined") return false;
 
@@ -418,7 +450,7 @@
             </Button>
           </div>
         </div>
-        <div class="flex flex-wrap items-center gap-2 sm:ml-auto">
+        <div class="flex flex-wrap items-center gap-2 sm:ml-auto sm:flex-nowrap">
           {#if hasLink}
             <Button
               variant="outline"
@@ -492,20 +524,22 @@
         <div
           class="mt-3 rounded border border-border/40 bg-muted/30 overflow-hidden permalink-snippet"
         >
-          {#if isDiff && diffLines.length > 0}
+          {#if isDiff && highlightedDiffLines.length > 0}
             <div class="snippet-lines">
-              {#each diffLines as line}<div class="snippet-line {getDiffLineClass(line.type)}">
+              {#each highlightedDiffLines as line}<div
+                  class="snippet-line {getDiffLineClass(line.type)}"
+                >
                   <span class="snippet-num">{line.lineNum ?? ""}</span><span
                     class="snippet-diff-ind">{line.type === " " ? "\u00a0" : line.type}</span
                   >
-                  <pre class="snippet-code">{@html highlightCode(line.content, language)}</pre>
+                  <pre class="snippet-code"><span class="hljs">{@html line.html}</span></pre>
                 </div>{/each}
             </div>
-          {:else if codeLines.length > 0}
+          {:else if highlightedCodeLines.length > 0}
             <div class="snippet-lines">
-              {#each codeLines as line}<div class="snippet-line">
+              {#each highlightedCodeLines as line}<div class="snippet-line">
                   <span class="snippet-num">{line.num}</span>
-                  <pre class="snippet-code">{@html highlightCode(line.content, language)}</pre>
+                  <pre class="snippet-code"><span class="hljs">{@html line.html}</span></pre>
                 </div>{/each}
             </div>
           {/if}
@@ -535,78 +569,6 @@
       background-color: hsl(var(--background));
       color: inherit;
     }
-  }
-
-  /* oneDark-matched syntax highlighting for snippets */
-  :global(.permalink-snippet .hljs) {
-    background: transparent !important;
-    color: #abb2bf !important;
-  }
-
-  :global(.permalink-snippet .hljs-keyword),
-  :global(.permalink-snippet .hljs-selector-tag),
-  :global(.permalink-snippet .hljs-literal),
-  :global(.permalink-snippet .hljs-selector-attr) {
-    color: #c678dd;
-  }
-
-  :global(.permalink-snippet .hljs-title),
-  :global(.permalink-snippet .hljs-title.function_),
-  :global(.permalink-snippet .hljs-selector-id) {
-    color: #61afef;
-  }
-
-  :global(.permalink-snippet .hljs-title.class_),
-  :global(.permalink-snippet .hljs-type),
-  :global(.permalink-snippet .hljs-built_in),
-  :global(.permalink-snippet .hljs-selector-class) {
-    color: #e5c07b;
-  }
-
-  :global(.permalink-snippet .hljs-string),
-  :global(.permalink-snippet .hljs-template-tag) {
-    color: #98c379;
-  }
-
-  :global(.permalink-snippet .hljs-number),
-  :global(.permalink-snippet .hljs-symbol),
-  :global(.permalink-snippet .hljs-bullet),
-  :global(.permalink-snippet .hljs-attr),
-  :global(.permalink-snippet .hljs-attribute),
-  :global(.permalink-snippet .hljs-meta) {
-    color: #d19a66;
-  }
-
-  :global(.permalink-snippet .hljs-variable),
-  :global(.permalink-snippet .hljs-template-variable),
-  :global(.permalink-snippet .hljs-name),
-  :global(.permalink-snippet .hljs-tag),
-  :global(.permalink-snippet .hljs-property) {
-    color: #e06c75;
-  }
-
-  :global(.permalink-snippet .hljs-regexp),
-  :global(.permalink-snippet .hljs-selector-pseudo),
-  :global(.permalink-snippet .hljs-link) {
-    color: #56b6c2;
-  }
-
-  :global(.permalink-snippet .hljs-comment),
-  :global(.permalink-snippet .hljs-quote) {
-    color: #7d8799;
-    font-style: italic;
-  }
-
-  :global(.permalink-snippet .hljs-section) {
-    color: #61afef;
-  }
-
-  :global(.permalink-snippet .hljs-meta .hljs-keyword) {
-    color: #c678dd;
-  }
-
-  :global(.permalink-snippet .hljs-meta .hljs-string) {
-    color: #98c379;
   }
 
   /* Snippet line layout */

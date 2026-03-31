@@ -46,6 +46,90 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  .hljs {
+    background: transparent !important;
+    color: #abb2bf !important;
+  }
+
+  .diff-code-content .hljs,
+  .snippet-code .hljs,
+  .cq-snippet-code .hljs {
+    display: inline;
+    overflow: visible;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 0;
+    background: transparent !important;
+    line-height: inherit;
+    font: inherit;
+  }
+
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-selector-attr {
+    color: #c678dd;
+  }
+
+  .hljs-title,
+  .hljs-title.function_,
+  .hljs-selector-id {
+    color: #61afef;
+  }
+
+  .hljs-title.class_,
+  .hljs-type,
+  .hljs-built_in,
+  .hljs-selector-class {
+    color: #e5c07b;
+  }
+
+  .hljs-string,
+  .hljs-template-tag {
+    color: #98c379;
+  }
+
+  .hljs-number,
+  .hljs-symbol,
+  .hljs-bullet,
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-meta {
+    color: #d19a66;
+  }
+
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-name,
+  .hljs-tag,
+  .hljs-property {
+    color: #e06c75;
+  }
+
+  .hljs-regexp,
+  .hljs-selector-pseudo,
+  .hljs-link {
+    color: #56b6c2;
+  }
+
+  .hljs-comment,
+  .hljs-quote {
+    color: #7d8799;
+    font-style: italic;
+  }
+
+  .hljs-section {
+    color: #61afef;
+  }
+
+  .hljs-meta .hljs-keyword {
+    color: #c678dd;
+  }
+
+  .hljs-meta .hljs-string {
+    color: #98c379;
+  }
 }
 
 /* These classes are necessary to be defined here */

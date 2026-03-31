@@ -44,6 +44,7 @@ import nix from "highlight.js/lib/languages/nix";
 import nginx from "highlight.js/lib/languages/nginx";
 import apache from "highlight.js/lib/languages/apache";
 import puppet from "highlight.js/lib/languages/puppet";
+import svelte from "highlight.svelte";
 
 import { detectFileType, type FileTypeInfo } from "./fileTypeDetection";
 
@@ -63,7 +64,7 @@ const HIGHLIGHT_LANGUAGE_ALIASES: Record<string, string> = {
   yml: "yaml",
   sass: "scss",
   less: "css",
-  svelte: "html",
+  svelte: "svelte",
   kts: "kotlin",
   psm1: "powershell",
   psd1: "powershell",
@@ -109,7 +110,7 @@ export function getHighlightJs() {
   registerLanguage("scss", scss);
   registerLanguage("xml", xml);
   registerLanguage("html", xml);
-  registerLanguage("svelte", xml);
+  registerLanguage("svelte", svelte);
   registerLanguage("json", json);
   registerLanguage("yaml", yaml);
   registerLanguage("yml", yaml);
@@ -172,6 +173,128 @@ export function normalizeHighlightLanguage(language?: string | null) {
   return HIGHLIGHT_LANGUAGE_ALIASES[key] || key;
 }
 
+interface OpenHighlightTag {
+  name: string;
+  open: string;
+  close: string;
+}
+
+const looksLikeSvelteMarkup = (content: string) =>
+  /<\/?[a-z]/i.test(content) || /<svelte:[a-z-]+/i.test(content) || /\{[#:@/]/.test(content);
+
+const getMeaningfulSnippetLines = (content: string) =>
+  content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+const looksLikeStyleSnippet = (content: string) => {
+  const lines = getMeaningfulSnippetLines(content);
+  return lines.some(
+    (line) =>
+      /^(?:@[\w-]+.*|[.#:]?[\w-]+(?:\s*[>~+,]\s*[.#:]?[\w-]+)*)\s*\{$/i.test(line) ||
+      /^(?:color|display|gap|padding|margin|font|background|border|grid|flex|width|height|position|top|right|bottom|left|inset)\s*:/i.test(
+        line
+      )
+  );
+};
+
+const looksLikeTypescriptSnippet = (content: string) => {
+  const lines = getMeaningfulSnippetLines(content);
+  return lines.some(
+    (line) =>
+      /^(?:interface|type|enum)\b/.test(line) ||
+      /:\s*[A-Z_a-z][\w<>{}\[\]|&?, ]*(?=[,)=;])/.test(line) ||
+      /\b(?:readonly|private|public|protected|implements|satisfies|as const)\b/.test(line)
+  );
+};
+
+const looksLikeScriptSnippet = (content: string) => {
+  const lines = getMeaningfulSnippetLines(content);
+  return (
+    lines.some(
+      (line) =>
+        /^(?:import|export|const|let|var|function|async|await|class|interface|type|enum|try|catch|return)\b/.test(
+          line
+        ) || /=>/.test(line)
+    ) || looksLikeTypescriptSnippet(content)
+  );
+};
+
+const resolveSnippetLanguage = (content: string, language: string) => {
+  if (language !== "svelte") return language;
+  if (!content.trim()) return language;
+  if (looksLikeSvelteMarkup(content)) return "svelte";
+  if (looksLikeStyleSnippet(content)) return "css";
+  if (looksLikeScriptSnippet(content)) {
+    return looksLikeTypescriptSnippet(content) ? "typescript" : "javascript";
+  }
+  return "svelte";
+};
+
+const splitHighlightedSnippetLines = (html: string, expectedLines: number) => {
+  const tokens = html.split(/(<[^>]+>)/g).filter(Boolean);
+  const openTags: OpenHighlightTag[] = [];
+  const lines: string[] = [];
+
+  const closeOpenTags = () =>
+    openTags
+      .slice()
+      .reverse()
+      .map((tag) => tag.close)
+      .join("");
+  const reopenTags = () => openTags.map((tag) => tag.open).join("");
+
+  let currentLine = "";
+
+  for (const token of tokens) {
+    if (token.startsWith("<")) {
+      currentLine += token;
+
+      if (/^<\//.test(token)) {
+        const name = token.match(/^<\/([^\s>]+)/)?.[1];
+        if (!name) continue;
+
+        for (let i = openTags.length - 1; i >= 0; i -= 1) {
+          if (openTags[i].name === name) {
+            openTags.splice(i, 1);
+            break;
+          }
+        }
+      } else if (!/\/>$/.test(token) && !/^<!/.test(token)) {
+        const name = token.match(/^<([^\s/>]+)/)?.[1];
+        if (!name) continue;
+
+        openTags.push({
+          name,
+          open: token,
+          close: `</${name}>`,
+        });
+      }
+
+      continue;
+    }
+
+    const segments = token.split("\n");
+    segments.forEach((segment, index) => {
+      currentLine += segment;
+
+      if (index < segments.length - 1) {
+        lines.push(currentLine + closeOpenTags());
+        currentLine = reopenTags();
+      }
+    });
+  }
+
+  lines.push(currentLine + closeOpenTags());
+
+  while (lines.length < expectedLines) {
+    lines.push("");
+  }
+
+  return lines.slice(0, expectedLines);
+};
+
 export function getHighlightLanguageForPath(filepath: string, preferredLanguage?: string | null) {
   const detectedLanguage =
     preferredLanguage || detectFileType(filepath, "").language || "plaintext";
@@ -194,7 +317,7 @@ const getCodeMirrorLanguageKey = (filename: string, info: FileTypeInfo | null) =
     case "tsx":
       return "typescript";
     case "svelte":
-      return "html";
+      return "svelte";
     case "sass":
     case "scss":
     case "less":
@@ -269,6 +392,10 @@ export async function loadCodeMirrorLanguageExtensions(
     case "css": {
       const mod = await import("@codemirror/lang-css");
       return [mod.css()];
+    }
+    case "svelte": {
+      const mod = await import("@replit/codemirror-lang-svelte");
+      return [mod.svelte()];
     }
     case "html": {
       const mod = await import("@codemirror/lang-html");
@@ -430,10 +557,11 @@ export function highlightCodeSnippet(content: string, language?: string | null) 
 
   const highlighter = getHighlightJs();
   const normalizedLanguage = normalizeHighlightLanguage(language);
+  const resolvedLanguage = resolveSnippetLanguage(content, normalizedLanguage);
 
   try {
-    if (highlighter.getLanguage(normalizedLanguage)) {
-      return highlighter.highlight(content, { language: normalizedLanguage, ignoreIllegals: true })
+    if (highlighter.getLanguage(resolvedLanguage)) {
+      return highlighter.highlight(content, { language: resolvedLanguage, ignoreIllegals: true })
         .value;
     }
 
@@ -441,4 +569,11 @@ export function highlightCodeSnippet(content: string, language?: string | null) 
   } catch {
     return escapeHtml(content);
   }
+}
+
+export function highlightCodeLines(lines: string[], language?: string | null) {
+  if (lines.length === 0) return [];
+
+  const highlighted = highlightCodeSnippet(lines.join("\n"), language);
+  return splitHighlightedSnippetLines(highlighted, lines.length);
 }
