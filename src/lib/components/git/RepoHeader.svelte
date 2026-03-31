@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cn } from "../../utils";
   import { filterValidCloneUrls } from "@nostr-git/core/utils";
+  import { classifyCloneUrlIssue, getCloneUrlBannerTitle } from "../../utils/cloneUrlIssues";
   import {
     GitBranch,
     GitFork,
@@ -96,8 +97,12 @@
         text.includes("network") ||
         text.includes("cors") ||
         text.includes("not found") ||
+        text.includes("authentication required") ||
+        text.includes("bad credentials") ||
+        text.includes("no tokens found") ||
         text.includes("forbidden") ||
-        text.includes("unauthorized")
+        text.includes("unauthorized") ||
+        text.includes("rate limit")
       );
     });
   });
@@ -111,6 +116,13 @@
     (primaryCloneErrors.length > 0 ? primaryCloneErrors : cloneUrlErrors).slice(0, 4)
   );
 
+  const cloneUrlBannerTitle = $derived.by(() =>
+    getCloneUrlBannerTitle({
+      hasPrimaryIssue: primaryCloneErrors.length > 0,
+      issueCount: primaryCloneErrors.length > 0 ? primaryCloneErrors.length : cloneUrlErrors.length,
+    })
+  );
+
   const hasCloneUrlErrors = $derived.by(() => cloneUrlErrors.length > 0);
 
   // Dismiss errors
@@ -121,29 +133,19 @@
   // Format error message for display
   function formatError(error: { url: string; error: string; status?: number }): string {
     const urlShort = error.url.replace(/^https?:\/\//, "").replace(/\.git$/, "");
-    if (error.status === 404) {
-      return `Repository not found: ${urlShort}`;
-    } else if (error.status === 401 || error.status === 403) {
-      return `Access denied: ${urlShort}`;
-    } else if (error.status && error.status >= 500) {
-      return `Server error (${error.status}): ${urlShort}`;
-    }
-    return `${urlShort}: ${error.error}`;
+    const issue = classifyCloneUrlIssue(error.error, error.status);
+    return `${issue.summary}: ${urlShort}`;
   }
 </script>
 
 <div class="border-b border-border pb-4">
   {#if hasCloneUrlErrors}
-    <div class="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md">
+    <div class="mb-4 rounded-md border border-amber-500/20 bg-amber-500/10 p-3">
       <div class="flex items-start justify-between gap-2">
         <div class="flex items-start gap-2 min-w-0">
-          <AlertTriangle class="h-5 w-5 text-destructive flex-shrink-0 mt-0.5" />
+          <AlertTriangle class="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-400" />
           <div class="min-w-0">
-            <p class="text-sm font-medium text-destructive">
-              {primaryCloneErrors.length > 0
-                ? "Primary clone URL is failing"
-                : "Clone URL issues detected"}
-            </p>
+            <p class="text-sm font-medium text-amber-300">{cloneUrlBannerTitle}</p>
             <ul class="mt-1 text-sm text-muted-foreground space-y-1">
               {#each displayCloneUrlErrors as error}
                 <li class="truncate" title={error.error}>{formatError(error)}</li>
@@ -155,10 +157,10 @@
           {#if resolveCloneUrlIssues}
             <button
               onclick={resolveCloneUrlIssues}
-              class="text-xs px-2 py-1 rounded border border-destructive/30 text-destructive hover:bg-destructive/10"
-              title="Resolve clone URL issue"
+              class="rounded border border-amber-500/30 px-2 py-1 text-xs text-amber-300 hover:bg-amber-500/10"
+              title="Review remote read issues"
             >
-              Resolve
+              Review
             </button>
           {/if}
           <button

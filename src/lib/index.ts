@@ -27,6 +27,11 @@ export { loadTokensFromStorage, saveTokensToStorage, type TokenEntry } from "./u
 export { tryTokensForHost, getTokensForHost } from "./utils/tokenHelpers";
 export { matchesHost, createHostMatcher } from "./utils/tokenMatcher";
 export { TokenError, AllTokensFailedError, TokenNotFoundError } from "./utils/tokenErrors";
+export {
+  classifyCloneUrlIssue,
+  getCloneUrlBannerTitle,
+  type CloneUrlIssueKind,
+} from "./utils/cloneUrlIssues";
 export { pushRepoAlert } from "./alertsAdapter";
 // Export event kind utilities
 export * from "./utils/eventKinds";

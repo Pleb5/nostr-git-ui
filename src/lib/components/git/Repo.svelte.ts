@@ -1901,6 +1901,10 @@ export class Repo {
     const branchBeforeReset =
       this.selectedBranch || this.mainBranch || this.branchManager?.getMainBranch() || "main";
 
+    // Clone URL issues are session-local read observations. Clear them before a fresh reload
+    // so successful probes can repopulate only current problems.
+    this.clearCloneUrlErrors();
+
     // Reset managers that have reset methods
     this.commitManager?.reset();
     this.branchManager?.reset();
