@@ -225,6 +225,15 @@
     return `${base} ${interactive} ${active}`.trim();
   });
 
+  const fileTypeBadge = $derived.by(() => {
+    const language = fileTypeInfo?.language;
+    if (type === "file" && language && language !== "text") {
+      return language;
+    }
+
+    return fileTypeInfo?.category || "";
+  });
+
   function handleRowActivate() {
     if (isViewer) return;
     if (type === "directory") {
@@ -1476,7 +1485,7 @@
         <span
           class="ml-2 hidden sm:inline-flex px-2 py-0.5 text-xs bg-muted/50 text-muted-foreground rounded"
         >
-          {fileTypeInfo.category}
+          {fileTypeBadge}
         </span>
       {/if}
     </div>

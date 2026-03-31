@@ -359,6 +359,17 @@ export function detectFileType(filename: string, content?: string): FileTypeInfo
     };
   }
 
+  if (LANGUAGE_MAPPINGS[extension]) {
+    return {
+      category: "text",
+      mimeType: "text/plain",
+      language: LANGUAGE_MAPPINGS[extension],
+      icon: "FileCode",
+      canPreview: true,
+      canEdit: true,
+    };
+  }
+
   // Content-based detection for text files
   if (content !== undefined) {
     const contentType = detectContentType(content, extension);
