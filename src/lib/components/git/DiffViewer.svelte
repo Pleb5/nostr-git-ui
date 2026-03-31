@@ -9,10 +9,10 @@
   import { ChevronDown, ChevronUp } from "@lucide/svelte";
   import { createCommentEvent, getTagValue } from "@nostr-git/core/events";
   import type { CommentEvent, CommentTag } from "@nostr-git/core/events";
-  import type { NostrEvent } from "nostr-tools";
   import { toast } from "../../stores/toast.js";
   import { toUserMessage } from "../../utils/gitErrorUi.js";
   import { getHighlightLanguageForPath, highlightCodeSnippet } from "../../utils/codeHighlight";
+  import { canUseInlineComments, type DiffViewerRootEvent } from "./diff-viewer";
   import { GIT_PERMALINK, type PermalinkEvent } from "@nostr-git/core/types";
   import { githubPermalinkDiffId } from "@nostr-git/core/git";
   import type { Repo } from "./Repo.svelte";
@@ -82,7 +82,7 @@
     showLineNumbers?: boolean;
     expandAll?: boolean;
     comments?: Comment[];
-    rootEvent?: NostrEvent | { id: string; pubkey?: string; kind?: number };
+    rootEvent?: DiffViewerRootEvent;
     onComment?: (comment: Omit<CommentEvent, "id" | "pubkey" | "sig">) => void;
     currentPubkey?: string | null;
     repo?: Repo;
@@ -93,6 +93,8 @@
     framed?: boolean;
     showFileAnchors?: boolean;
   } = $props();
+
+  const canComment = $derived(canUseInlineComments({ rootEvent, onComment, currentPubkey }));
 
   let selectedLine = $state<number | null>(null);
   let selectedFileIdx = $state<number | null>(null);
@@ -999,6 +1001,7 @@
   }
 
   function toggleCommentBox(line: number, fileIdx: number, chunkIdx: number) {
+    if (!canComment) return;
     if (selectedLine === line && selectedFileIdx === fileIdx && selectedChunkIdx === chunkIdx) {
       selectedLine = null;
       selectedFileIdx = null;
@@ -1232,18 +1235,20 @@
                               class="hljs">{@html highlightCode(change.content, language)}</span
                             ></pre>
                         </div>
-                        <div class="ml-auto flex shrink-0 items-center px-1 sm:px-1.5">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            class={getCommentButtonClass()}
-                            title="Add inline comment"
-                            aria-label="Add inline comment"
-                            onclick={() => toggleCommentBox(ln, fileIdx, chunkIdx)}
-                          >
-                            <MessageSquare class={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-                          </Button>
-                        </div>
+                        {#if canComment}
+                          <div class="ml-auto flex shrink-0 items-center px-1 sm:px-1.5">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              class={getCommentButtonClass()}
+                              title="Add inline comment"
+                              aria-label="Add inline comment"
+                              onclick={() => toggleCommentBox(ln, fileIdx, chunkIdx)}
+                            >
+                              <MessageSquare class={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
+                            </Button>
+                          </div>
+                        {/if}
                       </div>
 
                       {#if hasComments}
@@ -1284,7 +1289,7 @@
                           {/each}
                         </div>
                       {/if}
-                      {#if selectedLine === ln && selectedFileIdx === fileIdx && selectedChunkIdx === chunkIdx}
+                      {#if canComment && selectedLine === ln && selectedFileIdx === fileIdx && selectedChunkIdx === chunkIdx}
                         <div class={getCommentComposerClass()}>
                           <div class="flex gap-2">
                             <Avatar class="h-8 w-8">
