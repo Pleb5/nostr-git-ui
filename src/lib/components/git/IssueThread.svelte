@@ -34,10 +34,33 @@
   }: Props = $props();
 
   let newComment = $state("");
+  let isSubmitting = $state(false);
+
+  const getCommentRootId = (comment: CommentEvent) => {
+    const rootTag = (comment.tags || []).find(
+      (tag) => tag[0] === "E" || (tag[0] === "e" && tag[3] === "root")
+    );
+
+    return (
+      rootTag?.[1] ||
+      comment.tags.find((tag) => tag[0] === "E")?.[1] ||
+      comment.tags.find((tag) => tag[0] === "e")?.[1] ||
+      ""
+    );
+  };
 
   const commentsParsed = $derived.by(() => {
+    const getCommentTimestamp = (comment: CommentEvent) => {
+      const originalDate = comment.tags.find((tag) => tag[0] === "original_date")?.[1];
+      const originalSeconds = originalDate ? parseInt(originalDate, 10) : NaN;
+
+      return !Number.isNaN(originalSeconds) ? originalSeconds : comment.created_at || 0;
+    };
+
     return comments
-      .filter((c) => c.tags.some((t) => t[0] === "E" && t[1] === issueId))
+      .filter((c) => getCommentRootId(c) === issueId)
+      .slice()
+      .sort((a, b) => getCommentTimestamp(a) - getCommentTimestamp(b))
       .map((c) => parseCommentEvent(c));
   });
 
@@ -98,7 +121,7 @@
   };
 
   $effect(() => {
-    commentsParsed.length;
+    void commentsParsed.length;
     void scrollToCommentHash();
   });
 
@@ -109,9 +132,10 @@
     return () => window.removeEventListener("hashchange", handler);
   });
 
-  function submit(event: Event) {
+  async function submit(event: Event) {
     event.preventDefault();
-    if (!newComment.trim()) return;
+    event.stopPropagation();
+    if (!newComment.trim() || !onCommentCreated || isSubmitting) return;
 
     const extraTags: CommentTag[] = [];
     if (repoAddress) {
@@ -128,9 +152,20 @@
       extraTags,
     });
 
-    newComment = "";
-
-    onCommentCreated?.(commentEvent);
+    try {
+      isSubmitting = true;
+      await onCommentCreated(commentEvent);
+      newComment = "";
+    } catch (error) {
+      console.error("Failed to post comment:", error);
+      toast.push({
+        message: "Failed to post comment",
+        timeout: 3000,
+        theme: "error",
+      });
+    } finally {
+      isSubmitting = false;
+    }
   }
 </script>
 
@@ -223,8 +258,9 @@
             </div>
           </div>
           <div class="flex justify-end">
-            <Button type="submit" class="gap-2" disabled={!newComment.trim()}>
-              <MessageSquare class="h-4 w-4" /> Comment
+            <Button type="submit" class="gap-2" disabled={!newComment.trim() || isSubmitting}>
+              <MessageSquare class="h-4 w-4" />
+              {isSubmitting ? "Commenting..." : "Comment"}
             </Button>
           </div>
         </form>

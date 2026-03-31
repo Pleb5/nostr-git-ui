@@ -154,7 +154,17 @@
   const assigneePreview = $derived.by(() => normalizedAssignees.slice(0, 3));
 
   const commentsOnThisIssue = $derived.by(() => {
-    return comments?.filter((c) => getTagValue(c, "E") === id);
+    const getCommentRootId = (comment: CommentEvent) => {
+      const rootTag = (comment.tags || []).find(
+        (tag) => tag[0] === "E" || (tag[0] === "e" && tag[3] === "root")
+      );
+
+      return (
+        rootTag?.[1] || getTagValue(comment as any, "E") || getTagValue(comment as any, "e") || ""
+      );
+    };
+
+    return comments?.filter((c) => getCommentRootId(c) === id);
   });
 
   let commentCount = $derived(commentsOnThisIssue?.length ?? 0);
