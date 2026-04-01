@@ -107,7 +107,7 @@
   });
 </script>
 
-<Card class="git-card hover:bg-accent/50 transition-colors">
+<Card class="git-card hover:bg-muted/20 transition-colors">
   <div class="flex items-start gap-3">
     <Activity class={`h-6 w-6 mt-1 ${statusTypeInfo.color}`} />
 

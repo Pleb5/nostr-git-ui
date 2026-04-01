@@ -1,12 +1,5 @@
 <script lang="ts">
-  import {
-    Book,
-    Search,
-    ChevronDown,
-    ChevronRight,
-    Link as LinkIcon,
-    List,
-  } from "@lucide/svelte";
+  import { Book, Search, ChevronDown, ChevronRight, Link as LinkIcon, List } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
   import { Collapsible } from "../../components";
   const { Input } = useRegistry();
@@ -81,7 +74,7 @@
           <Collapsible bind:open={page.isOpen} class="mb-1">
             <div class="flex items-center">
               <button
-                class="flex items-center gap-2 w-full p-2 hover:bg-accent/10 rounded-md"
+                class="flex w-full items-center gap-2 rounded-md p-2 hover:bg-muted/50"
                 onclick={() => toggleSection(page.id)}
               >
                 {#if page.isOpen}
@@ -101,7 +94,7 @@
                     class="flex items-center gap-2 p-2 ml-2 rounded-md text-sm cursor-pointer transition-colors
                              {selectedPage === child.title
                       ? 'bg-accent/20 text-accent'
-                      : 'hover:bg-accent/10'}"
+                      : 'hover:bg-muted/50'}"
                     onclick={() => onSelectPage(child.title)}
                   >
                     <Book class="h-4 w-4" />
@@ -117,7 +110,7 @@
             class="flex items-center gap-2 p-2 ml-4 rounded-md text-sm cursor-pointer transition-colors
                      {selectedPage === page.title
               ? 'bg-accent/20 text-accent'
-              : 'hover:bg-accent/10'}"
+              : 'hover:bg-muted/50'}"
             onclick={() => onSelectPage(page.title)}
           >
             <Book class="h-4 w-4" /> <span>{page.title}</span>
@@ -129,12 +122,12 @@
     <!-- footer -->
     <div class="mt-8 space-y-2 pt-4 border-t border-border">
       <button
-        class="flex items-center gap-2 w-full p-2 hover:bg-accent/10 rounded-md text-sm text-muted-foreground"
+        class="flex w-full items-center gap-2 rounded-md p-2 text-sm text-muted-foreground hover:bg-muted/50"
       >
         <LinkIcon class="h-4 w-4" /> <span>External Links</span>
       </button>
       <button
-        class="flex items-center gap-2 w-full p-2 hover:bg-accent/10 rounded-md text-sm text-muted-foreground"
+        class="flex w-full items-center gap-2 rounded-md p-2 text-sm text-muted-foreground hover:bg-muted/50"
       >
         <List class="h-4 w-4" /> <span>All Pages</span>
       </button>

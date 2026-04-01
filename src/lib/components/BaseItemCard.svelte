@@ -64,7 +64,7 @@
   });
 </script>
 
-<Card class={`git-card transition-colors ${clickable ? "hover:bg-accent/50" : ""}`}>
+<Card class={`git-card transition-colors ${clickable ? "hover:bg-muted/20" : ""}`}>
   <div class="flex items-start gap-3">
     <!-- Left column: icon / status indicator -->
     {#if slotIcon}
@@ -85,7 +85,7 @@
               data-sveltekit-preload-data={disablePrefetch ? "off" : undefined}
             >
               <h3
-                class={`text-base font-semibold leading-tight break-words line-clamp-2 ${clickable ? "hover:text-accent transition-colors" : ""}`}
+                class={`text-base font-semibold leading-tight break-words line-clamp-2 ${clickable ? "transition-colors hover:text-foreground" : ""}`}
               >
                 {@render slotTitle?.()}
               </h3>

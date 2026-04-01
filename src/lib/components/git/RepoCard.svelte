@@ -102,7 +102,7 @@
       </div>
       <a href={`/git/repo/${id}`} class="block">
         <h3
-          class="text-base font-semibold mb-0.5 leading-tight hover:text-accent transition-colors"
+          class="text-base font-semibold mb-0.5 leading-tight hover:text-foreground transition-colors"
         >
           {name}
         </h3>
@@ -171,21 +171,21 @@
     </div>
     <div class="flex flex-col items-end gap-1">
       <button
-        class="text-xs text-muted-foreground hover:text-accent underline-offset-2 hover:underline"
+        class="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
         onclick={() => console.log("View on Web button clicked")}>View on Web</button
       >
       <div class="flex gap-4">
         <div class="flex flex-col items-start">
           <span class="text-xs font-medium">Recent Issues</span>
           <button
-            class="text-xs text-muted-foreground hover:text-accent underline-offset-2 hover:underline"
+            class="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
             onclick={() => console.log("View Wiki button clicked")}>View Wiki</button
           >
         </div>
         <div class="flex flex-col items-end">
           <span class="text-xs font-medium">Recent Patches</span>
           <button
-            class="text-xs text-muted-foreground hover:text-green-400 underline-offset-2 hover:underline"
+            class="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
             onclick={() => console.log("Join Live Coding Session button clicked")}
             >Join Live Coding Session</button
           >

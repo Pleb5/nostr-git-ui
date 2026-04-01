@@ -125,7 +125,7 @@
             <button
               type="button"
               onclick={() => copyToClipboard(cloneUrl)}
-              class="text-green-600 hover:text-green-800 text-sm p-1"
+              class="p-1 text-sm text-muted-foreground hover:text-foreground"
               title="Copy clone URL"
             >
               <Copy size={16} />
@@ -142,7 +142,7 @@
             <button
               type="button"
               onclick={() => copyToClipboard(headCommit)}
-              class="text-green-600 hover:text-green-800 text-sm p-1"
+              class="p-1 text-sm text-muted-foreground hover:text-foreground"
               title="Copy full commit hash"
             >
               <Copy size={16} />

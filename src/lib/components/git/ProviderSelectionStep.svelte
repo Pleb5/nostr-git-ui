@@ -291,7 +291,7 @@
                               .replace(/\/$/, ""))) as opt}
                         <button
                           type="button"
-                          class="px-2 py-0.5 text-xs rounded-full border border-dashed border-muted-foreground/50 text-muted-foreground hover:border-accent hover:text-accent"
+                          class="rounded-full border border-dashed border-muted-foreground/50 px-2 py-0.5 text-xs text-muted-foreground hover:border-border hover:text-foreground"
                           onclick={(e) => {
                             e.stopPropagation();
                             const trimmed = (opt || "").trim().replace(/\/$/, "");

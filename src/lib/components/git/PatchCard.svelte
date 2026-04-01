@@ -1,8 +1,6 @@
 <script lang="ts">
   import {
     MessageSquare,
-    BookmarkPlus,
-    BookmarkCheck,
     ChevronDown,
     ChevronUp,
     GitPullRequest,
@@ -227,7 +225,6 @@
   });
 
   let isExpanded = $state(false);
-  let isBookmarked = $state(false);
 
   const noun = $derived(isPullRequest ? "Pull Request" : "Patch");
 
@@ -266,14 +263,6 @@
     }
   }
 
-  function toggleBookmark() {
-    isBookmarked = !isBookmarked;
-    toast.push({
-      title: isBookmarked ? "Added to bookmarks" : "Removed from bookmarks",
-      description: isBookmarked ? "Patch added to your threads" : "Patch removed from your threads",
-    });
-  }
-
   function toggleExpand() {
     isExpanded = !isExpanded;
   }
@@ -286,21 +275,8 @@
       {displayTitle}
     {/snippet}
 
-    <!-- actions (bookmark + chevron) -->
+    <!-- actions (chevron) -->
     {#snippet slotActions()}
-      <Button
-        variant="ghost"
-        size="icon"
-        class={isBookmarked ? "text-primary" : "text-muted-foreground"}
-        onclick={toggleBookmark}
-        aria-label="Toggle bookmark"
-      >
-        {#if isBookmarked}
-          <BookmarkCheck class="h-4 w-4" />
-        {:else}
-          <BookmarkPlus class="h-4 w-4" />
-        {/if}
-      </Button>
       <Button
         variant="ghost"
         size="icon"
@@ -351,7 +327,7 @@
           >
         </div>
       {/if}
-      {#if commitCount > 0}
+      {#if !isPullRequest && commitCount > 0}
         <span class="whitespace-nowrap">• {commitCount + (patches?.length ?? 0)} commits</span>
       {/if}
       {#if comments?.length > 0}

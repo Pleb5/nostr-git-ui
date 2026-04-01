@@ -197,7 +197,7 @@
 
 @layer components {
   .git-menu-item {
-    @apply flex items-center gap-2 py-3 px-4 rounded-md text-muted-foreground hover:bg-accent/10 hover:text-foreground transition-colors font-medium;
+    @apply flex items-center gap-2 rounded-md px-4 py-3 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground;
   }
 
   .git-menu-item.active {
@@ -209,7 +209,7 @@
   }
 
   .git-card {
-    @apply bg-card border border-border rounded-md p-5 hover:border-accent/50 transition-colors;
+    @apply rounded-md border border-border bg-card p-5 transition-colors hover:bg-muted/20 hover:border-border/80;
   }
 
   .git-tag {
@@ -229,7 +229,7 @@
   }
 
   .git-btn-outline {
-    @apply border border-border hover:border-accent/50 bg-transparent;
+    @apply border border-border bg-transparent transition-colors hover:bg-muted/40 hover:border-border/80;
   }
 
   .git-diff-view {

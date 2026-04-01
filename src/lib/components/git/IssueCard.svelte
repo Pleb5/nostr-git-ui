@@ -1,15 +1,6 @@
 <script lang="ts">
   import TimeAgo from "../../TimeAgo.svelte";
-  import {
-    CircleDot,
-    ChevronDown,
-    ChevronUp,
-    BookmarkPlus,
-    BookmarkCheck,
-    CircleCheck,
-    FileCode,
-  } from "@lucide/svelte";
-  import { toast } from "../../stores/toast";
+  import { CircleDot, ChevronDown, ChevronUp, CircleCheck, FileCode } from "@lucide/svelte";
   import type { CommentEvent, IssueEvent, StatusEvent } from "@nostr-git/core/events";
   import {
     getTagValue,
@@ -25,7 +16,7 @@
   import NostrAvatar from "./NostrAvatar.svelte";
   import { fly } from "svelte/transition";
   import RichText from "../RichText.svelte";
-  const { Button, ProfileLink, Card, EventActions } = useRegistry();
+  const { ProfileLink, Card, EventActions } = useRegistry();
   import BaseItemCard from "../BaseItemCard.svelte";
 
   interface Props {
@@ -170,15 +161,6 @@
   let commentCount = $derived(commentsOnThisIssue?.length ?? 0);
 
   let isExpanded = $state(false);
-  let isBookmarked = $state(false);
-
-  function toggleBookmark() {
-    isBookmarked = !isBookmarked;
-    toast.push({
-      title: isBookmarked ? "Added to bookmarks" : "Removed from bookmarks",
-      description: isBookmarked ? "Issue added to your threads" : "Issue removed from your threads",
-    });
-  }
 
   const statusIcon = $derived(getStatusIcon(status?.kind));
 
@@ -207,23 +189,6 @@
     <!-- title -->
     {#snippet slotTitle()}
       {title || "No title"}
-    {/snippet}
-
-    <!-- actions (bookmark) -->
-    {#snippet slotActions()}
-      <Button
-        variant="ghost"
-        size="icon"
-        class={isBookmarked ? "text-primary" : "text-muted-foreground"}
-        onclick={toggleBookmark}
-        aria-label="Toggle bookmark"
-      >
-        {#if isBookmarked}
-          <BookmarkCheck class="h-4 w-4" />
-        {:else}
-          <BookmarkPlus class="h-4 w-4" />
-        {/if}
-      </Button>
     {/snippet}
 
     <!-- meta row -->

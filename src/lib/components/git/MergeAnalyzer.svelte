@@ -61,7 +61,7 @@
           Compatibility Analysis
         </CardTitle>
         <button
-          class="inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded border hover:bg-accent transition-colors disabled:opacity-50"
+          class="inline-flex items-center gap-2 rounded border px-3 py-1.5 text-sm transition-colors hover:bg-muted disabled:opacity-50"
           disabled={!!analyzing}
           onclick={handleAnalyze}
           aria-label="Analyze patch"

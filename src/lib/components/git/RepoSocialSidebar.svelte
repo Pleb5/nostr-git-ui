@@ -56,13 +56,13 @@
 
         <div class="space-y-2 text-sm">
           <div>
-            <p class="font-medium hover:text-primary cursor-pointer">
+            <p class="cursor-pointer font-medium hover:text-foreground">
               Authentication flow improvements
             </p>
             <p class="text-xs text-muted-foreground">12 participants • Updated 2 h ago</p>
           </div>
           <div>
-            <p class="font-medium hover:text-primary cursor-pointer">
+            <p class="cursor-pointer font-medium hover:text-foreground">
               New feature proposal: Dark mode
             </p>
             <p class="text-xs text-muted-foreground">8 participants • Updated 5 h ago</p>

@@ -1,9 +1,16 @@
 <script lang="ts">
   import { useRegistry } from "../../useRegistry";
-  import { MessageSquare, Heart, Bookmark, Share2, MoreHorizontal, Link as LinkIcon } from "@lucide/svelte";
+  import {
+    MessageSquare,
+    Heart,
+    Bookmark,
+    Share2,
+    MoreHorizontal,
+    Link as LinkIcon,
+  } from "@lucide/svelte";
   import TimeAgo from "../../TimeAgo.svelte";
   import type { Profile } from "@nostr-git/core/events";
-  
+
   interface Props {
     author: Profile;
     createdAt: string;
@@ -34,12 +41,11 @@
 
   let isHovered = $state(false);
   let showActions = $derived(isHovered && showQuickActions);
-  
+
   const authorName = $derived(
-    author?.name || author?.display_name || author?.nip05?.split('@')[0] || 'Anonymous'
+    author?.name || author?.display_name || author?.nip05?.split("@")[0] || "Anonymous"
   );
-  
-  
+
   const handleCopyLink = () => {
     if (eventId) {
       // Copy event link to clipboard
@@ -53,8 +59,8 @@
   class={`group relative px-4 py-2.5 hover:bg-gray-800/20 transition-colors duration-150 ${
     isHighlighted ? "bg-blue-500/5 border-l-2 border-blue-500" : ""
   }`}
-  onmouseenter={() => isHovered = true}
-  onmouseleave={() => isHovered = false}
+  onmouseenter={() => (isHovered = true)}
+  onmouseleave={() => (isHovered = false)}
   role="article"
 >
   <div class="flex gap-3">
@@ -90,7 +96,7 @@
             <Heart class="w-4 h-4 text-gray-400 hover:text-pink-400" />
           </button>
         {/if}
-        
+
         {#if onReply}
           <button
             onclick={onReply}
@@ -101,7 +107,7 @@
             <MessageSquare class="w-4 h-4 text-gray-400 hover:text-blue-400" />
           </button>
         {/if}
-        
+
         {#if onBookmark}
           <button
             onclick={onBookmark}
@@ -112,7 +118,7 @@
             <Bookmark class="w-4 h-4 text-gray-400 hover:text-yellow-400" />
           </button>
         {/if}
-        
+
         {#if eventId}
           <button
             onclick={handleCopyLink}
@@ -120,10 +126,10 @@
             title="Copy link"
             aria-label="Copy link"
           >
-            <LinkIcon class="w-4 h-4 text-gray-400 hover:text-green-400" />
+            <LinkIcon class="w-4 h-4 text-gray-400 hover:text-foreground" />
           </button>
         {/if}
-        
+
         <button
           class="p-1.5 hover:bg-gray-800 rounded transition-colors"
           title="More options"

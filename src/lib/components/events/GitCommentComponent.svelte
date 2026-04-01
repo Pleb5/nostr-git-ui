@@ -87,7 +87,7 @@
 </script>
 
 <Card
-  class="git-card hover:bg-accent/50 transition-colors"
+  class="git-card hover:bg-muted/20 transition-colors"
   style="margin-left: {threadDepth * 12}px;"
 >
   <div class="flex items-start gap-3">

@@ -82,7 +82,7 @@
   });
 </script>
 
-<Card class="git-card hover:bg-accent/50 transition-colors">
+<Card class="git-card hover:bg-muted/20 transition-colors">
   <div class="flex items-start gap-3">
     <FolderGit2 class="h-6 w-6 mt-1 text-blue-600" />
 
@@ -91,7 +91,7 @@
         <div class="flex-1">
           <a href={webUrl || `#repo/${repoId}`} class="block">
             <h3
-              class="text-base font-semibold mb-0.5 leading-tight hover:text-accent transition-colors"
+              class="text-base font-semibold mb-0.5 leading-tight hover:text-foreground transition-colors"
             >
               {displayName}
             </h3>

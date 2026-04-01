@@ -39,7 +39,7 @@
     <div class="flex-1">
       <Link to={`/git/repo/${repoId}/live/${id}`}>
         <h3
-          class="text-base font-semibold mb-0.5 leading-tight hover:text-accent transition-colors"
+          class="text-base font-semibold mb-0.5 leading-tight hover:text-foreground transition-colors"
         >
           {title}
         </h3>
