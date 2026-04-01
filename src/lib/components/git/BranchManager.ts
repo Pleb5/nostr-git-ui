@@ -4,7 +4,10 @@ import { context } from "$lib/stores/context";
 import { toast } from "$lib/stores/toast";
 import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
 import { GIT_REPO_STATE, parseRepoAnnouncementEvent } from "@nostr-git/core/events";
-import type { VendorReadRouter } from "./VendorReadRouter";
+import type { RefDiscoverySource, VendorReadRouter } from "./VendorReadRouter";
+import { isDisplayableGitRef, isPeeledTagName } from "./branch-ref";
+
+export type { RefDiscoverySource } from "./VendorReadRouter";
 
 // Branch interface definition (since it's not exported from shared-types)
 export interface Branch {
@@ -83,6 +86,7 @@ export class BranchManager {
   private loadingRefs: boolean = false;
   private vendorReadRouter?: VendorReadRouter;
   private repoEventSnapshot?: RepoAnnouncementEvent;
+  private refDiscoverySource?: RefDiscoverySource;
 
   private getCloneUrlsFromRepoEvent(repoEvent: RepoAnnouncementEvent): string[] {
     try {
@@ -162,6 +166,7 @@ export class BranchManager {
     if (!refMatch) return null;
 
     const [, type, shortName] = refMatch;
+    if (type === "tags" && isPeeledTagName(shortName)) return null;
 
     // Extract parent commits if provided (for tracking commits ahead)
     const parentCommits = refTag.length > 2 ? refTag.slice(2) : undefined;
@@ -304,6 +309,92 @@ export class BranchManager {
     return p;
   }
 
+  private sortRefs(
+    refs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }>
+  ): Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> {
+    return refs
+      .filter((ref) => isDisplayableGitRef(ref))
+      .sort((a, b) =>
+        a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
+      );
+  }
+
+  private reconcileRefsWithDiscovered(
+    loadedRefs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }>,
+    discoveredRefs: Array<{
+      name: string;
+      type: "heads" | "tags";
+      fullRef: string;
+      commitId: string;
+    }>
+  ): Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> {
+    const loadedByTypeAndName = new Map(loadedRefs.map((ref) => [`${ref.type}:${ref.name}`, ref]));
+    const discoveredHeads = discoveredRefs.filter((ref) => ref.type === "heads");
+    const discoveredTags = discoveredRefs.filter((ref) => ref.type === "tags");
+
+    if (discoveredHeads.length === 0 && discoveredTags.length === 0) {
+      return this.sortRefs([...loadedRefs]);
+    }
+
+    const nextRefs = new Map<
+      string,
+      { name: string; type: "heads" | "tags"; fullRef: string; commitId: string }
+    >();
+
+    if (discoveredHeads.length > 0) {
+      for (const ref of discoveredHeads) {
+        const cached = loadedByTypeAndName.get(`heads:${ref.name}`);
+        nextRefs.set(`heads:${ref.name}`, {
+          ...ref,
+          commitId: ref.commitId || cached?.commitId || "",
+        });
+      }
+    } else {
+      for (const ref of loadedRefs.filter((ref) => ref.type === "heads")) {
+        nextRefs.set(`heads:${ref.name}`, ref);
+      }
+    }
+
+    for (const ref of [...loadedRefs.filter((ref) => ref.type === "tags"), ...discoveredTags]) {
+      nextRefs.set(`tags:${ref.name}`, ref);
+    }
+
+    return this.sortRefs(Array.from(nextRefs.values()));
+  }
+
+  private syncBranchSelectionFromRefs(): void {
+    const headNames = this.refs.filter((ref) => ref.type === "heads").map((ref) => ref.name);
+    const refNames = new Set(this.refs.map((ref) => ref.name));
+
+    if (headNames.length > 0) {
+      if (!this.mainBranch || !headNames.includes(this.mainBranch)) {
+        const commonDefaults = ["main", "master", "develop", "dev"];
+        this.mainBranch = commonDefaults.find((name) => headNames.includes(name)) || headNames[0];
+      }
+    } else if (this.mainBranch && !refNames.has(this.mainBranch)) {
+      this.mainBranch = undefined;
+    }
+
+    if (this.selectedBranch && !refNames.has(this.selectedBranch)) {
+      this.selectedBranch = this.mainBranch || headNames[0] || this.refs[0]?.name;
+    } else if (!this.selectedBranch) {
+      this.selectedBranch = this.mainBranch || headNames[0] || this.refs[0]?.name;
+    }
+  }
+
+  private pruneNip34HeadReferences(actualHeadNames: Set<string>): void {
+    if (actualHeadNames.size === 0) return;
+
+    const nextRefs = new Map<string, NIP34Reference>();
+    for (const [shortName, ref] of this.nip34References.entries()) {
+      if (ref.type === "tags" || actualHeadNames.has(shortName)) {
+        nextRefs.set(shortName, ref);
+      }
+    }
+
+    this.nip34References = nextRefs;
+  }
+
   /**
    * Process repository state event but only keep branches that actually exist in the repo.
    * Tags are kept as-is; HEAD is only set if the branch exists.
@@ -378,6 +469,10 @@ export class BranchManager {
    */
   getAllRefs(): Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }> {
     return this.refs;
+  }
+
+  getRefDiscoverySource(): RefDiscoverySource | undefined {
+    return this.refDiscoverySource;
   }
 
   /**
@@ -484,18 +579,17 @@ export class BranchManager {
 
       // Use the Repo's getAllRefsWithFallback which has proper fallback logic
       let loadedRefs = await getAllRefsWithFallback();
+      let refSource: RefDiscoverySource | undefined = loadedRefs.length
+        ? {
+            kind: "repo-state",
+            label: "Repo state snapshot",
+            details:
+              "Using signed repo-state refs until remote discovery confirms the live ref set.",
+          }
+        : undefined;
 
-      // If Repo fallback yields no refs, or only a suspiciously small branch set,
-      // attempt vendor-first refs as a best-effort augmentation.
-      // This preserves NIP-34 trust logic for existing refs while recovering when
-      // a stale/partial state event only advertises one branch.
       const loadedHeadCount = (loadedRefs || []).filter((ref) => ref.type === "heads").length;
-      const shouldAugmentFromVendor = loadedHeadCount <= 1;
-      if (
-        (!loadedRefs || loadedRefs.length === 0 || shouldAugmentFromVendor) &&
-        this.vendorReadRouter &&
-        this.repoEventSnapshot
-      ) {
+      if (this.vendorReadRouter && this.repoEventSnapshot) {
         try {
           const cloneUrls = this.getCloneUrlsFromRepoEvent(this.repoEventSnapshot);
           const vendorRes = await this.vendorReadRouter.listRefs({
@@ -504,46 +598,31 @@ export class BranchManager {
             cloneUrls,
           });
 
-          const vendorRefs = (vendorRes.refs || []).map((r) => ({
+          const discoveredRefs = (vendorRes.refs || []).map((r) => ({
             name: r.name,
             type: r.type,
             fullRef: r.fullRef,
             commitId: r.commitId,
           }));
 
-          if (vendorRefs.length > 0) {
-            const shouldReplace = !loadedRefs || loadedRefs.length === 0;
-            if (shouldReplace) {
-              loadedRefs = vendorRefs.sort((a, b) =>
-                a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
-              );
-            } else {
-              const mergedRefs = new Map(
-                (loadedRefs || []).map((ref) => [ref.fullRef || `${ref.type}:${ref.name}`, ref])
-              );
-              for (const ref of vendorRefs) {
-                const key = ref.fullRef || `${ref.type}:${ref.name}`;
-                if (!mergedRefs.has(key)) {
-                  mergedRefs.set(key, ref);
-                }
-              }
-
-              const augmentedRefs = Array.from(mergedRefs.values()).sort((a, b) =>
-                a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
-              );
-              const augmentedHeadCount = augmentedRefs.filter((ref) => ref.type === "heads").length;
-
-              if (augmentedHeadCount > loadedHeadCount) {
-                loadedRefs = augmentedRefs;
-              }
-            }
+          if (discoveredRefs.length > 0) {
+            loadedRefs = this.reconcileRefsWithDiscovered(loadedRefs || [], discoveredRefs);
+            this.pruneNip34HeadReferences(
+              new Set(loadedRefs.filter((ref) => ref.type === "heads").map((ref) => ref.name))
+            );
+            refSource = vendorRes.source || refSource;
+          } else if (!loadedRefs || loadedRefs.length === 0 || loadedHeadCount <= 1) {
+            loadedRefs = this.sortRefs(loadedRefs || []);
+            refSource = loadedRefs.length > 0 ? refSource : vendorRes.source;
           }
         } catch (e) {
-          console.warn("VendorReadRouter.listRefs failed; continuing with empty refs:", e);
+          console.warn("VendorReadRouter.listRefs failed; continuing with optimistic refs:", e);
         }
       }
 
-      this.refs = loadedRefs || [];
+      this.refs = this.sortRefs(loadedRefs || []);
+      this.refDiscoverySource = refSource;
+      this.syncBranchSelectionFromRefs();
 
       // Convert refs to ProcessedBranch format for backward compatibility
       this.branches = this.refs
@@ -744,6 +823,8 @@ export class BranchManager {
     this.selectedBranch = undefined;
     this.mainBranch = undefined;
     this.nip34References.clear();
+    this.refs = [];
+    this.refDiscoverySource = undefined;
 
     // Clear loading states
     if (this.loadingIds.branches) {

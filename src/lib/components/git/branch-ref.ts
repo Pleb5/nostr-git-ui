@@ -22,3 +22,14 @@ export function normalizeGitRefName(input?: string): string {
 
   return raw;
 }
+
+export function isPeeledTagName(name?: string): boolean {
+  return normalizeGitRefName(name).endsWith("^{}");
+}
+
+export function isDisplayableGitRef(ref?: { name?: string; type?: "heads" | "tags" }): boolean {
+  const name = normalizeGitRefName(ref?.name);
+  if (!name) return false;
+  if (ref?.type === "tags" && isPeeledTagName(name)) return false;
+  return true;
+}

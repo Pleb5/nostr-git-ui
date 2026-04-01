@@ -36,7 +36,7 @@ import { WorkerManager, type WorkerProgressEvent, type CloneProgress } from "./W
 import { CacheManager, MergeAnalysisCacheManager, CacheType } from "./CacheManager";
 import { PatchManager } from "./PatchManager";
 import { CommitManager } from "./CommitManager";
-import { BranchManager } from "./BranchManager";
+import { BranchManager, type RefDiscoverySource } from "./BranchManager";
 import { FileManager } from "./FileManager";
 import {
   RepoCore,
@@ -46,7 +46,7 @@ import {
   extractHostname,
 } from "@nostr-git/core/git";
 import { VendorReadRouter } from "./VendorReadRouter";
-import { normalizeGitRefName } from "./branch-ref";
+import { isDisplayableGitRef, normalizeGitRefName } from "./branch-ref";
 import { resolveLoadPageBranch } from "./load-page-branch";
 import { isGraspRepoHttpUrl } from "$lib/utils/grasp-url";
 
@@ -177,6 +177,7 @@ export class Repo {
   isInitialized = $state(false);
 
   syncStatus: any = $state(null);
+  refDiscoverySource = $state<RefDiscoverySource | null>(null);
 
   #updateEditable() {
     const viewer = this.viewerPubkey;
@@ -422,7 +423,8 @@ export class Repo {
                 commitId: r.commit,
               };
             })
-            .filter((r: any) => r.name); // Filter out refs without names
+            .filter((r: any) => r.name)
+            .filter((r: any) => isDisplayableGitRef(r));
           // Sort refs: heads first, then tags (with null-safe comparison)
           this.refs = immediateRefs.sort((a, b) => {
             if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
@@ -430,6 +432,12 @@ export class Repo {
           });
           this.#refsSeededFromHead = false;
           console.log(`⚡ Instantly loaded ${this.refs.length} refs from RepoStateEvent`);
+          this.refDiscoverySource = {
+            kind: "repo-state",
+            label: "Repo state snapshot",
+            details:
+              "Using signed repo-state refs until remote discovery confirms the live ref set.",
+          };
           this.#maybeSelectBranchFromRefs(this.refs, parsedState?.head);
         } else {
           this.#seedRefsFromHead(parsedState?.head);
@@ -439,6 +447,9 @@ export class Repo {
         if (initialRepoEvent) {
           // Fire-and-forget; verification is async
           void this.branchManager.processRepoStateEventVerified(event, initialRepoEvent);
+          if (this.workerManager.isReady && !this.#refsLoading) {
+            void this.#loadBranchesFromRepo(initialRepoEvent);
+          }
         } else {
           this.branchManager.processRepoStateEvent(event);
         }
@@ -469,12 +480,15 @@ export class Repo {
             const name = key.split(":")[1];
             if (name && ref.type) {
               // Filter out invalid refs
-              immediateRefs.push({
+              const nextRef = {
                 name,
                 type: ref.type,
                 fullRef: ref.fullRef,
                 commitId: ref.commitId,
-              });
+              };
+              if (isDisplayableGitRef(nextRef)) {
+                immediateRefs.push(nextRef);
+              }
             }
           }
           // Sort refs: heads first, then tags (with null-safe comparison)
@@ -484,7 +498,16 @@ export class Repo {
           });
           this.#refsSeededFromHead = false;
           console.log(`⚡ Instantly loaded ${this.refs.length} refs from merged RepoStateEvents`);
+          this.refDiscoverySource = {
+            kind: "repo-state",
+            label: "Repo state snapshot",
+            details:
+              "Using merged signed repo-state refs until remote discovery confirms the live ref set.",
+          };
           this.#maybeSelectBranchFromRefs(this.refs);
+          if (this.workerManager.isReady && initialRepoEvent && !this.#refsLoading) {
+            void this.#loadBranchesFromRepo(initialRepoEvent);
+          }
         } else {
           this.#seedRefsFromHead(this.#state?.head);
         }
@@ -540,6 +563,10 @@ export class Repo {
           console.log("No authentication tokens found");
         }
 
+        if (initialRepoEvent && (this.#repoStateEvent || this.#repoStateEventsArr?.length)) {
+          await this.#loadBranchesFromRepo(initialRepoEvent);
+        }
+
         await this.#loadCommitsFromRepo();
 
         // Only sync with remote if vendor API is NOT available
@@ -567,9 +594,13 @@ export class Repo {
         // or suspiciously partial (for example a stale 30618 that only advertises
         // one branch while the remote has more).
         const currentHeadRefs = this.refs.filter((ref) => ref.type === "heads");
+        const hasStateSnapshot =
+          !!this.#repoStateEvent ||
+          !!(this.#repoStateEventsArr && this.#repoStateEventsArr.length > 0);
         const shouldRefreshRefs =
           this.refs.length === 0 ||
           this.#refsSeededFromHead ||
+          hasStateSnapshot ||
           (!!this.#repoStateEvent && currentHeadRefs.length <= 1);
 
         if (shouldRefreshRefs) {
@@ -584,6 +615,10 @@ export class Repo {
             if (loadedRefs.length > 0) {
               this.refs = loadedRefs;
               this.#refsSeededFromHead = false;
+              this.#selectedBranchState =
+                this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+              this.refDiscoverySource =
+                this.branchManager.getRefDiscoverySource() || this.refDiscoverySource;
             } else {
               this.#seedRefsFromHead(this.#state?.head);
             }
@@ -1140,6 +1175,10 @@ export class Repo {
       if (loadedRefs.length > 0) {
         this.refs = loadedRefs;
         this.#refsSeededFromHead = false;
+        this.#selectedBranchState =
+          this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+        this.refDiscoverySource =
+          this.branchManager.getRefDiscoverySource() || this.refDiscoverySource;
       } else {
         this.#seedRefsFromHead(this.#state?.head);
       }
@@ -1148,7 +1187,7 @@ export class Repo {
       // Sync selected branch state from BranchManager to reactive state
       // This ensures the UI reflects the auto-selected main branch
       const selectedFromManager = this.branchManager.getSelectedBranch();
-      if (selectedFromManager && !this.#selectedBranchState) {
+      if (selectedFromManager && selectedFromManager !== this.#selectedBranchState) {
         this.#selectedBranchState = selectedFromManager;
         console.log(`[Repo] Auto-selected branch from BranchManager: ${selectedFromManager}`);
       }
@@ -1462,6 +1501,8 @@ export class Repo {
   }
 
   async setSelectedBranch(branchName: string) {
+    const previousBranch = this.selectedBranch;
+
     // Set switching flag to prevent premature loads
     this.#branchSwitching = true;
 
@@ -1583,6 +1624,10 @@ export class Repo {
         this.#refsLoading = true;
         await this.branchManager.loadAllRefs(() => this.getAllRefsWithFallback());
         this.refs = this.branchManager.getAllRefs();
+        this.#selectedBranchState =
+          this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+        this.refDiscoverySource =
+          this.branchManager.getRefDiscoverySource() || this.refDiscoverySource;
       } finally {
         this.#refsLoading = false;
       }
@@ -1596,6 +1641,11 @@ export class Repo {
         console.log("Worker status after branch switch:", status);
       } catch {}
     } catch (e) {
+      const restoredBranch = previousBranch || this.mainBranch || this.refs[0]?.name;
+      this.#selectedBranchState = restoredBranch;
+      if (restoredBranch) {
+        this.branchManager.setSelectedBranch(restoredBranch);
+      }
       console.error("Failed to switch branch in worker or refresh commits:", e);
       toast.push({
         message: `Failed to switch branch: ${e instanceof Error ? e.message : String(e)}`,
@@ -1908,6 +1958,7 @@ export class Repo {
     // Reset managers that have reset methods
     this.commitManager?.reset();
     this.branchManager?.reset();
+    this.refDiscoverySource = null;
 
     // Clear caches for managers that have clearCache methods
     try {

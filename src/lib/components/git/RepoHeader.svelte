@@ -12,6 +12,7 @@
     LoaderCircle,
     Bell,
     X,
+    Info,
   } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
   const { Button, Markdown } = useRegistry();
@@ -124,6 +125,43 @@
   );
 
   const hasCloneUrlErrors = $derived.by(() => cloneUrlErrors.length > 0);
+  const refDiscoverySource = $derived.by(() => repoClass.refDiscoverySource);
+  const cloneUrls = $derived.by(() => filterValidCloneUrls(repoClass.cloneUrls || []));
+
+  function getRemoteLabel(url?: string): string {
+    const raw = String(url || "").trim();
+    if (!raw) return "Unknown remote";
+
+    try {
+      const parsed = new URL(raw);
+      return `${parsed.hostname}${parsed.pathname.replace(/\.git$/i, "")}`;
+    } catch {
+      const sshMatch = raw.match(/^git@([^:]+):(.+)$/i);
+      if (sshMatch) {
+        return `${sshMatch[1]}/${sshMatch[2].replace(/\.git$/i, "")}`;
+      }
+      return raw.replace(/\.git$/i, "");
+    }
+  }
+
+  const refSourceSummary = $derived.by(() => {
+    if (!refDiscoverySource) return "Ref source unknown";
+    const remote = refDiscoverySource.remoteUrl
+      ? ` via ${getRemoteLabel(refDiscoverySource.remoteUrl)}`
+      : "";
+    return `${refDiscoverySource.label}${remote}`;
+  });
+
+  const refSourceRows = $derived.by(() =>
+    cloneUrls.map((url) => ({
+      url,
+      label: getRemoteLabel(url),
+      isActive:
+        !!refDiscoverySource?.remoteUrl &&
+        normalizeUrl(url) === normalizeUrl(refDiscoverySource.remoteUrl),
+      hasIssue: cloneUrlErrors.some((error) => normalizeUrl(error.url) === normalizeUrl(url)),
+    }))
+  );
 
   // Dismiss errors
   function dismissErrors() {
@@ -278,6 +316,54 @@
         </div>
       {/if}
     </div>
+    {#if refDiscoverySource || cloneUrls.length > 0}
+      <details
+        class="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+      >
+        <summary class="flex cursor-pointer list-none items-center gap-2">
+          <Info class="h-3.5 w-3.5 flex-shrink-0" />
+          <span class="truncate">Refs: {refSourceSummary}</span>
+        </summary>
+        <div class="mt-3 space-y-3">
+          {#if refDiscoverySource}
+            <div>
+              <p class="font-medium text-foreground">Current source</p>
+              <p>{refSourceSummary}</p>
+              {#if refDiscoverySource.details}
+                <p class="mt-1">{refDiscoverySource.details}</p>
+              {/if}
+            </div>
+          {/if}
+
+          {#if refSourceRows.length > 0}
+            <div>
+              <p class="font-medium text-foreground">Available remotes</p>
+              <div class="mt-1 space-y-1">
+                {#each refSourceRows as remote (remote.url)}
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="truncate">{remote.label}</span>
+                    {#if remote.isActive}
+                      <span
+                        class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-300"
+                      >
+                        active
+                      </span>
+                    {/if}
+                    {#if remote.hasIssue}
+                      <span
+                        class="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-300"
+                      >
+                        issue seen
+                      </span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+      </details>
+    {/if}
   </div>
   {#if description}
     <div class="repo-description text-muted-foreground mb-4">

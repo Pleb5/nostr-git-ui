@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeGitRefName } from "./branch-ref";
+import { isDisplayableGitRef, isPeeledTagName, normalizeGitRefName } from "./branch-ref";
 
 describe("normalizeGitRefName", () => {
   it("preserves slash-containing branch names", () => {
@@ -16,5 +16,17 @@ describe("normalizeGitRefName", () => {
   it("supports HEAD-style symbolic ref values", () => {
     expect(normalizeGitRefName("ref: refs/heads/main")).toBe("main");
     expect(normalizeGitRefName("ref: refs/heads/feature/x")).toBe("feature/x");
+  });
+
+  it("recognizes peeled tag names", () => {
+    expect(isPeeledTagName("v0.2.0^{}")).toBe(true);
+    expect(isPeeledTagName("refs/tags/v0.2.0^{}")).toBe(true);
+    expect(isPeeledTagName("v0.2.0")).toBe(false);
+  });
+
+  it("hides peeled tags from displayable refs", () => {
+    expect(isDisplayableGitRef({ name: "v0.2.0^{}", type: "tags" })).toBe(false);
+    expect(isDisplayableGitRef({ name: "v0.2.0", type: "tags" })).toBe(true);
+    expect(isDisplayableGitRef({ name: "fix/ipk-builds", type: "heads" })).toBe(true);
   });
 });

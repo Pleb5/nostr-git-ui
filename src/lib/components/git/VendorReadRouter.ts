@@ -14,7 +14,7 @@ import { nip19 } from "nostr-tools";
 import type { Token } from "$lib/stores/tokens";
 import { tryTokensForHost, getTokensForHost } from "$lib/utils/tokenHelpers";
 import { WorkerManager } from "./WorkerManager";
-import { normalizeGitRefName } from "./branch-ref";
+import { isDisplayableGitRef, normalizeGitRefName } from "./branch-ref";
 
 export interface VendorReadRouterConfig {
   getTokens: () => Promise<Token[]>;
@@ -76,6 +76,14 @@ export interface VendorCommitResult {
   ref: string;
   fromVendor: boolean;
   hasMore?: boolean;
+}
+
+export interface RefDiscoverySource {
+  kind: "vendor" | "git-remote" | "repo-state" | "local";
+  label: string;
+  remoteUrl?: string;
+  attemptedUrls?: string[];
+  details?: string;
 }
 
 type SupportedVendor = "github" | "gitlab" | "gitea" | "bitbucket" | "grasp-rest";
@@ -325,7 +333,7 @@ export class VendorReadRouter {
     workerManager: WorkerManager;
     repoEvent: RepoAnnouncementEvent;
     cloneUrls: string[];
-  }): Promise<{ refs: VendorRef[]; fromVendor: boolean }> {
+  }): Promise<{ refs: VendorRef[]; fromVendor: boolean; source: RefDiscoverySource }> {
     const remotes = this.getValidRemotes(params.cloneUrls);
 
     // 1) Vendor-first with URL fallback
@@ -350,7 +358,17 @@ export class VendorReadRouter {
             this.reportCloneUrlSuccess(vendorResult.usedUrl);
           }
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
-          return { refs: vendorResult.result, fromVendor: true };
+          return {
+            refs: vendorResult.result.filter((ref) => isDisplayableGitRef(ref)),
+            fromVendor: true,
+            source: {
+              kind: "vendor",
+              label: "Vendor API",
+              remoteUrl: vendorResult.usedUrl || vendorUrls[0],
+              attemptedUrls: vendorResult.attempts.map((attempt) => attempt.url),
+              details: "Ref list comes from the remote provider API.",
+            },
+          };
         }
 
         console.warn(`[VendorReadRouter] REST API failed, falling back to git`);
@@ -366,23 +384,102 @@ export class VendorReadRouter {
       }
     }
 
-    // 2) Git worker fallback
-    console.log(`[VendorReadRouter] Using git worker fallback`);
+    // 2) Git remote advertised refs fallback
+    if (remotes.length > 0) {
+      console.log(`[VendorReadRouter] Using git advertised refs fallback`);
+      const gitResult = await withUrlFallback(
+        remotes,
+        async (remoteUrl: string) => {
+          const refs = await params.workerManager.listServerRefs({
+            url: remoteUrl,
+            symrefs: true,
+          });
+          return this.parseServerRefs(refs || []);
+        },
+        { repoId: this.pickRemote(params.cloneUrls) || undefined }
+      );
+
+      if (gitResult.success && gitResult.result) {
+        if (gitResult.usedUrl) {
+          this.reportCloneUrlSuccess(gitResult.usedUrl);
+        }
+
+        return {
+          refs: gitResult.result,
+          fromVendor: false,
+          source: {
+            kind: "git-remote",
+            label: "Git remote",
+            remoteUrl: gitResult.usedUrl || remotes[0],
+            attemptedUrls: gitResult.attempts.map((attempt) => attempt.url),
+          },
+        };
+      }
+
+      for (const attempt of gitResult.attempts) {
+        if (!attempt.success) {
+          const status = this.extractHttpStatus(attempt.error);
+          this.reportCloneUrlError(attempt.url, attempt.error || "Unknown error", status);
+        }
+      }
+    }
+
+    // 3) Local clone fallback
+    console.log(`[VendorReadRouter] Falling back to locally known refs`);
     const branches = await params.workerManager.listBranchesFromEvent({
       repoEvent: params.repoEvent,
     });
 
-    const refs: VendorRef[] = (branches || []).map((b: any) => {
-      const name = typeof b === "string" ? b : String(b?.name ?? "");
-      return {
-        name,
-        type: "heads",
-        fullRef: `refs/heads/${name}`,
-        commitId: String((b as any)?.commitId ?? (b as any)?.oid ?? ""),
-      };
-    });
+    const refs: VendorRef[] = (branches || [])
+      .map((b: any) => {
+        const name = typeof b === "string" ? b : String(b?.name ?? "");
+        return {
+          name,
+          type: "heads" as const,
+          fullRef: `refs/heads/${name}`,
+          commitId: String((b as any)?.commitId ?? (b as any)?.oid ?? ""),
+        };
+      })
+      .filter((ref: VendorRef) => isDisplayableGitRef(ref));
 
-    return { refs, fromVendor: false };
+    return {
+      refs,
+      fromVendor: false,
+      source: {
+        kind: "local",
+        label: "Local clone",
+        attemptedUrls: remotes,
+        details: "Remote ref discovery failed, so only locally known refs are shown.",
+      },
+    };
+  }
+
+  private parseServerRefs(refs: Array<{ ref?: string; oid?: string }>): VendorRef[] {
+    const merged = new Map<string, VendorRef>();
+
+    for (const ref of refs || []) {
+      const fullRef = String(ref?.ref || "");
+      const commitId = String(ref?.oid || "");
+      if (!fullRef || !commitId) continue;
+
+      if (fullRef.startsWith("refs/heads/")) {
+        const name = fullRef.slice("refs/heads/".length);
+        const nextRef: VendorRef = { name, type: "heads", fullRef, commitId };
+        if (isDisplayableGitRef(nextRef)) {
+          merged.set(`heads:${name}`, nextRef);
+        }
+      } else if (fullRef.startsWith("refs/tags/")) {
+        const name = fullRef.slice("refs/tags/".length);
+        const nextRef: VendorRef = { name, type: "tags", fullRef, commitId };
+        if (isDisplayableGitRef(nextRef)) {
+          merged.set(`tags:${name}`, nextRef);
+        }
+      }
+    }
+
+    return Array.from(merged.values()).sort((a, b) =>
+      a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
+    );
   }
 
   /**

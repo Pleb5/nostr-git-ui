@@ -1,13 +1,18 @@
 <script lang="ts">
   import type { Repo } from "./Repo.svelte";
+  import { isDisplayableGitRef } from "./branch-ref";
 
   const { repo }: { repo: Repo } = $props();
 
   // Get all refs (branches and tags) from repo
   const refs = $derived.by(() => repo.refs);
   const mainBranch = $derived.by(() => repo.mainBranch || "");
-  const branches = $derived.by(() => refs.filter((ref) => ref.type === "heads"));
-  const tags = $derived.by(() => refs.filter((ref) => ref.type === "tags"));
+  const branches = $derived.by(() =>
+    refs.filter((ref) => ref.type === "heads" && isDisplayableGitRef(ref))
+  );
+  const tags = $derived.by(() =>
+    refs.filter((ref) => ref.type === "tags" && isDisplayableGitRef(ref))
+  );
   const selectedBranch = $derived.by(() => repo.selectedBranch || mainBranch || "");
   const selectedLabel = $derived.by(() => {
     if (!refs.length) return "No branches found";
