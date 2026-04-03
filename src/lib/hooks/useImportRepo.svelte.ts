@@ -17,8 +17,6 @@ import {
   RateLimiter,
   generatePlatformUserProfile,
   getProfileMapKey,
-  convertRepoToNostrEvent,
-  convertRepoToStateEvent,
   convertIssuesToNostrEvents,
   convertIssueStatusToEvent,
   convertCommentsToNostrEvents,
@@ -46,6 +44,12 @@ import {
   waitForGraspProvisioning,
   type GraspPublishRelayAck,
 } from "../utils/grasp-pipeline.js";
+import {
+  buildImportedRepoMetadata,
+  buildImportedRepoEvents,
+  getImportedRepoName,
+  trackLatestRepoMetadataCreatedAt,
+} from "../utils/import-repo-metadata.js";
 
 /**
  * Import phase identifiers for structured progress reporting.
@@ -179,6 +183,8 @@ export interface ImportRemoteTarget {
   host?: string;
   /** Pre-validated token for git providers */
   token?: string;
+  /** All candidate tokens matched during target preflight */
+  tokens?: string[];
   /** Relay URL for GRASP targets */
   relayUrl?: string;
   /** Whether destination repository already exists */
@@ -282,6 +288,7 @@ interface ImportContext {
   importTimestamp: number;
   startTimestamp: number;
   currentTimestamp: number; // Increments for each event published
+  latestRepoMetadataCreatedAt: number;
 
   // User profiles
   userProfiles: UserProfileMap;
@@ -1494,6 +1501,112 @@ function getProviderBaseUrl(provider: ImportRemoteProvider, host?: string): stri
   return undefined;
 }
 
+function getDestinationRepoName(
+  context: Pick<ImportContext, "config" | "parsed"> & { finalRepo?: RepoMetadata | null }
+): string {
+  const configuredName = context.config.destinationRepoName?.trim();
+  if (configuredName) return configuredName;
+
+  if (context.finalRepo) {
+    return getImportedRepoName(context.finalRepo);
+  }
+
+  return context.parsed.repo;
+}
+
+function getTargetTokens(target: ImportRemoteTarget): string[] {
+  return Array.from(new Set([...(target.tokens || []), target.token || ""].filter(Boolean)));
+}
+
+function isRetryableGitLabPushError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("403") ||
+    normalized.includes("forbidden") ||
+    normalized.includes("permission denied") ||
+    normalized.includes("not found") ||
+    normalized.includes("404") ||
+    normalized.includes("discover") ||
+    normalized.includes("gitremotehttp")
+  );
+}
+
+async function waitForGitLabPushReady(
+  context: ImportContext,
+  target: ImportRemoteTarget,
+  remoteUrl: string,
+  token: string
+): Promise<void> {
+  let parsedRemote: ReturnType<typeof parseRepoUrl>;
+  try {
+    parsedRemote = parseRepoUrl(remoteUrl);
+  } catch {
+    return;
+  }
+
+  const api = getGitServiceApiFromUrl(remoteUrl, token);
+  const delays = [1200, 2200, 3500];
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    context.abortController.throwIfAborted();
+
+    try {
+      await context.withRateLimit(target.provider, "GET", () =>
+        api.getRepo(parsedRemote.owner, parsedRemote.repo)
+      );
+      return;
+    } catch (error) {
+      lastError = error;
+      await runAbortableOperation(
+        context.abortController,
+        () => new Promise<void>((resolve) => setTimeout(resolve, delays[attempt])),
+        `Waiting for ${target.label} to be ready`,
+        0
+      );
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+}
+
+async function tryTargetTokens<T>(
+  context: ImportContext,
+  target: ImportRemoteTarget,
+  operation: (token: string) => Promise<T>
+): Promise<T> {
+  const tokens = getTargetTokens(target);
+  if (target.provider !== "grasp" && tokens.length === 0) {
+    throw new Error("Missing token for target host");
+  }
+
+  const failures: string[] = [];
+
+  for (const token of tokens) {
+    try {
+      return await operation(token);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (failures.length === 0) {
+    throw new Error(`No usable token for ${target.label}`);
+  }
+
+  if (failures.length === 1) {
+    throw new Error(failures[0]);
+  }
+
+  throw new Error(
+    `All tokens failed for ${target.label}: ${Array.from(new Set(failures)).join(" | ")}`
+  );
+}
+
 function guessWebUrl(remoteUrl: string | undefined): string | undefined {
   if (!remoteUrl) return undefined;
   if (/^wss?:\/\//i.test(remoteUrl)) {
@@ -1729,7 +1842,7 @@ async function syncRepositoryToRemotes(
     }));
   }
 
-  const repoName = context.finalRepo?.name || context.parsed.repo;
+  const repoName = getDestinationRepoName(context);
   const repoDescription = context.finalRepo?.description || "";
   const targetBranch = context.finalRepo?.defaultBranch || "main";
   const localRepoId = parseRepoId(
@@ -1880,6 +1993,12 @@ async function syncRepositoryToRemotes(
             maintainers: [context.userPubkey],
           });
 
+          context.latestRepoMetadataCreatedAt = trackLatestRepoMetadataCreatedAt(
+            context.latestRepoMetadataCreatedAt,
+            graspEvents.announcementEvent,
+            graspEvents.stateEvent
+          );
+
           const relayAck = extractPublishRelayAck(
             await (context.onPublishEvent as any)(graspEvents.announcementEvent)
           );
@@ -1999,6 +2118,12 @@ async function syncRepositoryToRemotes(
                 head: stateHead,
               });
 
+              context.latestRepoMetadataCreatedAt = trackLatestRepoMetadataCreatedAt(
+                context.latestRepoMetadataCreatedAt,
+                graspState.announcementEvent,
+                graspState.stateEvent
+              );
+
               const stateAck = extractPublishRelayAck(
                 await (context.onPublishEvent as any)(graspState.stateEvent)
               );
@@ -2062,51 +2187,56 @@ async function syncRepositoryToRemotes(
         continue;
       }
 
-      if (!target.token) {
+      if (getTargetTokens(target).length === 0) {
         throw new Error("Missing token for target host");
       }
 
       let remoteUrl = target.existingRemoteUrl;
       let webUrl = target.existingWebUrl;
+      let createdRemoteOnTarget = false;
 
       if (!remoteUrl) {
-        const createResult = await runAbortableOperation<any>(
-          context.abortController,
-          () =>
-            context.workerApi.createRemoteRepo({
-              provider: target.provider,
-              token: target.token,
-              name: repoName,
-              description: repoDescription,
-              isPrivate: false,
-              baseUrl: getProviderBaseUrl(target.provider, target.host),
-            }),
-          `Creating remote repository on ${target.label}`,
-          45000
-        );
+        const createResult = await tryTargetTokens(context, target, async (token) => {
+          const result = await runAbortableOperation<any>(
+            context.abortController,
+            () =>
+              context.workerApi.createRemoteRepo({
+                provider: target.provider,
+                token,
+                name: repoName,
+                description: repoDescription,
+                isPrivate: false,
+                baseUrl: getProviderBaseUrl(target.provider, target.host),
+              }),
+            `Creating remote repository on ${target.label}`,
+            45000
+          );
 
-        if (!createResult?.success || !createResult?.remoteUrl) {
-          throw new Error(createResult?.error || "Failed to create remote repository");
-        }
+          if (!result?.success || !result?.remoteUrl) {
+            throw new Error(result?.error || "Failed to create remote repository");
+          }
+
+          return result;
+        });
 
         remoteUrl = createResult.remoteUrl;
         webUrl = guessWebUrl(createResult.remoteUrl);
+        createdRemoteOnTarget = true;
       }
 
       if (!remoteUrl) {
         throw new Error("No remote URL available for push");
       }
 
-      let targetApi: ReturnType<typeof getGitServiceApiFromUrl> | null = null;
       let targetOwner = "";
       let targetRepo = "";
       try {
         const parsedTarget = parseRepoUrl(remoteUrl);
         targetOwner = parsedTarget.owner;
         targetRepo = parsedTarget.repo;
-        targetApi = getGitServiceApiFromUrl(remoteUrl, target.token);
       } catch {
-        targetApi = null;
+        targetOwner = "";
+        targetRepo = "";
       }
 
       for (let refIndex = 0; refIndex < branchPushRefs.length; refIndex++) {
@@ -2115,22 +2245,29 @@ async function syncRepositoryToRemotes(
 
         const isDefaultBranchRef = branchRef.name === targetBranch;
         const canUseApiFastPath =
-          !isDefaultBranchRef && Boolean(branchRef.commit) && Boolean(targetApi?.upsertBranchRef);
+          !isDefaultBranchRef && Boolean(branchRef.commit) && Boolean(targetOwner && targetRepo);
 
-        if (canUseApiFastPath && targetApi && targetOwner && targetRepo) {
+        if (canUseApiFastPath && targetOwner && targetRepo) {
           context.updateProgress(
             `Syncing branch ${branchRef.name} via ${target.label} API (${refIndex + 1}/${branchPushRefs.length})...`
           );
 
           try {
-            await context.withRateLimit(target.provider, "upsertBranchRef", () =>
-              targetApi!.upsertBranchRef!(
-                targetOwner,
-                targetRepo,
-                branchRef.name,
-                branchRef.commit as string
-              )
-            );
+            await tryTargetTokens(context, target, async (token) => {
+              const targetApi = getGitServiceApiFromUrl(remoteUrl!, token);
+              if (!targetApi.upsertBranchRef) {
+                throw new Error(`Branch sync API unavailable for ${target.label}`);
+              }
+
+              await context.withRateLimit(target.provider, "upsertBranchRef", () =>
+                targetApi.upsertBranchRef!(
+                  targetOwner,
+                  targetRepo,
+                  branchRef.name,
+                  branchRef.commit as string
+                )
+              );
+            });
             continue;
           } catch {
             // fall back to git push below
@@ -2141,20 +2278,62 @@ async function syncRepositoryToRemotes(
           `Pushing branch ${branchRef.name} to ${target.label} (${refIndex + 1}/${branchPushRefs.length})...`
         );
 
-        const pushResult = await runAbortableOperation<any>(
-          context.abortController,
-          () =>
-            context.workerApi.pushToRemote({
-              repoId: localRepoId,
-              remoteUrl,
-              branch: targetBranch,
-              ref: branchRef.ref,
-              token: target.token,
-              provider: target.provider,
-            }),
-          `Pushing ${branchRef.name} to ${target.label}`,
-          0
-        );
+        const pushResult = await tryTargetTokens(context, target, async (token) => {
+          if (target.provider === "gitlab" && createdRemoteOnTarget) {
+            await waitForGitLabPushReady(context, target, remoteUrl!, token);
+          }
+
+          const maxAttempts = target.provider === "gitlab" && createdRemoteOnTarget ? 3 : 1;
+          let lastError: unknown = null;
+
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              const result = await runAbortableOperation<any>(
+                context.abortController,
+                () =>
+                  context.workerApi.pushToRemote({
+                    repoId: localRepoId,
+                    remoteUrl,
+                    branch: targetBranch,
+                    ref: branchRef.ref,
+                    token,
+                    provider: target.provider,
+                  }),
+                `Pushing ${branchRef.name} to ${target.label}`,
+                0
+              );
+
+              if (!result?.success) {
+                throw new Error(
+                  result?.error || `Failed to push branch ${branchRef.name} to ${target.label}`
+                );
+              }
+
+              return result;
+            } catch (error) {
+              lastError = error;
+              if (
+                attempt >= maxAttempts ||
+                target.provider !== "gitlab" ||
+                !createdRemoteOnTarget ||
+                !isRetryableGitLabPushError(error)
+              ) {
+                throw error;
+              }
+
+              await runAbortableOperation(
+                context.abortController,
+                () => new Promise<void>((resolve) => setTimeout(resolve, 1500 * attempt)),
+                `Retrying ${branchRef.name} push to ${target.label}`,
+                0
+              );
+            }
+          }
+
+          throw lastError instanceof Error
+            ? lastError
+            : new Error(String(lastError || "Push failed"));
+        });
 
         if (!pushResult?.success) {
           throw new Error(
@@ -2208,55 +2387,17 @@ function convertRepoEvents(context: ImportContext): {
     throw new Error("At least one relay is required for repository announcement");
   }
 
-  const repoAnnouncementEventTemplate = convertRepoToNostrEvent(
-    context.finalRepo,
-    relays,
-    context.userPubkey,
-    context.importTimestamp
-  );
-
-  const successfulRemoteUrls = Array.from(
-    new Set(
-      context.remotePushResults
-        .filter((result) => result.success)
-        .map((result) => result.remoteUrl)
-        .filter((value): value is string => Boolean(value))
-    )
-  );
-  const successfulWebUrls = Array.from(
-    new Set(
-      context.remotePushResults
-        .filter((result) => result.success)
-        .map((result) => result.webUrl)
-        .filter((value): value is string => Boolean(value))
-    )
-  );
-
-  if (successfulRemoteUrls.length > 0) {
-    repoAnnouncementEventTemplate.tags = [
-      ...repoAnnouncementEventTemplate.tags.filter((tag) => tag[0] !== "clone"),
-      ["clone", ...successfulRemoteUrls],
-    ];
-  }
-
-  if (successfulWebUrls.length > 0) {
-    repoAnnouncementEventTemplate.tags = [
-      ...repoAnnouncementEventTemplate.tags.filter((tag) => tag[0] !== "web"),
-      ["web", ...successfulWebUrls],
-    ];
-  }
-
-  const repoStateEventTemplate = convertRepoToStateEvent(
-    context.finalRepo,
-    context.importTimestamp,
-    (context.selectedBranchRefs || [])
-      .filter((branchRef) => Boolean(branchRef.commit))
-      .map((branchRef) => ({
-        type: "heads" as const,
-        name: branchRef.name,
-        commit: branchRef.commit as string,
-      }))
-  );
+  const { announcement: repoAnnouncementEventTemplate, state: repoStateEventTemplate } =
+    buildImportedRepoEvents({
+      repo: context.finalRepo,
+      relays,
+      userPubkey: context.userPubkey,
+      repoName: getDestinationRepoName(context),
+      importTimestamp: context.importTimestamp,
+      latestRepoMetadataCreatedAt: context.latestRepoMetadataCreatedAt,
+      remotePushResults: context.remotePushResults,
+      selectedBranchRefs: context.selectedBranchRefs || [],
+    });
 
   return {
     announcement: repoAnnouncementEventTemplate,
@@ -2444,6 +2585,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         importTimestamp: Math.floor(Date.now() / 1000),
         startTimestamp: 0, // Will be set below
         currentTimestamp: 0, // Will be set below
+        latestRepoMetadataCreatedAt: 0,
         userProfiles: new Map(),
         profileEvents: new Map(),
         bridgedNostrPubkeys: new Map(),
@@ -2495,7 +2637,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
       }
 
       // Initialize repo address and timestamps
-      const repoName = context.finalRepo.fullName.split("/").pop() || context.finalRepo.name;
+      const repoName = getDestinationRepoName(context);
       context.repoAddr = `30617:${userPubkey}:${repoName}`;
       context.startTimestamp = context.importTimestamp - 3600; // Start from 1 hour ago
       context.currentTimestamp = context.startTimestamp;
@@ -2605,7 +2747,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         commentsImported,
         prsImported,
         profilesCreated: context.userProfiles.size,
-        repo: context.finalRepo,
+        repo: buildImportedRepoMetadata(context.finalRepo, context.config.destinationRepoName),
         remotePushResults: context.remotePushResults,
       };
 

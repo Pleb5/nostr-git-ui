@@ -36,6 +36,7 @@
   import { matchesHost } from "../../utils/tokenMatcher.js";
   import { checkGraspRepoExists } from "../../utils/grasp-availability.js";
   import { AllTokensFailedError, TokenNotFoundError } from "../../utils/tokenErrors.js";
+  import { findExistingTargetRepoConflict } from "../../utils/import-targets.js";
   import { toast } from "../../stores/toast";
   import type { Token } from "../../stores/tokens.js";
   import type { EventIO, NostrEvent } from "@nostr-git/core";
@@ -57,6 +58,7 @@
     onNavigateToRepo?: (result: ImportResult) => void; // Optional callback to navigate to the imported repo
     onAbortImport?: () => Promise<void> | void;
     defaultRelays?: string[];
+    searchRelays?: (query: string) => Promise<string[]>;
   }
 
   const {
@@ -72,6 +74,7 @@
     onNavigateToRepo,
     onAbortImport,
     defaultRelays = DEFAULT_RELAYS.default.slice(0, 2),
+    searchRelays,
   }: Props = $props();
 
   // Validate that we have at least one signing method
@@ -131,6 +134,8 @@
     htmlUrl: string;
     isOwner: boolean;
   } | null>(null);
+  let destinationRepoName = $state("");
+  let destinationRepoSeedKey = $state("");
   let selectedRelays = $state<string[]>([...defaultRelays]);
   let announceRepo = $state(true); // Always enabled
   let mirrorIssues = $state(true);
@@ -147,6 +152,7 @@
     status: ImportTargetStatus;
     detail?: string;
     validatedToken?: string;
+    candidateTokens?: string[];
     existsAlready?: boolean;
     existingRemoteUrl?: string;
     existingWebUrl?: string;
@@ -177,6 +183,10 @@
   // UI state
   let validationError = $state<string | undefined>();
   let isCheckingOwnership = $state(false);
+  let relaySearchQuery = $state("");
+  let relaySearchResults = $state<string[]>([]);
+  let showRelayAutocomplete = $state(false);
+  let relayInputElement: HTMLInputElement | undefined = $state();
 
   // Token management
   let tokenList = $state<Token[]>([]);
@@ -196,8 +206,48 @@
     return await tokens.waitForInitialization();
   }
 
+  let relaySearchTimeout: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const query = relaySearchQuery.trim();
+    if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
+
+    if (query && searchRelays) {
+      relaySearchTimeout = setTimeout(async () => {
+        try {
+          const results = await searchRelays(query);
+          relaySearchResults = results.filter((relay) => !selectedRelays.includes(relay));
+          showRelayAutocomplete = relaySearchResults.length > 0;
+        } catch (error) {
+          console.error("Failed to search relays", error);
+          relaySearchResults = [];
+          showRelayAutocomplete = false;
+        }
+      }, 300);
+    } else {
+      relaySearchResults = [];
+      showRelayAutocomplete = false;
+    }
+
+    return () => {
+      if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
+    };
+  });
+
   function normalizeRelayUrl(value: string): string {
     return (value || "").trim().replace(/\/+$/, "");
+  }
+
+  function appendRelay(relayUrl: string) {
+    const normalized = normalizeRelayUrl(relayUrl);
+    if (!normalized) return;
+
+    if (!selectedRelays.includes(normalized)) {
+      selectedRelays = [...selectedRelays, normalized];
+    }
+
+    relaySearchQuery = "";
+    relaySearchResults = [];
+    showRelayAutocomplete = false;
   }
 
   function syncGraspRelaysToPreferredRelays(urls: string[]) {
@@ -479,9 +529,31 @@
   }
 
   const targetRepoName = $derived.by(() => {
-    if (!repoMetadata) return "";
-    return repoMetadata.name;
+    return destinationRepoName.trim();
   });
+
+  $effect(() => {
+    if (!repoMetadata) return;
+
+    const seedKey = `${repoMetadata.owner}/${repoMetadata.name}`;
+    if (seedKey === destinationRepoSeedKey) return;
+
+    destinationRepoSeedKey = seedKey;
+    destinationRepoName = repoMetadata.name;
+  });
+
+  function validateDestinationRepoName(name: string): string | undefined {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return "Destination repository name is required";
+    }
+
+    if (/[\\/]/.test(trimmed)) {
+      return "Destination repository name cannot contain / or \\";
+    }
+
+    return undefined;
+  }
 
   function buildImportTargets(): ImportTargetOption[] {
     const targetMap = new Map<string, ImportTargetOption>();
@@ -576,10 +648,26 @@
   }
 
   async function runTargetPreflight() {
-    if (currentStep !== 2 || !repoMetadata || !targetRepoName) return;
+    if (currentStep !== 2 || !repoMetadata) return;
 
     const currentRun = ++targetPreflightRunId;
     const seeds = buildImportTargets();
+
+    const destinationNameError = validateDestinationRepoName(targetRepoName);
+    if (destinationNameError) {
+      selectedImportTargetIds = [];
+      importTargets = seeds.map((target) =>
+        target.status === "unsupported"
+          ? target
+          : {
+              ...target,
+              status: "failed" as const,
+              detail: destinationNameError,
+            }
+      );
+      return;
+    }
+
     importTargets = seeds;
 
     const nextTargets: ImportTargetOption[] = await Promise.all(
@@ -632,6 +720,15 @@
         }
 
         const normalizedTargetHost = normalizeTokenHostForTarget(target.host);
+        const matchingTargetTokens = tokenList
+          .filter((tokenEntry) => {
+            const normalizedTokenHost = normalizeTokenHostForTarget(tokenEntry.host);
+            return (
+              matchesHost(normalizedTokenHost, normalizedTargetHost) ||
+              matchesHost(normalizedTargetHost, normalizedTokenHost)
+            );
+          })
+          .map((tokenEntry) => tokenEntry.token);
 
         try {
           const token = await tryTokensForHost(
@@ -660,6 +757,21 @@
 
               try {
                 const existingRepo = await api.getRepo(username, repoNameForHost);
+                const repoConflict = findExistingTargetRepoConflict({
+                  provider: target.provider,
+                  requestedOwner: username,
+                  requestedRepo: repoNameForHost,
+                  existingRepo,
+                });
+
+                if (repoConflict) {
+                  return {
+                    token: candidateToken,
+                    detail: repoConflict.message,
+                    blocked: true,
+                  };
+                }
+
                 return {
                   token: candidateToken,
                   detail: "Repository exists, will push to existing destination",
@@ -682,12 +794,13 @@
 
           return {
             ...target,
-            status: "ready" as const,
+            status: token.blocked ? ("failed" as const) : ("ready" as const),
             validatedToken: token.token,
+            candidateTokens: matchingTargetTokens,
             detail: token.detail,
-            existsAlready: token.existsAlready,
-            existingRemoteUrl: token.existingRemoteUrl,
-            existingWebUrl: token.existingWebUrl,
+            existsAlready: token.blocked ? false : token.existsAlready,
+            existingRemoteUrl: token.blocked ? undefined : token.existingRemoteUrl,
+            existingWebUrl: token.blocked ? undefined : token.existingWebUrl,
           };
         } catch (error) {
           if (error instanceof TokenNotFoundError) {
@@ -1021,6 +1134,12 @@
       return;
     }
 
+    const destinationNameError = validateDestinationRepoName(destinationRepoName);
+    if (destinationNameError) {
+      validationError = destinationNameError;
+      return;
+    }
+
     // Validate relays
     if (selectedRelays.length === 0) {
       validationError = "At least one relay is required";
@@ -1036,6 +1155,7 @@
         host: target.host,
         relayUrl: target.relayUrl,
         token: target.validatedToken,
+        tokens: target.candidateTokens,
         existsAlready: target.existsAlready,
         existingRemoteUrl: target.existingRemoteUrl,
         existingWebUrl: target.existingWebUrl,
@@ -1060,6 +1180,7 @@
       enableProgressTracking: true,
       sinceDate: sinceDate,
       forkRepo: false,
+      destinationRepoName: targetRepoName,
       mirrorIssues,
       mirrorPullRequests,
       mirrorComments,
@@ -1080,13 +1201,12 @@
 
   // Relay management
   function addRelay() {
-    const newRelay = prompt("Enter relay URL (wss://...):");
-    if (newRelay && newRelay.trim()) {
-      const trimmed = newRelay.trim();
-      if (!selectedRelays.includes(trimmed)) {
-        selectedRelays = [...selectedRelays, trimmed];
-      }
+    if (relaySearchQuery.trim()) {
+      appendRelay(relaySearchQuery);
+      return;
     }
+
+    selectedRelays = [...selectedRelays, ""];
   }
 
   function removeRelay(index: number) {
@@ -1440,6 +1560,25 @@
               </div>
             </div>
 
+            <div class="mb-4 bg-gray-800 rounded-lg p-4 border border-gray-600">
+              <label
+                class="block text-sm font-medium text-gray-300 mb-2"
+                for="import-destination-repo-name"
+              >
+                Destination repository name
+              </label>
+              <input
+                id="import-destination-repo-name"
+                type="text"
+                bind:value={destinationRepoName}
+                class="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Enter destination repository name"
+              />
+              <p class="mt-2 text-xs text-gray-400">
+                Selected import targets and the final Nostr repo announcement will use this name.
+              </p>
+            </div>
+
             <!-- Branch Selection -->
             <div class="mb-4">
               <h4 class="text-sm font-medium text-gray-300 mb-2">Branches to Import</h4>
@@ -1680,14 +1819,81 @@
                     </button>
                   </div>
                 {/each}
-                <button
-                  type="button"
-                  onclick={addRelay}
-                  class="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
-                >
-                  <Plus class="w-4 h-4" />
-                  Add Relay
-                </button>
+
+                {#if searchRelays}
+                  <div class="relative">
+                    <div class="flex items-center gap-2">
+                      <input
+                        bind:this={relayInputElement}
+                        type="text"
+                        bind:value={relaySearchQuery}
+                        onfocus={() => {
+                          if (relaySearchQuery.trim()) {
+                            showRelayAutocomplete = relaySearchResults.length > 0;
+                          }
+                        }}
+                        onblur={(event) => {
+                          setTimeout(() => {
+                            if (
+                              !event.relatedTarget ||
+                              !(event.relatedTarget as HTMLElement).closest(
+                                "#import-relay-suggestions-listbox"
+                              )
+                            ) {
+                              showRelayAutocomplete = false;
+                            }
+                          }, 200);
+                        }}
+                        onkeydown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            appendRelay(relaySearchQuery);
+                          }
+                        }}
+                        autocomplete="off"
+                        class="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Search or enter relay URL"
+                      />
+                      <button
+                        type="button"
+                        onclick={addRelay}
+                        class="flex items-center gap-2 px-3 py-2 text-sm text-blue-400 hover:text-blue-300"
+                      >
+                        <Plus class="w-4 h-4" />
+                        Add Relay
+                      </button>
+                    </div>
+
+                    {#if showRelayAutocomplete && relaySearchResults.length > 0}
+                      <div
+                        id="import-relay-suggestions-listbox"
+                        class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+                      >
+                        {#each relaySearchResults as relayUrl}
+                          <button
+                            type="button"
+                            onmousedown={(event) => {
+                              event.preventDefault();
+                            }}
+                            onclick={() => appendRelay(relayUrl)}
+                            class="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm font-mono"
+                          >
+                            {relayUrl}
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {:else}
+                  <button
+                    type="button"
+                    onclick={addRelay}
+                    class="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
+                  >
+                    <Plus class="w-4 h-4" />
+                    Add Relay
+                  </button>
+                {/if}
               </div>
               <p class="mt-1 text-xs text-gray-400">
                 Repository metadata will be published to these relays
