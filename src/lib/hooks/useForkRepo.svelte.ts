@@ -13,6 +13,7 @@ import {
   toNpubOrSelf,
   waitForGraspProvisioning,
 } from "../utils/grasp-pipeline.js";
+import { getForkRollbackPlan } from "./fork-rollback";
 
 // Types for fork configuration and progress
 export interface ForkConfig {
@@ -32,6 +33,10 @@ export interface ForkProgress {
   message: string;
   status: "pending" | "running" | "completed" | "error";
   error?: string;
+}
+
+export interface ForkProgressActivity extends ForkProgress {
+  id: number;
 }
 
 export interface ForkResult {
@@ -60,6 +65,7 @@ export type ForkRepositoryResult = ForkResult | ForkWorkflowDecision;
 
 export interface UseForkRepoOptions {
   workerApi?: any; // Git worker API instance (optional for backward compatibility)
+  workerInstance?: Worker; // Shared worker instance for live progress events
   userPubkey?: string; // Nostr pubkey of the user creating the fork (required for maintainers)
   onProgress?: (progress: ForkProgress[]) => void;
   onForkCompleted?: (result: ForkResult) => void;
@@ -400,10 +406,16 @@ function getLogicalRepoOwner(
  */
 export function useForkRepo(options: UseForkRepoOptions = {}) {
   let isForking = $state(false);
+  let isComplete = $state(false);
   let progress = $state<ForkProgress[]>([]);
+  let progressHistory = $state<ForkProgressActivity[]>([]);
   let error = $state<string | null>(null);
   let warning = $state<string | null>(null);
   let abortController = $state<AbortController | null>(null);
+  let progressActivityId = 0;
+  let lastProgressAt = 0;
+  let lastProgressSummary = "";
+  let stallLogThresholdMs = 15000;
 
   let tokens = $state<Token[]>([]);
 
@@ -419,6 +431,12 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
   const { onProgress, onForkCompleted, onPublishEvent, onRollbackPublishedRepoEvents, userPubkey } =
     options;
 
+  function noteProgressActivity(summary: string) {
+    lastProgressAt = Date.now();
+    lastProgressSummary = summary;
+    stallLogThresholdMs = 15000;
+  }
+
   function updateProgress(
     step: string,
     message: string,
@@ -426,7 +444,10 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     errorMessage?: string
   ) {
     const existingIndex = progress.findIndex((p) => p.step === step);
+    const previous = existingIndex >= 0 ? progress[existingIndex] : undefined;
     const progressItem: ForkProgress = { step, message, status, error: errorMessage };
+
+    noteProgressActivity(`${step}: ${message}`);
 
     if (existingIndex >= 0) {
       progress[existingIndex] = progressItem;
@@ -437,6 +458,23 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     // Force reactivity by reassigning the array with a snapshot
     // This ensures $derived computations in consumers (like ForkRepoDialog) re-run
     progress = $state.snapshot(progress) as ForkProgress[];
+
+    const didChange =
+      !previous ||
+      previous.message !== message ||
+      previous.status !== status ||
+      previous.error !== errorMessage;
+
+    if (didChange) {
+      progressActivityId += 1;
+      progressHistory = [
+        ...progressHistory,
+        {
+          id: progressActivityId,
+          ...progressItem,
+        },
+      ];
+    }
 
     onProgress?.($state.snapshot(progress) as ForkProgress[]);
   }
@@ -494,19 +532,48 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       throw new Error("Fork operation already in progress");
     }
 
+    console.log("[useForkRepo] Starting forkRepository", {
+      sourceOwner: originalRepo?.owner,
+      sourceRepo: originalRepo?.name,
+      forkName: config?.forkName,
+      provider: config?.provider,
+      sourceCloneUrlCount: originalRepo?.cloneUrls?.length || 0,
+      hasSharedWorkerApi: Boolean(options.workerApi),
+      hasSharedWorkerInstance: Boolean(options.workerInstance),
+    });
+
     isForking = true;
     error = null;
     warning = null;
+    isComplete = false;
     progress = [];
+    progressHistory = [];
+    progressActivityId = 0;
+    noteProgressActivity("fork: starting session");
     const sessionAbortController = new AbortController();
     abortController = sessionAbortController;
     const abortSignal = sessionAbortController.signal;
+    const stallWatchdog = setInterval(() => {
+      if (!isForking || lastProgressAt === 0) return;
+
+      const idleMs = Date.now() - lastProgressAt;
+      if (idleMs < stallLogThresholdMs) return;
+
+      console.warn("[useForkRepo] Fork progress stall watchdog", {
+        idleMs,
+        lastProgressSummary,
+        provider: config?.provider,
+        sourceRepo: `${originalRepo?.owner || "unknown"}/${originalRepo?.name || "unknown"}`,
+        forkName: config?.forkName,
+      });
+      stallLogThresholdMs += 15000;
+    }, 5000);
 
     let graspEventsPublished = false;
     let graspPushCompleted = false;
     let graspPushAttempted = false;
     let graspPublishAck: GraspPublishRelayAck | null = null;
-    let graspRollbackContext: { repoName: string; relays: string[] } | null = null;
+    let graspPushedRefsCount = 0;
     let graspPushReport:
       | {
           pushedRefs: string[];
@@ -515,10 +582,20 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           partialSuccess: boolean;
         }
       | undefined;
+    let publishAttempted = false;
+    let publishedRepoRollbackContext: { repoName: string; relays: string[] } | null = null;
+    let rollbackRemoteUrl: string | null = null;
+    let rollbackLocalRepoId: string | null = null;
+    const provider = config.provider || "github";
+    let providerToken: string | undefined;
+    let relayUrl: string | undefined;
+    let destinationPath = config.forkName;
+    let gitWorkerApi: any = null;
 
     const cloneAttemptStepByAttempt = new Map<number, string>();
     const cloneAttemptMeta = new Map<number, { total: number; url: string }>();
     const finalizedCloneAttempts = new Set<number>();
+    const activeWorkerRepoIds = new Set<string>();
     let activeCloneAttempt: number | null = null;
     let lastWorkerPhase = "";
 
@@ -537,6 +614,15 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       if (!payload || typeof payload !== "object") return;
       if (payload.type !== "clone-progress") return;
 
+      const payloadRepoId = String(payload.repoId || "").trim();
+      if (
+        activeWorkerRepoIds.size > 0 &&
+        payloadRepoId &&
+        !activeWorkerRepoIds.has(payloadRepoId)
+      ) {
+        return;
+      }
+
       const phase = String(payload.phase || "").trim();
       if (!phase) return;
 
@@ -551,6 +637,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         });
 
         if (attemptPhase.type === "start") {
+          console.log("[useForkRepo] Worker clone attempt started", attemptPhase);
           activeCloneAttempt = attempt;
           finalizedCloneAttempts.delete(attempt);
           updateProgress(
@@ -567,6 +654,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         }
 
         if (attemptPhase.type === "failed") {
+          console.warn("[useForkRepo] Worker clone attempt failed", attemptPhase);
           finalizedCloneAttempts.add(attempt);
           if (activeCloneAttempt === attempt) activeCloneAttempt = null;
           const reason = attemptPhase.error ? ` (${attemptPhase.error})` : "";
@@ -585,6 +673,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           return;
         }
 
+        console.log("[useForkRepo] Worker clone attempt succeeded", attemptPhase);
         finalizedCloneAttempts.add(attempt);
         if (activeCloneAttempt === attempt) activeCloneAttempt = null;
         updateProgress(
@@ -621,9 +710,21 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       if (phase !== lastWorkerPhase) {
         lastWorkerPhase = phase;
+        console.log("[useForkRepo] Worker progress phase", {
+          phase,
+          repoId: payload.repoId,
+          progress: payload.progress,
+        });
         updateProgress("fork", phase, "running");
       }
     };
+
+    let detachWorkerProgressListener: (() => void) | null = null;
+    let temporaryWorkerClient: {
+      api: any;
+      worker: Worker;
+      terminate?: () => void;
+    } | null = null;
 
     try {
       throwIfAborted(abortSignal);
@@ -638,7 +739,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       }
 
       // Step 1: Determine provider and validate token (skip token for GRASP)
-      const provider = config.provider || "github"; // Default to GitHub for backward compatibility
       const providerHost =
         provider === "github"
           ? "github.com"
@@ -649,9 +749,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
               : provider === "bitbucket"
                 ? "bitbucket.org"
                 : "github.com";
-
-      let providerToken: string | undefined;
-      let relayUrl: string | undefined;
 
       if (provider === "grasp") {
         updateProgress("validate", "Validating GRASP configuration...", "running");
@@ -680,23 +777,37 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       // Step 2: Get current user and fork repository using tryTokensForHost for fallback retries
       updateProgress("user", "Getting current user info...", "running");
 
-      // Use passed workerApi if available, otherwise create new worker
-      let gitWorkerApi: any;
+      // Use passed workerApi if available, otherwise create a dedicated worker for this session
       if (options.workerApi) {
         gitWorkerApi = options.workerApi;
-        // Need worker for GRASP - create temporary one if not available
-        const { getGitWorker } = await import("@nostr-git/core/worker");
-        getGitWorker({ onProgress: handleForkWorkerProgress });
+        if (options.workerInstance) {
+          const handleSharedWorkerMessage = (event: MessageEvent) => {
+            const data = event?.data;
+            if (!data || typeof data !== "object") return;
+            if (data.type === "clone-progress" || data.type === "merge-progress") {
+              handleForkWorkerProgress(event);
+            }
+          };
+
+          options.workerInstance.addEventListener("message", handleSharedWorkerMessage);
+          detachWorkerProgressListener = () => {
+            options.workerInstance?.removeEventListener("message", handleSharedWorkerMessage);
+          };
+          console.log("[useForkRepo] Using provided shared worker instance for fork progress");
+        } else {
+          console.warn(
+            "[useForkRepo] workerApi provided without workerInstance; detailed worker progress updates may be missing"
+          );
+        }
       } else {
         const { getGitWorker } = await import("@nostr-git/core/worker");
-        const workerInstance = getGitWorker({ onProgress: handleForkWorkerProgress });
-        gitWorkerApi = workerInstance.api;
+        temporaryWorkerClient = getGitWorker({ onProgress: handleForkWorkerProgress });
+        gitWorkerApi = temporaryWorkerClient.api;
+        console.log("[useForkRepo] Created dedicated worker for fork session");
       }
 
-      // Use fork name as default local directory path (browser virtual file system).
-      // For GRASP, this is overridden to a canonical owner/name path after getCurrentUser.
-      let destinationPath = config.forkName;
-
+      // Use a canonical owner/name local directory path once the destination account is known.
+      // Until then, keep the requested fork name as a temporary placeholder.
       // EventIO handles signing internally - no more signer registration needed!
       let workerResult: any;
       let graspCurrentUser: string | undefined;
@@ -714,12 +825,21 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         // Ensure worker local repo path is canonical (owner/name) so subsequent pushToRemote
         // can resolve repoId -> dir correctly.
         destinationPath = `${currentUser}/${config.forkName}`;
+        rollbackLocalRepoId = destinationPath;
 
         // Do not hard-block when a GRASP repo appears to exist already.
         // Existing empty repos can happen after partial failures and should be recoverable by retrying push.
 
         // Step 3: Fork and clone repository using git-worker
         updateProgress("fork", "Creating fork and cloning repository...", "running");
+        activeWorkerRepoIds.clear();
+        activeWorkerRepoIds.add(destinationPath);
+        console.log("[useForkRepo] Invoking worker forkAndCloneRepo", {
+          provider,
+          destinationPath,
+          relayUrl,
+          sourceCloneUrls: originalRepo.cloneUrls,
+        });
         workerResult = await runAbortable(abortSignal, () =>
           gitWorkerApi.forkAndCloneRepo({
             owner: originalRepo.owner,
@@ -742,14 +862,26 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         workerResult = await runAbortable(abortSignal, () =>
           tryTokensForHost(tokens, providerHost, async (token: string, host: string) => {
             throwIfAborted(abortSignal);
+            providerToken = token;
             // Get current user with this token
             const gitServiceApi = getGitServiceApi(provider as any, token, relayUrl);
             const userData = await gitServiceApi.getCurrentUser();
             const currentUser = userData.login;
             updateProgress("user", `Current user: ${currentUser}`, "completed");
+            destinationPath = `${currentUser}/${config.forkName}`;
+            rollbackLocalRepoId = destinationPath;
 
             // Fork and clone repository using git-worker with this token
             updateProgress("fork", "Creating fork and cloning repository...", "running");
+            activeWorkerRepoIds.clear();
+            activeWorkerRepoIds.add(destinationPath);
+            console.log("[useForkRepo] Invoking worker forkAndCloneRepo", {
+              provider,
+              host,
+              forkName: config.forkName,
+              destinationPath,
+              sourceCloneUrls: originalRepo.cloneUrls,
+            });
             const result = await gitWorkerApi.forkAndCloneRepo({
               owner: originalRepo.owner,
               repo: originalRepo.name,
@@ -798,6 +930,8 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         workerResult.forkUrl = `${baseHttp}/${ownerNpub}/${config.forkName}.git`;
         workerResult.repoId = `${ownerNpub}/${config.forkName}`;
       }
+      rollbackRemoteUrl = workerResult?.forkUrl || rollbackRemoteUrl;
+      rollbackLocalRepoId = workerResult?.localRepoId || rollbackLocalRepoId;
       updateProgress("fork", "Repository forked and cloned successfully", "completed");
 
       // Step 4: Create NIP-34 events
@@ -816,6 +950,13 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
 
       const requestedRelays = (config.relays || []).map((r) => r.trim()).filter(Boolean);
       const relays = [...requestedRelays];
+      const rollbackRelays = Array.from(
+        new Set((provider === "grasp" ? [relayUrl || "", ...relays] : relays).filter(Boolean))
+      );
+      publishedRepoRollbackContext = {
+        repoName: config.forkName,
+        relays: rollbackRelays,
+      };
 
       const rawMaintainers = [userPubkey, ...(config.maintainers || [])].filter(
         (value): value is string => Boolean(value && value.trim())
@@ -915,10 +1056,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         });
         announcementEvent = graspEvents.announcementEvent;
         stateEvent = graspEvents.stateEvent;
-        graspRollbackContext = {
-          repoName: config.forkName,
-          relays: Array.from(new Set([relayUrl || "", ...(relays || [])])).filter(Boolean),
-        };
       }
 
       updateProgress("events", "Nostr events created successfully", "completed");
@@ -937,6 +1074,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
               "Publishing GRASP announcement event...",
               "running"
             );
+            publishAttempted = true;
             const announcementResult = await onPublishEvent(announcementEvent);
             graspPublishAck = extractPublishRelayAck(announcementResult);
             console.log("✅ Published GRASP repo announcement event");
@@ -948,6 +1086,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
             );
           } else {
             updateProgress("publish", "Publishing to Nostr relays...", "running");
+            publishAttempted = true;
             await onPublishEvent(announcementEvent);
             console.log("✅ Published repo announcement event");
             await onPublishEvent(stateEvent);
@@ -959,10 +1098,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           if (provider === "grasp") {
             throw publishError;
           }
-          const message =
-            publishError instanceof Error ? publishError.message : String(publishError);
-          warning = `Fork succeeded, but publishing Nostr events failed: ${message}`;
-          updateProgress("publish", "Publishing to Nostr relays failed (non-fatal)", "completed");
+          throw publishError;
         }
       } else if (provider === "grasp") {
         throw new Error("GRASP fork requires publishing repo announcement and state events");
@@ -1102,6 +1238,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           // (e.g., default branch during subsequent tag pushes).
           if (onPublishEvent) {
             try {
+              publishAttempted = true;
               const stateRefKeys = Array.from(new Set([...acceptedRefsForState, item.ref]));
               const stateRefs = stateRefKeys
                 .map((fullRef) => refDetailsByFullRef.get(fullRef))
@@ -1194,6 +1331,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
           new Map(failedRefs.map((item) => [item.ref, item])).values()
         );
         const uniquePushWarnings = Array.from(new Set(pushWarnings));
+        graspPushedRefsCount = uniquePushedRefs.length;
 
         if (uniquePushedRefs.length === 0) {
           throw new Error(
@@ -1208,6 +1346,7 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         if (onPublishEvent && uniquePushedRefs.length > 0) {
           try {
             updateProgress("publish-final-state", "Publishing final GRASP state...", "running");
+            publishAttempted = true;
             const pushedHead = uniquePushedRefs.find(
               (r) => r === `refs/heads/${workerResult.defaultBranch}`
             )
@@ -1295,38 +1434,81 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         ...(graspPushReport ? { pushReport: graspPushReport } : {}),
       };
 
+      isComplete = true;
       onForkCompleted?.(result);
       return result;
     } catch (err) {
-      if (
-        config.provider === "grasp" &&
-        graspEventsPublished &&
-        !graspPushCompleted &&
-        !graspPushAttempted &&
-        graspRollbackContext &&
-        onRollbackPublishedRepoEvents
-      ) {
-        updateProgress("rollback", "Rolling back published GRASP repo events...", "running");
+      const rollbackPlan = getForkRollbackPlan({
+        provider,
+        publishAttempted,
+        graspEventsPublished,
+        graspPushCompleted,
+        graspPushAttempted,
+        graspPushedRefsCount,
+        hasPublishedRepoRollbackContext: Boolean(publishedRepoRollbackContext),
+        hasRollbackPublishedRepoEvents: Boolean(onRollbackPublishedRepoEvents),
+        hasRollbackRemoteUrl: Boolean(rollbackRemoteUrl),
+        hasProviderToken: Boolean(providerToken),
+        hasGitWorkerApi: Boolean(gitWorkerApi),
+        hasRollbackLocalRepoId: Boolean(rollbackLocalRepoId),
+      });
+      const rollbackFailures: string[] = [];
+
+      if (rollbackPlan.hasAnyRollback) {
+        updateProgress("rollback", "Rolling back incomplete fork resources...", "running");
+      }
+
+      if (rollbackPlan.rollbackPublishedEvents && publishedRepoRollbackContext) {
         try {
-          await onRollbackPublishedRepoEvents(graspRollbackContext);
-          updateProgress("rollback", "Rolled back published GRASP repo events", "completed");
+          await onRollbackPublishedRepoEvents?.(publishedRepoRollbackContext);
         } catch (rollbackError) {
           const rollbackMessage =
             rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-          updateProgress(
-            "rollback",
-            `Rollback failed: ${rollbackMessage}`,
-            "error",
-            rollbackMessage
-          );
+          rollbackFailures.push(`repo events: ${rollbackMessage}`);
+        }
+      }
+
+      if (rollbackPlan.rollbackRemoteRepo) {
+        try {
+          const rollbackResult = await gitWorkerApi.deleteRemoteRepo({
+            remoteUrl: rollbackRemoteUrl,
+            token: providerToken,
+          });
+
+          if (!rollbackResult?.success) {
+            throw new Error(rollbackResult?.error || "Failed to delete remote fork");
+          }
+        } catch (rollbackError) {
+          const rollbackMessage =
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          rollbackFailures.push(`remote repo: ${rollbackMessage}`);
+        }
+      }
+
+      if (rollbackPlan.rollbackLocalRepo) {
+        try {
+          await gitWorkerApi.deleteRepo({ repoId: rollbackLocalRepoId });
+        } catch (rollbackError) {
+          const rollbackMessage =
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          rollbackFailures.push(`local clone: ${rollbackMessage}`);
+        }
+      }
+
+      if (rollbackPlan.hasAnyRollback) {
+        if (rollbackFailures.length > 0) {
+          const rollbackMessage = `Rollback incomplete: ${rollbackFailures.join("; ")}`;
+          warning = [warning, rollbackMessage].filter(Boolean).join(" | ");
+          updateProgress("rollback", rollbackMessage, "error", rollbackMessage);
+        } else {
+          updateProgress("rollback", "Rolled back incomplete fork resources", "completed");
         }
       }
 
       const errorMessage =
-        err instanceof ForkAbortedError
-          ? err.message
-          : parseForkError(err, config.provider || "github");
+        err instanceof ForkAbortedError ? err.message : parseForkError(err, provider);
       error = errorMessage;
+      isComplete = false;
 
       // Update the current step to error status
       const currentStep = progress.find((p) => p.status === "running");
@@ -1342,6 +1524,9 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       }
       return null;
     } finally {
+      detachWorkerProgressListener?.();
+      temporaryWorkerClient?.terminate?.();
+      clearInterval(stallWatchdog);
       isForking = false;
       if (abortController === sessionAbortController) {
         abortController = null;
@@ -1359,9 +1544,14 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
    * Useful for retrying after errors or starting fresh
    */
   function reset(): void {
+    isComplete = false;
     progress = [];
+    progressHistory = [];
+    progressActivityId = 0;
     error = null;
     warning = null;
+    lastProgressAt = 0;
+    lastProgressSummary = "";
     abortFork("Fork reset");
     isForking = false;
   }
@@ -1371,6 +1561,12 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
     // Reactive state (automatically reactive in Svelte 5)
     get progress() {
       return progress;
+    },
+    get isComplete() {
+      return isComplete;
+    },
+    get progressHistory() {
+      return progressHistory;
     },
     get error() {
       return error;

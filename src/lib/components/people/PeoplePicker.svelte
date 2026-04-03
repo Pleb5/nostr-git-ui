@@ -299,6 +299,7 @@
           </div>
           {#if !disabled}
             <button
+              type="button"
               onclick={() => removeSelection(evt)}
               class="text-gray-400 hover:text-gray-200 transition-colors"
               aria-label="Remove"

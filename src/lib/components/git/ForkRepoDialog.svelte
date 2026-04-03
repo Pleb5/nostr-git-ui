@@ -17,12 +17,13 @@
   import { Repo } from "./Repo.svelte";
   import { useRegistry } from "../../useRegistry";
   import { useForkRepo } from "../../hooks/useForkRepo.svelte";
+  import { deriveForkProgressPhases } from "./fork-progress";
   import { tokens } from "$lib/stores/tokens";
   import { PeoplePicker } from "@nostr-git/ui";
   import { commonHashtags } from "../../stores/hashtags";
   import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
   import type { Token } from "$lib/stores/tokens";
-  import type { ForkResult, ForkConfig, ForkProgress } from "../../hooks/useForkRepo.svelte";
+  import type { ForkResult, ForkConfig } from "../../hooks/useForkRepo.svelte";
   import { toast } from "../../stores/toast";
   import { validateGraspServerUrl } from "@nostr-git/core/events";
   import { nip19 } from "nostr-tools";
@@ -39,6 +40,8 @@
   interface Props {
     repo: Repo;
     pubkey: string;
+    workerApi?: any;
+    workerInstance?: Worker;
     onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<unknown>;
     onRollbackPublishedRepoEvents?: (params: {
       repoName: string;
@@ -69,6 +72,8 @@
   const {
     repo,
     pubkey,
+    workerApi,
+    workerInstance,
     onPublishEvent,
     onRollbackPublishedRepoEvents,
     graspServerUrls = [],
@@ -86,11 +91,9 @@
   const forkOptions = $derived.by(() => {
     const baseOptions = {
       userPubkey: pubkey,
-      onProgress: (steps: ForkProgress[]) => {
-        console.log("🔄 Fork progress:", steps);
-      },
+      workerApi,
+      workerInstance,
       onForkCompleted: (result: ForkResult) => {
-        console.log("🎉 Fork completed:", result);
         completedResult = result;
         const isPartial = Boolean(result.pushReport?.partialSuccess);
         toast.push({
@@ -121,6 +124,7 @@
 
   // Access reactive state through getters
   const progress = $derived(forkState.progress);
+  const progressPhases = $derived.by(() => deriveForkProgressPhases(progress || []));
   const error = $derived(forkState.error);
   const warning = $derived(forkState.warning);
   const isForking = $derived(forkState.isForking);
@@ -251,12 +255,6 @@
     if (completedResult?.repoId) return completedResult.repoId;
     return `${ownerDisplayOwner}/${forkName}`;
   });
-
-  function getProgressUserDisplay(message: string): string | undefined {
-    const match = String(message || "").match(/^Current user:\s*(.+)$/i);
-    if (!match || !match[1]) return undefined;
-    return toDisplayOwner(match[1].trim());
-  }
   let existingForkInfo = $state<
     | {
         exists: boolean;
@@ -297,7 +295,7 @@
     const currentSeedKey = `${parsedUrl.hostname}/${originalRepo.owner}/${originalRepo.name}`;
     if (currentSeedKey !== formSeedKey) {
       formSeedKey = currentSeedKey;
-      forkName = `${originalRepo.name}-fork`;
+      forkName = originalRepo.name;
       selectedService = getDefaultService(parsedUrl.hostname);
     }
   });
@@ -936,17 +934,7 @@
   });
 
   // Computed properties for progress handling
-  const isProgressComplete = $derived.by(() => {
-    // If no progress or empty progress array, fork hasn't started yet
-    if (!progress || progress.length === 0) return false;
-    // Only complete if we have progress steps AND all are completed
-    const result = progress.length > 0 && progress.every((step) => step.status === "completed");
-    console.log("🔍 ForkRepoDialog: isProgressComplete =", result, {
-      progress,
-      progressLength: progress?.length,
-    });
-    return result;
-  });
+  const isProgressComplete = $derived(Boolean(forkState.isComplete));
 
   const currentProgressMessage = $derived.by(() => {
     if (!progress || progress.length === 0) return "";
@@ -2113,51 +2101,59 @@
           </div>
         {:else if isForking && progress && progress.length > 0}
           <div class="space-y-4">
-            <div class="flex items-center space-x-3">
-              {#if isProgressComplete}
-                <CheckCircle2 class="w-5 h-5 text-green-400" />
-                <span class="text-green-400 font-medium">Fork completed successfully!</span>
-              {:else}
-                <Loader2 class="w-5 h-5 text-blue-400 animate-spin" />
-                <span class="text-white">{currentProgressMessage}</span>
-              {/if}
+            <div>
+              <h3 class="text-lg font-medium text-white mb-1">Fork progress</h3>
+              <p class="text-sm text-gray-400">
+                This may take a few minutes. Don't close this window while the fork is running.
+              </p>
             </div>
 
-            <!-- Progress Steps -->
-            <div class="space-y-2">
-              {#each progress as step}
-                {@const progressUser = getProgressUserDisplay(step.message)}
-                {@const progressUserIsNostr = /^(nostr:)?(npub|nprofile)1/i.test(
-                  progressUser || ""
-                )}
-                <div class="flex items-center space-x-2 text-sm">
-                  {#if step.status === "completed"}
-                    <CheckCircle2 class="w-4 h-4 text-green-400" />
-                    {#if progressUser && Markdown && progressUserIsNostr}
-                      <span class="text-green-400">Current user:</span>
-                      <div class="fork-owner-inline text-green-400">
-                        <Markdown content={progressUser} relays={defaultRelays} variant="comment" />
-                      </div>
-                    {:else}
-                      <span class="text-green-400">{step.message}</span>
+            <div class="space-y-0">
+              {#each progressPhases as phase, i}
+                {@const isLast = i === progressPhases.length - 1}
+                <div class="flex gap-3">
+                  <div class="flex flex-col items-center flex-shrink-0">
+                    <div
+                      class="w-8 h-8 rounded-full flex items-center justify-center transition-colors"
+                      class:bg-green-600={phase.status === "completed"}
+                      class:bg-blue-600={phase.status === "active"}
+                      class:bg-red-600={phase.status === "error"}
+                      class:bg-gray-700={phase.status === "pending"}
+                    >
+                      {#if phase.status === "completed"}
+                        <CheckCircle2 class="w-4 h-4 text-white" />
+                      {:else if phase.status === "active"}
+                        <Loader2 class="w-4 h-4 text-white animate-spin" />
+                      {:else if phase.status === "error"}
+                        <AlertCircle class="w-4 h-4 text-white" />
+                      {:else}
+                        <span class="text-xs font-medium text-gray-300">{i + 1}</span>
+                      {/if}
+                    </div>
+                    {#if !isLast}
+                      <div
+                        class="w-0.5 h-6 mt-1 rounded-full transition-colors"
+                        class:bg-green-600={phase.status === "completed"}
+                        class:bg-gray-700={phase.status !== "completed"}
+                      ></div>
                     {/if}
-                  {:else if step.status === "running"}
-                    <Loader2 class="w-4 h-4 text-blue-400 animate-spin" />
-                    {#if progressUser && Markdown && progressUserIsNostr}
-                      <span class="text-blue-400">Current user:</span>
-                      <div class="fork-owner-inline text-blue-400">
-                        <Markdown content={progressUser} relays={defaultRelays} variant="comment" />
-                      </div>
-                    {:else}
-                      <span class="text-blue-400">{step.message}</span>
+                  </div>
+                  <div class="flex-1 min-w-0 pb-4">
+                    <p
+                      class="text-sm font-medium transition-colors"
+                      class:text-green-400={phase.status === "completed"}
+                      class:text-blue-400={phase.status === "active"}
+                      class:text-red-400={phase.status === "error"}
+                      class:text-gray-500={phase.status === "pending"}
+                    >
+                      {phase.label}
+                    </p>
+                    {#if phase.status !== "pending" && phase.detail}
+                      <p class="text-sm text-gray-400 mt-0.5 truncate" title={phase.detail}>
+                        {phase.detail}
+                      </p>
                     {/if}
-                  {:else if step.status === "error"}
-                    <AlertCircle class="w-4 h-4 text-red-400" />
-                    <span class="text-red-400">{step.message}</span>
-                  {:else}
-                    <div class="w-4 h-4 rounded-full border-2 border-gray-600"></div>
-                    <span class="text-gray-400">{step.message}</span>
-                  {/if}
+                  </div>
                 </div>
               {/each}
             </div>
