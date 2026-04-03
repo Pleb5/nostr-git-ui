@@ -124,6 +124,8 @@
   let validatedForUrl = $state<string | null>(null);
   let validationTimer: ReturnType<typeof setTimeout> | null = null;
   let sourceValidationRunId = 0;
+  let sourceAccessMode = $state<"token" | "anonymous" | null>(null);
+  let validatedSourceAccess = $state<SourceAccessResult | null>(null);
 
   // Form state - Step 2
   let repoMetadata = $state<{
@@ -889,13 +891,52 @@
   }
 
   interface SourceAccessResult {
-    token: string;
-    ownership: Awaited<ReturnType<typeof checkRepoOwnership>>;
+    mode: "token" | "anonymous";
+    token: string | null;
+    ownership: Awaited<ReturnType<typeof checkRepoOwnership>> | null;
+    repo: Awaited<ReturnType<typeof checkRepoOwnership>>["repo"];
+    isOwner: boolean;
+  }
+
+  class SourceAccessFallbackError extends Error {
+    tokenError: unknown;
+    anonymousError: unknown;
+
+    constructor(tokenError: unknown, anonymousError: unknown) {
+      super("Source access failed for both token and anonymous modes");
+      this.tokenError = tokenError;
+      this.anonymousError = anonymousError;
+    }
+  }
+
+  function classifySourceReadError(message: string): string {
+    const normalized = message.toLowerCase();
+    if (normalized.includes("404") || normalized.includes("not found")) {
+      return "Repository not found or not publicly accessible";
+    }
+    if (
+      normalized.includes("401") ||
+      normalized.includes("403") ||
+      normalized.includes("unauthorized") ||
+      normalized.includes("forbidden")
+    ) {
+      return "Repository is not publicly accessible";
+    }
+    return "Could not access the repository publicly";
   }
 
   function toFriendlySourceAccessError(error: unknown, host: string): string {
+    if (error instanceof SourceAccessFallbackError) {
+      const publicReason = classifySourceReadError(
+        error.anonymousError instanceof Error
+          ? error.anonymousError.message
+          : String(error.anonymousError || "")
+      );
+      return `${publicReason}. Add a source token in settings for private repositories or richer imports.`;
+    }
+
     if (error instanceof TokenNotFoundError) {
-      return `No token found for ${host}. Please add one in settings.`;
+      return `No token found for ${host}. Public repositories can still be imported anonymously if provider access is available.`;
     }
 
     const classify = (message: string): string => {
@@ -935,21 +976,45 @@
     const normalizedRepoUrl = repoUrl.trim();
     const normalizedSourceHost = normalizeTokenHostForTarget(parsed.host);
 
-    return await tryTokensForHost(
-      allTokens,
-      (tokenHost: string) => {
-        const normalizedTokenHost = normalizeTokenHostForTarget(tokenHost);
-        return (
-          matchesHost(normalizedTokenHost, normalizedSourceHost) ||
-          matchesHost(normalizedSourceHost, normalizedTokenHost)
-        );
-      },
-      async (candidateToken: string) => {
-        const api = getGitServiceApiFromUrl(normalizedRepoUrl, candidateToken);
-        const ownership = await checkRepoOwnership(api, parsed.owner, parsed.repo);
-        return { token: candidateToken, ownership };
+    try {
+      const tokenAccess = await tryTokensForHost(
+        allTokens,
+        (tokenHost: string) => {
+          const normalizedTokenHost = normalizeTokenHostForTarget(tokenHost);
+          return (
+            matchesHost(normalizedTokenHost, normalizedSourceHost) ||
+            matchesHost(normalizedSourceHost, normalizedTokenHost)
+          );
+        },
+        async (candidateToken: string) => {
+          const api = getGitServiceApiFromUrl(normalizedRepoUrl, candidateToken);
+          const ownership = await checkRepoOwnership(api, parsed.owner, parsed.repo);
+          return {
+            mode: "token" as const,
+            token: candidateToken,
+            ownership,
+            repo: ownership.repo,
+            isOwner: ownership.isOwner,
+          };
+        }
+      );
+
+      return tokenAccess;
+    } catch (tokenError) {
+      try {
+        const api = getGitServiceApiFromUrl(normalizedRepoUrl, "");
+        const repo = await api.getRepo(parsed.owner, parsed.repo);
+        return {
+          mode: "anonymous",
+          token: null,
+          ownership: null,
+          repo,
+          isOwner: false,
+        };
+      } catch (anonymousError) {
+        throw new SourceAccessFallbackError(tokenError, anonymousError);
       }
-    );
+    }
   }
 
   async function validateSourceToken() {
@@ -988,11 +1053,15 @@
       const access = await resolveSourceAccess(parsed);
       if (runId !== sourceValidationRunId) return;
       sourceToken = access.token;
+      sourceAccessMode = access.mode;
+      validatedSourceAccess = access;
       tokenValidated = true;
       validatedForUrl = repoUrl.trim();
     } catch (error) {
       if (runId !== sourceValidationRunId) return;
       sourceToken = null;
+      sourceAccessMode = null;
+      validatedSourceAccess = null;
       tokenValidated = false;
       validatedForUrl = null;
       tokenValidationError = toFriendlySourceAccessError(error, parsed.host);
@@ -1014,6 +1083,8 @@
       validationTimer = null;
     }
     sourceToken = null;
+    sourceAccessMode = null;
+    validatedSourceAccess = null;
     tokenValidated = false;
     tokenValidationError = undefined;
     validatedForUrl = null;
@@ -1066,6 +1137,14 @@
     void runTargetPreflight();
   });
 
+  $effect(() => {
+    if (sourceAccessMode !== "anonymous") return;
+
+    mirrorIssues = false;
+    mirrorPullRequests = false;
+    mirrorComments = false;
+  });
+
   // Step 1: Validate and proceed to Step 2
   async function handleStep1Next() {
     const urlError = validateUrl(repoUrl);
@@ -1089,20 +1168,28 @@
       // Fetch repo metadata and check ownership
       isCheckingOwnership = true;
       try {
-        const api = getGitServiceApiFromUrl(normalizedRepoUrl, sourceToken);
-        const ownership = await checkRepoOwnership(api, parsed.owner, parsed.repo);
+        const access =
+          validatedSourceAccess && validatedForUrl === normalizedRepoUrl
+            ? validatedSourceAccess
+            : await resolveSourceAccess(parsed);
+
+        sourceToken = access.token;
+        sourceAccessMode = access.mode;
+        validatedSourceAccess = access;
+        tokenValidated = true;
+        validatedForUrl = normalizedRepoUrl;
 
         repoMetadata = {
           owner: parsed.owner,
           name: parsed.repo,
-          defaultBranch: ownership.repo.defaultBranch || "main",
-          description: ownership.repo.description,
-          htmlUrl: ownership.repo.htmlUrl,
-          isOwner: ownership.isOwner,
+          defaultBranch: access.repo.defaultBranch || "main",
+          description: access.repo.description,
+          htmlUrl: access.repo.htmlUrl,
+          isOwner: access.isOwner,
         };
 
         // Owner: mirror issues/PRs/comments by default; non-owner: start conservative
-        const mirrorByDefault = ownership.isOwner;
+        const mirrorByDefault = access.mode === "token" && access.isOwner;
         mirrorIssues = mirrorByDefault;
         mirrorPullRequests = mirrorByDefault;
         mirrorComments = mirrorByDefault;
@@ -1114,8 +1201,8 @@
           normalizedRepoUrl,
           parsed.owner,
           parsed.repo,
-          sourceToken || "",
-          ownership.repo.defaultBranch || "main"
+          access.token || "",
+          access.repo.defaultBranch || "main"
         );
       } catch (err) {
         validationError = toFriendlySourceAccessError(err, parsed.host);
@@ -1168,11 +1255,11 @@
 
     validationError = undefined;
 
-    if (!sourceToken) {
-      validationError = "Source repository access token is missing. Go back and re-open Step 2.";
+    if (!validatedSourceAccess || validatedForUrl !== repoUrl.trim()) {
+      validationError = "Source repository access is missing. Go back and re-validate access.";
       return;
     }
-    const token = sourceToken;
+    const token = sourceToken || "";
 
     // Create import config
     const config: ImportConfig = {
@@ -1181,9 +1268,9 @@
       sinceDate: sinceDate,
       forkRepo: false,
       destinationRepoName: targetRepoName,
-      mirrorIssues,
-      mirrorPullRequests,
-      mirrorComments,
+      mirrorIssues: sourceAccessMode === "anonymous" ? false : mirrorIssues,
+      mirrorPullRequests: sourceAccessMode === "anonymous" ? false : mirrorPullRequests,
+      mirrorComments: sourceAccessMode === "anonymous" ? false : mirrorComments,
       relays: selectedRelays,
     };
     (config as ImportConfig & { selectedBranches?: string[] }).selectedBranches =
@@ -1471,18 +1558,30 @@
                 <div class="flex items-center space-x-2">
                   {#if tokenValidated}
                     <CheckCircle2 class="w-5 h-5 text-green-400" />
-                    <span class="text-sm text-green-400">Source access validated</span>
+                    <span class="text-sm text-green-400">
+                      {#if sourceAccessMode === "anonymous"}
+                        Public source access validated (anonymous)
+                      {:else}
+                        Source access validated
+                      {/if}
+                    </span>
                   {:else if tokenValidationError}
                     <AlertCircle class="w-5 h-5 text-red-400" />
                     <span class="text-sm text-red-400">{tokenValidationError}</span>
                   {:else if isValidatingToken}
                     <Loader2 class="w-5 h-5 text-gray-400 animate-spin" />
-                    <span class="text-sm text-gray-400">Validating token access...</span>
+                    <span class="text-sm text-gray-400">Validating source access...</span>
                   {:else}
                     <AlertCircle class="w-5 h-5 text-yellow-400" />
                     <span class="text-sm text-yellow-400">Validate source access to continue</span>
                   {/if}
                 </div>
+                {#if tokenValidated && sourceAccessMode === "anonymous"}
+                  <p class="mt-2 text-xs text-amber-300">
+                    Repo-only import is available anonymously. Importing issues, pull requests, and
+                    comments still requires a source token.
+                  </p>
+                {/if}
               </div>
             {/if}
 
@@ -1921,43 +2020,64 @@
                 </label>
 
                 <!-- Mirror Issues -->
-                <label class="flex items-start space-x-3">
+                <label
+                  class={`flex items-start space-x-3 ${sourceAccessMode === "anonymous" ? "cursor-not-allowed" : ""}`}
+                >
                   <input
                     type="checkbox"
                     bind:checked={mirrorIssues}
-                    class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                    disabled={sourceAccessMode === "anonymous"}
+                    class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <div class="flex-1">
                     <span class="text-sm text-white flex items-center gap-2">
                       <FileText class="w-4 h-4" />
                       Mirror Issues
                     </span>
-                    <p class="text-xs text-gray-400 mt-0.5">Import all issues</p>
+                    <p class="text-xs text-gray-400 mt-0.5">
+                      {#if sourceAccessMode === "anonymous"}
+                        Requires a source token
+                      {:else}
+                        Import all issues
+                      {/if}
+                    </p>
                   </div>
                 </label>
 
                 <!-- Mirror Pull Requests -->
-                <label class="flex items-start space-x-3">
+                <label
+                  class={`flex items-start space-x-3 ${sourceAccessMode === "anonymous" ? "cursor-not-allowed" : ""}`}
+                >
                   <input
                     type="checkbox"
                     bind:checked={mirrorPullRequests}
-                    class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                    disabled={sourceAccessMode === "anonymous"}
+                    class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <div class="flex-1">
                     <span class="text-sm text-white flex items-center gap-2">
                       <GitBranch class="w-4 h-4" />
                       Mirror Pull Requests
                     </span>
-                    <p class="text-xs text-gray-400 mt-0.5">Import all pull requests</p>
+                    <p class="text-xs text-gray-400 mt-0.5">
+                      {#if sourceAccessMode === "anonymous"}
+                        Requires a source token
+                      {:else}
+                        Import all pull requests
+                      {/if}
+                    </p>
                   </div>
                 </label>
 
                 <!-- Mirror Comments -->
-                <label class="flex items-start space-x-3">
+                <label
+                  class={`flex items-start space-x-3 ${sourceAccessMode === "anonymous" ? "cursor-not-allowed" : ""}`}
+                >
                   <input
                     type="checkbox"
                     bind:checked={mirrorComments}
-                    disabled={!mirrorIssues && !mirrorPullRequests}
+                    disabled={sourceAccessMode === "anonymous" ||
+                      (!mirrorIssues && !mirrorPullRequests)}
                     class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <div class="flex-1">
@@ -1966,14 +2086,23 @@
                       Mirror Comments
                     </span>
                     <p class="text-xs text-gray-400 mt-0.5">
-                      Import all comments for issues and PRs
+                      {#if sourceAccessMode === "anonymous"}
+                        Requires a source token
+                      {:else}
+                        Import all comments for issues and PRs
+                      {/if}
                     </p>
                   </div>
                 </label>
               </div>
               <p class="text-xs text-gray-400 mt-3">
-                Note: For issues and comments, placeholder Nostr accounts will be created on the fly
-                with matching names of the original authors.
+                {#if sourceAccessMode === "anonymous"}
+                  Anonymous source imports currently mirror repo contents only. Add a source token
+                  to import issues, pull requests, comments, and richer metadata.
+                {:else}
+                  Note: For issues and comments, placeholder Nostr accounts will be created on the
+                  fly with matching names of the original authors.
+                {/if}
               </p>
             </div>
 

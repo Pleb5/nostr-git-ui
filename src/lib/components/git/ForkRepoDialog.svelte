@@ -841,7 +841,7 @@
 
         // Also check if a repo with the desired fork name already exists
         try {
-          const existingRepo = await api.getRepo(username, forkName);
+          const existingRepo = await api.getRepo(username, forkName.trim());
 
           // Repo with this name exists
           const serviceLabel =
@@ -1001,8 +1001,9 @@
   }
 
   async function handleFork(workflowAction?: "include" | "omit") {
+    const normalizedForkName = forkName.trim();
     console.log("🚀 ForkRepoDialog: handleFork called", {
-      forkName,
+      forkName: normalizedForkName,
       originalRepo,
       selectedService,
     });
@@ -1022,7 +1023,7 @@
       return;
     }
 
-    const nameError = validateForkName(forkName);
+    const nameError = validateForkName(normalizedForkName);
     if (nameError) {
       console.log("❌ ForkRepoDialog: Validation error:", nameError);
       validationError = nameError;
@@ -1031,6 +1032,7 @@
 
     console.log("🚀 ForkRepoDialog: Starting fork operation with config:", {
       forkName,
+      normalizedForkName,
       selectedService,
       visibility: "public",
     });
@@ -1070,7 +1072,7 @@
                   : "github";
 
       const forkConfig: ForkConfig = {
-        forkName,
+        forkName: normalizedForkName,
         visibility: "public",
         provider,
         relayUrl: relayParam,

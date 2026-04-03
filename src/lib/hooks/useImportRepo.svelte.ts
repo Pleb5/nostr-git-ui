@@ -279,6 +279,8 @@ interface ImportContext {
   api: Awaited<ReturnType<typeof getGitServiceApiFromUrl>>;
   platform: string;
   parsed: ReturnType<typeof parseRepoUrl>;
+  sourceToken?: string;
+  sourceAccessMode: "token" | "anonymous";
 
   // Repository info
   finalRepo: RepoMetadata | null;
@@ -521,7 +523,7 @@ async function runAbortableOperation<T>(
  */
 async function initializeImportContext(
   repoUrl: string,
-  token: string,
+  token: string | null | undefined,
   config: ImportConfig,
   userPubkey: string,
   updateProgress: (step: string, current?: number, total?: number) => void,
@@ -542,19 +544,16 @@ async function initializeImportContext(
   updateProgress(`Connecting to ${platform}...`);
   abortController.throwIfAborted();
 
-  if (!token || !token.trim()) {
-    throw new Error(
-      `Authentication token required for ${platform}. Please add a token in settings.`
-    );
-  }
-
-  const api = getGitServiceApiFromUrl(repoUrl, token);
+  const normalizedToken = token?.trim() || "";
+  const api = getGitServiceApiFromUrl(repoUrl, normalizedToken);
 
   return {
     abortController,
     platform,
     parsed,
     api,
+    sourceToken: normalizedToken || undefined,
+    sourceAccessMode: normalizedToken ? "token" : "anonymous",
     config,
     userPubkey,
     batchSize: config.relayBatchSize ?? 30,
@@ -578,6 +577,20 @@ async function initializeImportContext(
 async function validateTokenAndOwnership(
   context: ImportContext
 ): Promise<{ repo: RepoMetadata; isOwner: boolean }> {
+  if (context.sourceAccessMode === "anonymous") {
+    context.updateProgress("Fetching public repository metadata...");
+    context.abortController.throwIfAborted();
+
+    const repo = await context.withRateLimit(context.platform, "GET", () =>
+      context.api.getRepo(context.parsed.owner, context.parsed.repo)
+    );
+
+    return {
+      repo,
+      isOwner: false,
+    };
+  }
+
   // Step 3: Validate token permissions
   context.updateProgress("Validating token permissions...");
   context.abortController.throwIfAborted();
@@ -1827,7 +1840,7 @@ async function resolveRecentBranchPushRefs(
 async function syncRepositoryToRemotes(
   context: ImportContext,
   sourceUrl: string,
-  sourceToken: string,
+  sourceToken: string | undefined,
   targets: ImportRemoteTarget[]
 ): Promise<ImportRemotePushResult[]> {
   if (!targets.length) return [];
@@ -2538,7 +2551,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
    */
   async function importRepository(
     repoUrl: string,
-    token: string,
+    token?: string | null,
     config: ImportConfig = DEFAULT_IMPORT_CONFIG,
     remoteTargets: ImportRemoteTarget[] = []
   ): Promise<ImportResult> {
@@ -2554,6 +2567,15 @@ export function useImportRepo(options: UseImportRepoOptions) {
     // Create rate limiter and wrapper (context progress uses currentPhaseRef)
     const rateLimiter = createRateLimiter(contextUpdateProgress);
     const withRateLimitFn = createWithRateLimit(rateLimiter, abortController);
+    const normalizedToken = token?.trim() || "";
+    const normalizedConfig: ImportConfig = normalizedToken
+      ? config
+      : {
+          ...config,
+          mirrorIssues: false,
+          mirrorPullRequests: false,
+          mirrorComments: false,
+        };
 
     try {
       // Initialize context
@@ -2562,8 +2584,8 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       const partialContext = await initializeImportContext(
         repoUrl,
-        token,
-        config,
+        normalizedToken,
+        normalizedConfig,
         userPubkey,
         contextUpdateProgress,
         abortController,
@@ -2649,7 +2671,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         context.remotePushResults = await syncRepositoryToRemotes(
           context,
           sourceCloneUrl,
-          token,
+          normalizedToken,
           remoteTargets
         );
 
