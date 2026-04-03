@@ -50,6 +50,8 @@
     reviewersCount?: number; // new optional prop
     relays?: string[]; // Relay URLs for EventActions
     isNew?: boolean;
+    onDeleteReaction?: (event: any) => void | Promise<void>;
+    onCreateReaction?: (template: { content: string; tags?: string[][] }) => void | Promise<void>;
   }
 
   const {
@@ -66,6 +68,8 @@
     reviewersCount = 0, // default value
     relays = [],
     isNew = false,
+    onDeleteReaction,
+    onCreateReaction,
   }: Props = $props();
 
   const isPullRequest = $derived(event.kind === GIT_PULL_REQUEST);
@@ -462,8 +466,8 @@
           event={event}
           url={relayUrl}
           reactionClass="tooltip-left"
-          deleteReaction={() => {}}
-          createReaction={() => {}}
+          deleteReaction={onDeleteReaction || (() => {})}
+          createReaction={onCreateReaction || (() => {})}
           noTooltip={false}
           children={() => {}}
         />

@@ -16,7 +16,7 @@
   import NostrAvatar from "./NostrAvatar.svelte";
   import { fly } from "svelte/transition";
   import RichText from "../RichText.svelte";
-  const { ProfileLink, Card, EventActions } = useRegistry();
+  const { ProfileLink, Card, EventActions, ReactionSummary } = useRegistry();
   import BaseItemCard from "../BaseItemCard.svelte";
 
   interface Props {
@@ -36,6 +36,8 @@
     assignees?: string[]; // Array of assignee pubkeys
     assigneeCount?: number; // Optional prop for displaying number of assignees
     relays?: string[]; // Relay URLs for EventActions
+    onDeleteReaction?: (event: any) => void | Promise<void>;
+    onCreateReaction?: (template: { content: string; tags?: string[][] }) => void | Promise<void>;
   }
   // Accept event and optional author (Profile store)
   const {
@@ -52,6 +54,8 @@
     assigneeCount = 0,
     assignees = [],
     relays = [],
+    onDeleteReaction,
+    onCreateReaction,
   }: Props = $props();
 
   // Get relay URL from relays prop or repo relays or use a default
@@ -269,6 +273,15 @@
     <!-- footer actions (expand) -->
     {#snippet slotFooter()}
       <div class="flex items-center gap-2">
+        <ReactionSummary
+          event={event}
+          url={relayUrl}
+          reactionClass="tooltip-left"
+          deleteReaction={onDeleteReaction || (() => {})}
+          createReaction={onCreateReaction || (() => {})}
+          noTooltip={false}
+          children={() => {}}
+        />
         <EventActions
           event={event}
           url={relayUrl}
