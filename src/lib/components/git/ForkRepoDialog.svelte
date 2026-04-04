@@ -147,6 +147,10 @@
   let shouldCloseAfterAbort = $state(false);
   let isCancelingFork = $state(false);
 
+  function normalizeRelayUrl(url: string): string {
+    return (url || "").trim().replace(/\/+$/, "");
+  }
+
   // Extract repository information from Repo instance
   const cloneUrl = $derived(
     (repo.clone || []).find((url) => {
@@ -272,6 +276,10 @@
   // GRASP-specific state
   let relayUrl = $state("");
   let relayUrlError = $state<string | undefined>();
+  const normalizedRelayUrl = $derived.by(() => normalizeRelayUrl(relayUrl));
+  const shouldIncludeGraspRelay = $derived.by(
+    () => selectedService === "grasp" && validateGraspServerUrl(normalizedRelayUrl)
+  );
 
   // Commit selection state
   let earliestUniqueCommit = $state("");
@@ -288,6 +296,15 @@
   let relaysInitialized = $state(false);
   let tagsInitialized = $state(false);
   let maintainersInitialized = $state(false);
+  const effectivePreferredRelays = $derived.by(() => {
+    const relays = preferredRelays.map(normalizeRelayUrl).filter(Boolean);
+
+    if (shouldIncludeGraspRelay) {
+      return Array.from(new Set([normalizedRelayUrl, ...relays]));
+    }
+
+    return Array.from(new Set(relays));
+  });
 
   let formSeedKey = $state("");
 
@@ -908,7 +925,7 @@
   }
 
   function handleSelectKnownRelay(url: string) {
-    const val = (url || "").trim();
+    const val = normalizeRelayUrl(url);
     relayUrl = val;
     if (!val) {
       relayUrlError = "Relay URL is required for GRASP";
@@ -919,17 +936,14 @@
   }
 
   $effect(() => {
-    if (selectedService !== "grasp") return;
+    if (selectedService !== "grasp" || !shouldIncludeGraspRelay) return;
 
-    const relay = relayUrl.trim();
-    if (!relay) return;
+    const filtered = preferredRelays.filter(
+      (value) => normalizeRelayUrl(value) !== normalizedRelayUrl
+    );
 
-    const isValidRelay = validateGraspServerUrl(relay) || /^wss?:\/\//i.test(relay);
-    if (!isValidRelay) return;
-
-    const alreadyIncluded = preferredRelays.some((value) => value.trim() === relay);
-    if (!alreadyIncluded) {
-      preferredRelays = [...preferredRelays, relay];
+    if (filtered.length !== preferredRelays.length) {
+      preferredRelays = filtered;
     }
   });
 
@@ -1044,7 +1058,7 @@
       // Validate relay URL when GRASP is selected
       let relayParam: string | undefined = undefined;
       if (selectedService === "grasp") {
-        const val = relayUrl.trim();
+        const val = normalizedRelayUrl;
         if (!val) {
           relayUrlError = "Relay URL is required for GRASP";
           return;
@@ -1079,7 +1093,7 @@
         earliestUniqueCommit: earliestUniqueCommit || undefined,
         tags: tags,
         maintainers: maintainers,
-        relays: preferredRelays,
+        relays: effectivePreferredRelays,
       };
 
       if (workflowAction) {
@@ -1665,6 +1679,23 @@
                   Preferred Relays
                 </label>
                 <div class="space-y-2">
+                  {#if shouldIncludeGraspRelay}
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={normalizedRelayUrl}
+                        readonly
+                        aria-label="Primary GRASP relay"
+                        class="flex-1 px-3 py-2 bg-gray-800 border border-blue-500/40 rounded-lg text-white focus:outline-none"
+                      />
+                      <span
+                        class="px-2.5 py-2 text-xs font-medium text-blue-300 bg-blue-500/10 border border-blue-500/30 rounded-lg whitespace-nowrap"
+                      >
+                        Required
+                      </span>
+                    </div>
+                  {/if}
+
                   {#each preferredRelays as r, index}
                     <div class="flex items-center space-x-2">
                       <input
@@ -1751,7 +1782,11 @@
                   {/if}
                 </div>
                 <p class="mt-1 text-xs text-gray-400">
-                  Defaults from the source repo relays (or global defaults if none).
+                  {#if selectedService === "grasp"}
+                    The selected GRASP relay is always included and shown as non-removable above.
+                  {:else}
+                    Defaults from the source repo relays (or global defaults if none).
+                  {/if}
                 </p>
               </div>
             </div>
