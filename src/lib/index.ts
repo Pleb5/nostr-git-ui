@@ -28,6 +28,13 @@ export { tryTokensForHost, getTokensForHost } from "./utils/tokenHelpers";
 export { matchesHost, createHostMatcher } from "./utils/tokenMatcher";
 export { TokenError, AllTokensFailedError, TokenNotFoundError } from "./utils/tokenErrors";
 export {
+  publishGraspRepoStateAndWait,
+  publishGraspRepoStateForPush,
+  waitForGraspRepoStateVisibility,
+  type FetchRelayEvents,
+  type FetchRelayEventsParams,
+} from "./utils/grasp-pipeline";
+export {
   classifyCloneUrlIssue,
   getCloneUrlBannerTitle,
   type CloneUrlIssueKind,

@@ -14,7 +14,9 @@ import {
   normalizeGraspOrigins,
   publishGraspRepoEvents,
   toNpubOrSelf,
+  waitForGraspRepoStateVisibility,
   waitForGraspProvisioning,
+  type FetchRelayEvents,
   type GraspPublishRelayAck,
 } from "../utils/grasp-pipeline.js";
 
@@ -474,6 +476,8 @@ export interface UseNewRepoOptions {
   userPubkey?: string; // User's nostr pubkey (required for GRASP repos)
   /** Callback to create NIP-98 auth header for GRASP push (must be called on main thread) */
   createAuthHeader?: (url: string, method?: string) => Promise<string | null>;
+  /** Fetch events from specific relays for GRASP state visibility checks */
+  onFetchRelayEvents?: FetchRelayEvents;
 }
 
 /**
@@ -499,6 +503,9 @@ export interface UseNewRepoOptions {
  * ```
  */
 export function useNewRepo(options: UseNewRepoOptions = {}) {
+  const GRASP_NEW_REPO_STATE_VISIBILITY_TIMEOUT_MS = 5000;
+  const GRASP_NEW_REPO_STATE_VISIBILITY_POLL_MS = 1000;
+
   let isCreating = $state(false);
   let progress = $state<NewRepoProgress[]>([]);
   let error = $state<string | null>(null);
@@ -618,6 +625,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
       let stateEvent: any = undefined;
       let provisionalAnnouncementCreatedAt: number | undefined;
       let graspPublishAck: GraspPublishRelayAck | null = null;
+      let graspStateAuthorPubkey: string | undefined;
 
       // Publish provisional GRASP events before creating remote repositories.
       if (includesGrasp) {
@@ -634,6 +642,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         if (!graspPubkey) {
           throw new Error("GRASP provider requires user pubkey");
         }
+        graspStateAuthorPubkey = graspPubkey;
 
         const refs =
           localRepo?.initialCommit && config.defaultBranch
@@ -732,6 +741,26 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
                 `Provisioning check timed out (${message}). Continuing with push...`,
                 "running"
               );
+            }
+
+            if (stateEvent) {
+              updateProgress(pushStep, "Waiting for GRASP state visibility...", "running");
+              const visibility = await waitForGraspRepoStateVisibility({
+                relayUrl: primaryRelay,
+                stateEvent,
+                fetchRelayEvents: options.onFetchRelayEvents,
+                authorPubkey: graspStateAuthorPubkey,
+                visibilityTimeoutMs: GRASP_NEW_REPO_STATE_VISIBILITY_TIMEOUT_MS,
+                pollIntervalMs: GRASP_NEW_REPO_STATE_VISIBILITY_POLL_MS,
+              });
+
+              if (!visibility.visible) {
+                updateProgress(
+                  pushStep,
+                  `State not queryable yet. Attempting push anyway...`,
+                  "running"
+                );
+              }
             }
           }
 

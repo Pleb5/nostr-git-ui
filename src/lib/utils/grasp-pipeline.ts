@@ -4,6 +4,7 @@ import {
   type RepoAnnouncementEvent,
   type RepoStateEvent,
 } from "@nostr-git/core/events";
+import type { NostrEvent, NostrFilter } from "@nostr-git/core";
 import { sanitizeRelays } from "@nostr-git/core/utils";
 import { nip19 } from "nostr-tools";
 import { checkGraspRepoExists, checkGraspReceivePackReady } from "./grasp-availability.js";
@@ -14,6 +15,55 @@ export interface GraspPublishRelayAck {
   successCount: number;
   hasRelayOutcomes: boolean;
 }
+
+export interface FetchRelayEventsParams {
+  relays: string[];
+  filters: NostrFilter[];
+  timeoutMs?: number;
+}
+
+export type FetchRelayEvents = (params: FetchRelayEventsParams) => Promise<NostrEvent[]>;
+
+export interface WaitForGraspRepoStateVisibilityParams {
+  relayUrl: string;
+  stateEvent: RepoStateEvent;
+  fetchRelayEvents?: FetchRelayEvents;
+  authorPubkey?: string;
+  visibilityTimeoutMs?: number;
+  pollIntervalMs?: number;
+  settleDelayMs?: number;
+}
+
+export interface PublishGraspRepoStateAndWaitParams {
+  relayUrl: string;
+  stateEvent: RepoStateEvent;
+  onPublishEvent: (event: RepoStateEvent) => Promise<unknown> | unknown;
+  fetchRelayEvents?: FetchRelayEvents;
+  authorPubkey?: string;
+  visibilityTimeoutMs?: number;
+  pollIntervalMs?: number;
+  settleDelayMs?: number;
+}
+
+export interface PublishGraspRepoStateForPushParams {
+  remoteUrl: string;
+  branch: string;
+  commitSha: string;
+  fallbackRepoName?: string;
+  onPublishEvent: (event: RepoStateEvent) => Promise<unknown> | unknown;
+  fetchRelayEvents?: FetchRelayEvents;
+  authorPubkey?: string;
+  visibilityTimeoutMs?: number;
+  pollIntervalMs?: number;
+  settleDelayMs?: number;
+}
+
+export interface GraspStateVisibilityResult {
+  visible: boolean;
+  reason?: string;
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function normalizeRelayForCompare(relay: string): string {
   const trimmed = String(relay || "").trim();
@@ -63,6 +113,108 @@ export function extractPublishRelayAck(result: unknown): GraspPublishRelayAck {
 function intersectRelays(a: string[], b: string[]): string[] {
   const setB = new Set(b);
   return a.filter((relay) => setB.has(relay));
+}
+
+function normalizeRelayOrigin(relayUrl: string): string {
+  return normalizeGraspOrigins(relayUrl).wsOrigin.replace(/\/+$/, "");
+}
+
+function getRepoNameFromStateEvent(stateEvent: RepoStateEvent): string {
+  const repoTag = stateEvent.tags.find((tag) => tag[0] === "d");
+  const repoName = String(repoTag?.[1] || "").trim();
+  if (!repoName) {
+    throw new Error("Repo state event is missing required d tag");
+  }
+  return repoName;
+}
+
+function getExpectedStateRefTags(stateEvent: RepoStateEvent): string[][] {
+  return stateEvent.tags.filter((tag) => String(tag[0] || "").startsWith("refs/"));
+}
+
+function hasMatchingRepoStateEvent(
+  event: NostrEvent | RepoStateEvent | undefined,
+  params: {
+    stateEvent: RepoStateEvent;
+    repoName: string;
+    authorPubkey?: string;
+  }
+): boolean {
+  if (!event || event.kind !== 30618) return false;
+  if (params.authorPubkey && event.pubkey && event.pubkey !== params.authorPubkey) return false;
+
+  const tags = Array.isArray(event.tags) ? event.tags : [];
+  const hasRepoTag = tags.some(
+    (tag) => Array.isArray(tag) && tag[0] === "d" && String(tag[1] || "") === params.repoName
+  );
+
+  if (!hasRepoTag) return false;
+
+  const expectedRefs = getExpectedStateRefTags(params.stateEvent);
+  const refsMatch = expectedRefs.every((expectedTag) =>
+    tags.some(
+      (tag) =>
+        Array.isArray(tag) &&
+        tag[0] === expectedTag[0] &&
+        String(tag[1] || "") === String(expectedTag[1] || "")
+    )
+  );
+
+  if (!refsMatch) return false;
+
+  const expectedHead = params.stateEvent.tags.find((tag) => tag[0] === "HEAD");
+  if (!expectedHead) return true;
+
+  return tags.some(
+    (tag) =>
+      Array.isArray(tag) &&
+      tag[0] === "HEAD" &&
+      String(tag[1] || "") === String(expectedHead[1] || "")
+  );
+}
+
+function buildRepoStateVisibilityFilters(params: {
+  stateEvent: RepoStateEvent;
+  repoName: string;
+  authorPubkey?: string;
+}): NostrFilter[] {
+  const filter: NostrFilter = {
+    kinds: [30618],
+    "#d": [params.repoName],
+    limit: 10,
+  };
+
+  if (params.authorPubkey) {
+    filter.authors = [params.authorPubkey];
+  }
+
+  if (typeof params.stateEvent.created_at === "number") {
+    filter.since = Math.max(0, params.stateEvent.created_at - 10);
+  }
+
+  return [filter];
+}
+
+function parseGraspPushTarget(
+  remoteUrl: string,
+  fallbackRepoName = ""
+): {
+  relayUrl: string;
+  repoName: string;
+} {
+  const parsed = new URL(remoteUrl);
+  const pathSegments = parsed.pathname.split("/").filter(Boolean);
+  const repoSegment = pathSegments[pathSegments.length - 1] || fallbackRepoName;
+  const repoName = repoSegment.replace(/\.git$/i, "");
+
+  if (!repoName) {
+    throw new Error(`Could not determine repository name from ${remoteUrl}`);
+  }
+
+  return {
+    relayUrl: normalizeRelayOrigin(remoteUrl),
+    repoName,
+  };
 }
 
 export function didRelayAckGraspEvents(ack: GraspPublishRelayAck, relayUrl: string): boolean {
@@ -233,6 +385,136 @@ export async function publishGraspRepoEvents(
     hasRelayOutcomes:
       announcementAck.hasRelayOutcomes || stateAck.hasRelayOutcomes || failedRelays.length > 0,
   };
+}
+
+export async function waitForGraspRepoStateVisibility({
+  relayUrl,
+  stateEvent,
+  fetchRelayEvents,
+  authorPubkey,
+  visibilityTimeoutMs = 3000,
+  pollIntervalMs = 500,
+  settleDelayMs = 800,
+}: WaitForGraspRepoStateVisibilityParams): Promise<GraspStateVisibilityResult> {
+  if (!fetchRelayEvents) {
+    if (settleDelayMs > 0) {
+      await delay(settleDelayMs);
+    }
+    return { visible: true };
+  }
+
+  const normalizedRelayUrl = normalizeRelayOrigin(relayUrl);
+  const repoName = getRepoNameFromStateEvent(stateEvent);
+  const filters = buildRepoStateVisibilityFilters({ stateEvent, repoName, authorPubkey });
+  const deadline = Date.now() + Math.max(0, visibilityTimeoutMs);
+  let lastError = "";
+
+  while (true) {
+    try {
+      const events = await fetchRelayEvents({
+        relays: [normalizedRelayUrl],
+        filters,
+      });
+
+      const visible = events.some((event) =>
+        hasMatchingRepoStateEvent(event, { stateEvent, repoName, authorPubkey })
+      );
+
+      if (visible) {
+        if (settleDelayMs > 0) {
+          await delay(settleDelayMs);
+        }
+        return { visible: true };
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error || "unknown error");
+    }
+
+    if (Date.now() >= deadline) {
+      break;
+    }
+
+    if (pollIntervalMs > 0) {
+      await delay(pollIntervalMs);
+    }
+  }
+
+  const expectedRefs = getExpectedStateRefTags(stateEvent)
+    .map((tag) => `${tag[0]}@${String(tag[1] || "").slice(0, 8)}`)
+    .join(", ");
+  const suffix = lastError ? ` (${lastError})` : "";
+  const reason = `Repo state for ${repoName}${expectedRefs ? ` (${expectedRefs})` : ""} was not queryable on ${normalizedRelayUrl} before push${suffix}`;
+
+  console.warn(`[GRASP] ${reason}. Continuing without strict state verification.`);
+
+  return {
+    visible: false,
+    reason,
+  };
+}
+
+export async function publishGraspRepoStateAndWait({
+  relayUrl,
+  stateEvent,
+  onPublishEvent,
+  fetchRelayEvents,
+  authorPubkey,
+  visibilityTimeoutMs,
+  pollIntervalMs,
+  settleDelayMs,
+}: PublishGraspRepoStateAndWaitParams): Promise<GraspPublishRelayAck> {
+  const publishResult = await onPublishEvent(stateEvent);
+  const relayAck = extractPublishRelayAck(publishResult);
+
+  if (relayAck.hasRelayOutcomes && !didRelayAckGraspEvents(relayAck, relayUrl)) {
+    const repoName = getRepoNameFromStateEvent(stateEvent);
+    throw new Error(`Selected GRASP relay did not ACK repo state for ${repoName}; skipping push`);
+  }
+
+  await waitForGraspRepoStateVisibility({
+    relayUrl,
+    stateEvent,
+    fetchRelayEvents,
+    authorPubkey,
+    visibilityTimeoutMs,
+    pollIntervalMs,
+    settleDelayMs,
+  });
+
+  return relayAck;
+}
+
+export async function publishGraspRepoStateForPush({
+  remoteUrl,
+  branch,
+  commitSha,
+  fallbackRepoName = "",
+  onPublishEvent,
+  fetchRelayEvents,
+  authorPubkey,
+  visibilityTimeoutMs,
+  pollIntervalMs,
+  settleDelayMs,
+}: PublishGraspRepoStateForPushParams): Promise<{ relayUrl: string; repoName: string }> {
+  const { relayUrl, repoName } = parseGraspPushTarget(remoteUrl, fallbackRepoName);
+  const stateEvent = createRepoStateEvent({
+    repoId: repoName,
+    head: branch,
+    refs: [{ type: "heads", name: branch, commit: commitSha }],
+  });
+
+  await publishGraspRepoStateAndWait({
+    relayUrl,
+    stateEvent,
+    onPublishEvent,
+    fetchRelayEvents,
+    authorPubkey,
+    visibilityTimeoutMs,
+    pollIntervalMs,
+    settleDelayMs,
+  });
+
+  return { relayUrl, repoName };
 }
 
 export async function waitForGraspProvisioning(params: {

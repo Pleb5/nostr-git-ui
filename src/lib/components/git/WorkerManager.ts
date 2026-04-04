@@ -554,6 +554,7 @@ export class WorkerManager {
     repoId: string;
     commitId: string;
     branch?: string;
+    cloneUrls?: string[];
   }): Promise<any> {
     await this.initialize();
     return this.execute("getCommitDetails", params);
@@ -567,6 +568,7 @@ export class WorkerManager {
     repoId: string;
     baseOid: string;
     headOid: string;
+    cloneUrls?: string[];
   }): Promise<{ success: boolean; changes?: any[]; error?: string }> {
     await this.initialize();
     return this.execute("getDiffBetween", params);
@@ -821,6 +823,7 @@ export class WorkerManager {
   async mergePRAndPush(params: {
     repoId: string;
     cloneUrls: string[];
+    targetCloneUrls?: string[];
     tipCommitOid: string;
     targetBranch?: string;
     mergeCommitMessage?: string;
@@ -853,6 +856,7 @@ export class WorkerManager {
     const baseParams: Record<string, unknown> = {
       repoId: params.repoId,
       cloneUrls: params.cloneUrls,
+      targetCloneUrls: params.targetCloneUrls,
       tipCommitOid: params.tipCommitOid,
       targetBranch: params.targetBranch,
       mergeCommitMessage: params.mergeCommitMessage,
@@ -866,11 +870,16 @@ export class WorkerManager {
     // maintainer that declares the new branch HEAD. We must publish it between merge and push.
     if (typeof params.publishStateEvent === "function") {
       try {
+        const targetCloneUrls =
+          params.targetCloneUrls && params.targetCloneUrls.length > 0
+            ? params.targetCloneUrls
+            : params.cloneUrls;
+
         // Ensure repo is cloned so listRemotes works
         await this.ensureFullClone({
           repoId: params.repoId,
           branch: params.targetBranch || "main",
-          cloneUrls: params.cloneUrls,
+          cloneUrls: targetCloneUrls,
         });
 
         const remotes = await this.execute<Array<{ remote: string; url: string }>>("listRemotes", {
@@ -960,7 +969,7 @@ export class WorkerManager {
               await this.execute("resetRepoToRemote", {
                 repoId: params.repoId,
                 branch,
-                cloneUrls: params.cloneUrls,
+                cloneUrls: targetCloneUrls,
               });
             } catch {
               // best effort

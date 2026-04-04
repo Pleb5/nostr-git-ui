@@ -70,6 +70,12 @@
     searchRelays?: (query: string) => Promise<string[]>;
     /** Callback to create NIP-98 auth header for GRASP push (must be called on main thread) */
     createAuthHeader?: (url: string, method?: string) => Promise<string | null>;
+    /** Fetch events from specific relays for GRASP state visibility checks */
+    onFetchRelayEvents?: (params: {
+      relays: string[];
+      filters: import("@nostr-git/core").NostrFilter[];
+      timeoutMs?: number;
+    }) => Promise<NostrEvent[]>;
   }
 
   const {
@@ -87,6 +93,7 @@
     searchProfiles,
     searchRelays,
     createAuthHeader,
+    onFetchRelayEvents,
   }: Props = $props();
 
   console.log("defaultRelays", defaultRelays);
@@ -113,6 +120,7 @@
       onRepoCreated?.(result);
     },
     onPublishEvent: onPublishEvent,
+    onFetchRelayEvents,
     userPubkey, // Pass user pubkey for GRASP repos
   });
 
