@@ -3,101 +3,55 @@ import { describe, expect, it } from "vitest";
 import { getForkRollbackPlan } from "./fork-rollback";
 
 describe("fork rollback policy", () => {
-  it("rolls back a GRASP fork only when no refs landed", () => {
+  it("rolls back published events, created remotes, and local mirror on total failure", () => {
     const plan = getForkRollbackPlan({
-      provider: "grasp",
-      publishAttempted: true,
-      graspEventsPublished: true,
-      graspPushCompleted: false,
-      graspPushAttempted: true,
-      graspPushedRefsCount: 0,
+      successfulTargetCount: 0,
       hasPublishedRepoRollbackContext: true,
       hasRollbackPublishedRepoEvents: true,
-      hasRollbackRemoteUrl: true,
-      hasProviderToken: true,
+      createdRemoteRepoCount: 2,
       hasGitWorkerApi: true,
       hasRollbackLocalRepoId: true,
     });
 
     expect(plan).toEqual({
-      rollbackGraspArtifacts: true,
       rollbackPublishedEvents: true,
-      rollbackRemoteRepo: false,
+      rollbackRemoteRepos: true,
       rollbackLocalRepo: true,
       hasAnyRollback: true,
     });
   });
 
-  it("does not roll back a partial GRASP push after refs landed", () => {
+  it("skips remote rollback when no new remotes were created", () => {
     const plan = getForkRollbackPlan({
-      provider: "grasp",
-      publishAttempted: true,
-      graspEventsPublished: true,
-      graspPushCompleted: false,
-      graspPushAttempted: true,
-      graspPushedRefsCount: 1,
+      successfulTargetCount: 0,
       hasPublishedRepoRollbackContext: true,
       hasRollbackPublishedRepoEvents: true,
-      hasRollbackRemoteUrl: true,
-      hasProviderToken: true,
+      createdRemoteRepoCount: 0,
       hasGitWorkerApi: true,
       hasRollbackLocalRepoId: true,
     });
 
     expect(plan).toEqual({
-      rollbackGraspArtifacts: false,
-      rollbackPublishedEvents: false,
-      rollbackRemoteRepo: false,
-      rollbackLocalRepo: false,
-      hasAnyRollback: false,
-    });
-  });
-
-  it("rolls back non-GRASP fork artifacts after publish fails", () => {
-    const plan = getForkRollbackPlan({
-      provider: "github",
-      publishAttempted: true,
-      graspEventsPublished: false,
-      graspPushCompleted: false,
-      graspPushAttempted: false,
-      graspPushedRefsCount: 0,
-      hasPublishedRepoRollbackContext: true,
-      hasRollbackPublishedRepoEvents: true,
-      hasRollbackRemoteUrl: true,
-      hasProviderToken: true,
-      hasGitWorkerApi: true,
-      hasRollbackLocalRepoId: true,
-    });
-
-    expect(plan).toEqual({
-      rollbackGraspArtifacts: false,
       rollbackPublishedEvents: true,
-      rollbackRemoteRepo: true,
+      rollbackRemoteRepos: false,
       rollbackLocalRepo: true,
       hasAnyRollback: true,
     });
   });
 
-  it("skips rollback when a non-GRASP fork failed before publish", () => {
+  it("does not roll back after at least one target succeeds", () => {
     const plan = getForkRollbackPlan({
-      provider: "github",
-      publishAttempted: false,
-      graspEventsPublished: false,
-      graspPushCompleted: false,
-      graspPushAttempted: false,
-      graspPushedRefsCount: 0,
+      successfulTargetCount: 1,
       hasPublishedRepoRollbackContext: true,
       hasRollbackPublishedRepoEvents: true,
-      hasRollbackRemoteUrl: true,
-      hasProviderToken: true,
+      createdRemoteRepoCount: 3,
       hasGitWorkerApi: true,
       hasRollbackLocalRepoId: true,
     });
 
     expect(plan).toEqual({
-      rollbackGraspArtifacts: false,
       rollbackPublishedEvents: false,
-      rollbackRemoteRepo: false,
+      rollbackRemoteRepos: false,
       rollbackLocalRepo: false,
       hasAnyRollback: false,
     });

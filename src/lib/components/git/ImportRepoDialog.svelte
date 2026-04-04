@@ -28,19 +28,24 @@
   import {
     parseRepoUrl,
     DEFAULT_RELAYS,
-    getGitServiceApi,
-    getGitServiceApiFromUrl,
     checkRepoOwnership,
+    getGitServiceApiFromUrl,
   } from "@nostr-git/core";
   import { tryTokensForHost } from "../../utils/tokenHelpers.js";
   import { matchesHost } from "../../utils/tokenMatcher.js";
-  import { checkGraspRepoExists } from "../../utils/grasp-availability.js";
   import { AllTokensFailedError, TokenNotFoundError } from "../../utils/tokenErrors.js";
-  import { findExistingTargetRepoConflict } from "../../utils/import-targets.js";
   import { toast } from "../../stores/toast";
   import type { Token } from "../../stores/tokens.js";
   import type { EventIO, NostrEvent } from "@nostr-git/core";
   import type { ImportConfig } from "@nostr-git/core";
+  import {
+    buildRemoteTargetOptions,
+    getDefaultSelectedRemoteTargetIds,
+    preflightRemoteTargets,
+    toRemoteTargetSelection,
+    validateRemoteTargetRepoName,
+    type RemoteTargetOption,
+  } from "../../utils/remote-targets.js";
 
   interface Props {
     pubkey: string;
@@ -48,6 +53,11 @@
     onSignEvent?: (event: Omit<NostrEvent, "id" | "sig" | "pubkey">) => Promise<NostrEvent>; // Optional - works with all signers
     eventIO?: EventIO;
     onFetchEvents?: (filters: import("@nostr-git/core").NostrFilter[]) => Promise<NostrEvent[]>;
+    onFetchRelayEvents?: (params: {
+      relays: string[];
+      filters: import("@nostr-git/core").NostrFilter[];
+      timeoutMs?: number;
+    }) => Promise<NostrEvent[]>;
     onClose: () => void;
     onPublishEvent?: (event: NostrEvent) => Promise<unknown>;
     onRollbackPublishedRepoEvents?: (params: {
@@ -67,6 +77,7 @@
     onSignEvent,
     eventIO,
     onFetchEvents,
+    onFetchRelayEvents,
     onClose,
     onPublishEvent,
     onRollbackPublishedRepoEvents,
@@ -89,6 +100,7 @@
     onSignEvent,
     eventIO,
     onFetchEvents,
+    onFetchRelayEvents,
     onProgress: (progress) => {
       currentProgress = progress;
     },
@@ -144,21 +156,7 @@
   let mirrorPullRequests = $state(true);
   let mirrorComments = $state(true);
 
-  type ImportTargetStatus = "checking" | "ready" | "failed" | "unsupported" | "no-token";
-  type ImportTargetOption = {
-    id: string;
-    label: string;
-    provider: "github" | "gitlab" | "gitea" | "bitbucket" | "grasp";
-    host?: string;
-    relayUrl?: string;
-    status: ImportTargetStatus;
-    detail?: string;
-    validatedToken?: string;
-    candidateTokens?: string[];
-    existsAlready?: boolean;
-    existingRemoteUrl?: string;
-    existingWebUrl?: string;
-  };
+  type ImportTargetOption = RemoteTargetOption;
 
   let importTargets = $state<ImportTargetOption[]>([]);
   let selectedImportTargetIds = $state<string[]>([]);
@@ -262,31 +260,6 @@
     const normalized = (host || "").trim().toLowerCase();
     if (normalized === "api.github.com") return "github.com";
     return normalized;
-  }
-
-  function inferProvider(host: string, token: string): ImportTargetOption["provider"] | null {
-    const normalizedHost = host.toLowerCase();
-    const normalizedToken = token.toLowerCase();
-
-    if (normalizedHost.includes("github")) return "github";
-    if (normalizedHost.includes("gitlab")) return "gitlab";
-    if (normalizedHost.includes("gitea") || normalizedHost === "codeberg.org") return "gitea";
-    if (normalizedHost.includes("bitbucket")) return "bitbucket";
-
-    if (normalizedToken.startsWith("github_pat_") || normalizedToken.startsWith("ghp_")) {
-      return "github";
-    }
-    if (normalizedToken.startsWith("glpat-")) return "gitlab";
-
-    return null;
-  }
-
-  function providerLabel(provider: ImportTargetOption["provider"]): string {
-    if (provider === "github") return "GitHub";
-    if (provider === "gitlab") return "GitLab";
-    if (provider === "gitea") return "Gitea";
-    if (provider === "bitbucket") return "Bitbucket";
-    return "GRASP";
   }
 
   async function mapWithConcurrency<T, R>(
@@ -545,108 +518,11 @@
   });
 
   function validateDestinationRepoName(name: string): string | undefined {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      return "Destination repository name is required";
-    }
-
-    if (/[\\/]/.test(trimmed)) {
-      return "Destination repository name cannot contain / or \\";
-    }
-
-    return undefined;
+    return validateRemoteTargetRepoName(name);
   }
 
   function buildImportTargets(): ImportTargetOption[] {
-    const targetMap = new Map<string, ImportTargetOption>();
-
-    const tokenByHost = new Map<string, string>();
-    for (const entry of tokenList) {
-      const normalizedHost = normalizeTokenHostForTarget(entry.host);
-      if (!normalizedHost) continue;
-      if (!tokenByHost.has(normalizedHost)) tokenByHost.set(normalizedHost, entry.token);
-    }
-
-    for (const [host, sampleToken] of tokenByHost.entries()) {
-      const provider = inferProvider(host, sampleToken);
-      if (!provider) {
-        targetMap.set(`unsupported:${host}`, {
-          id: `unsupported:${host}`,
-          label: `${host}`,
-          provider: "github",
-          host,
-          status: "unsupported",
-          detail: "Could not infer provider from token host",
-        });
-        continue;
-      }
-
-      targetMap.set(`git:${host}`, {
-        id: `git:${host}`,
-        label: `${providerLabel(provider)} (${host})`,
-        provider,
-        host,
-        status: "checking",
-      });
-    }
-
-    graspRelayUrls.forEach((relayUrl, index) => {
-      const normalized = normalizeRelayUrl(relayUrl);
-      if (!normalized) return;
-      targetMap.set(`grasp:${normalized}`, {
-        id: `grasp:${normalized}`,
-        label: `GRASP (${normalized.replace(/^wss?:\/\//, "")})`,
-        provider: "grasp",
-        relayUrl: normalized,
-        status: "checking",
-        detail: index === 0 ? "Primary relay" : undefined,
-      });
-    });
-
-    return Array.from(targetMap.values());
-  }
-
-  function isNotFoundError(error: unknown): boolean {
-    const anyError = error as any;
-    const message = error instanceof Error ? error.message : String(error || "");
-    const lowered = message.toLowerCase();
-    const statusCode = anyError?.statusCode ?? anyError?.status ?? anyError?.context?.statusCode;
-    return statusCode === 404 || lowered.includes("404") || lowered.includes("not found");
-  }
-
-  function toFriendlyTargetPreflightError(error: unknown, host: string): string {
-    const classify = (message: string): string => {
-      const normalized = message.toLowerCase();
-      if (normalized.includes("404") || normalized.includes("not found")) {
-        return "Repository not found or token has no access";
-      }
-      if (
-        normalized.includes("401") ||
-        normalized.includes("unauthorized") ||
-        normalized.includes("bad credentials")
-      ) {
-        return "Invalid token credentials";
-      }
-      if (normalized.includes("403") || normalized.includes("forbidden")) {
-        return "Token lacks required repository permissions";
-      }
-      return "Token could not access this host";
-    };
-
-    if (error instanceof TokenNotFoundError) {
-      return `No token found for ${host}`;
-    }
-
-    if (error instanceof AllTokensFailedError) {
-      const reasons = Array.from(new Set(error.errors.map((entry) => classify(entry.message))));
-      return `No usable token for ${host} (${reasons.join(", ")})`;
-    }
-
-    if (error instanceof Error) {
-      return classify(error.message);
-    }
-
-    return `No usable token for ${host}`;
+    return buildRemoteTargetOptions({ tokenList, graspRelayUrls });
   }
 
   async function runTargetPreflight() {
@@ -672,150 +548,12 @@
 
     importTargets = seeds;
 
-    const nextTargets: ImportTargetOption[] = await Promise.all(
-      seeds.map(async (target) => {
-        if (target.status === "unsupported") return target;
-
-        if (target.provider === "grasp") {
-          if (!target.relayUrl) {
-            return { ...target, status: "failed" as const, detail: "Missing relay URL" };
-          }
-          try {
-            const probe = await checkGraspRepoExists({
-              relayUrl: target.relayUrl,
-              userPubkey: pubkey,
-              owner: pubkey,
-              repoName: targetRepoName,
-            });
-            if (probe.exists) {
-              const existingWebUrl = probe.htmlUrl;
-              const existingRemoteUrl = existingWebUrl
-                ? existingWebUrl.endsWith(".git")
-                  ? existingWebUrl
-                  : `${existingWebUrl.replace(/\/+$/, "")}.git`
-                : undefined;
-              return {
-                ...target,
-                status: "ready" as const,
-                detail: "Repository exists, will push to existing destination",
-                existsAlready: true,
-                existingWebUrl,
-                existingRemoteUrl,
-              };
-            }
-            return {
-              ...target,
-              status: "ready" as const,
-              detail: target.detail || "Relay available",
-            };
-          } catch (error) {
-            return {
-              ...target,
-              status: "failed" as const,
-              detail: error instanceof Error ? error.message : String(error),
-            };
-          }
-        }
-
-        if (!target.host) {
-          return { ...target, status: "failed" as const, detail: "Missing host" };
-        }
-
-        const normalizedTargetHost = normalizeTokenHostForTarget(target.host);
-        const matchingTargetTokens = tokenList
-          .filter((tokenEntry) => {
-            const normalizedTokenHost = normalizeTokenHostForTarget(tokenEntry.host);
-            return (
-              matchesHost(normalizedTokenHost, normalizedTargetHost) ||
-              matchesHost(normalizedTargetHost, normalizedTokenHost)
-            );
-          })
-          .map((tokenEntry) => tokenEntry.token);
-
-        try {
-          const token = await tryTokensForHost(
-            tokenList,
-            (tokenHost: string) => {
-              const normalizedTokenHost = normalizeTokenHostForTarget(tokenHost);
-              return (
-                matchesHost(normalizedTokenHost, normalizedTargetHost) ||
-                matchesHost(normalizedTargetHost, normalizedTokenHost)
-              );
-            },
-            async (candidateToken: string, matchedHost: string) => {
-              const api = getGitServiceApi(
-                target.provider,
-                candidateToken,
-                getProviderBaseUrl(target.provider, target.host)
-              );
-
-              const user = await api.getCurrentUser();
-              const username = user.login || (user as any).username;
-              if (!username) {
-                throw new Error("Unable to determine token user");
-              }
-
-              const repoNameForHost = targetRepoName;
-
-              try {
-                const existingRepo = await api.getRepo(username, repoNameForHost);
-                const repoConflict = findExistingTargetRepoConflict({
-                  provider: target.provider,
-                  requestedOwner: username,
-                  requestedRepo: repoNameForHost,
-                  existingRepo,
-                });
-
-                if (repoConflict) {
-                  return {
-                    token: candidateToken,
-                    detail: repoConflict.message,
-                    blocked: true,
-                  };
-                }
-
-                return {
-                  token: candidateToken,
-                  detail: "Repository exists, will push to existing destination",
-                  existsAlready: true,
-                  existingRemoteUrl: existingRepo.cloneUrl,
-                  existingWebUrl: existingRepo.htmlUrl,
-                };
-              } catch (error) {
-                if (isNotFoundError(error)) {
-                  return {
-                    token: candidateToken,
-                    detail: `Ready (${normalizeTokenHostForTarget(matchedHost)})`,
-                    existsAlready: false,
-                  };
-                }
-                throw error;
-              }
-            }
-          );
-
-          return {
-            ...target,
-            status: token.blocked ? ("failed" as const) : ("ready" as const),
-            validatedToken: token.token,
-            candidateTokens: matchingTargetTokens,
-            detail: token.detail,
-            existsAlready: token.blocked ? false : token.existsAlready,
-            existingRemoteUrl: token.blocked ? undefined : token.existingRemoteUrl,
-            existingWebUrl: token.blocked ? undefined : token.existingWebUrl,
-          };
-        } catch (error) {
-          if (error instanceof TokenNotFoundError) {
-            return { ...target, status: "no-token" as const, detail: "No token for host" };
-          }
-          return {
-            ...target,
-            status: "failed" as const,
-            detail: toFriendlyTargetPreflightError(error, target.host),
-          };
-        }
-      })
-    );
+    const nextTargets = await preflightRemoteTargets({
+      targets: seeds,
+      tokenList,
+      userPubkey: pubkey,
+      repoName: targetRepoName,
+    });
 
     if (currentRun !== targetPreflightRunId) return;
 
@@ -827,17 +565,7 @@
     );
 
     if (!initializedTargetSelection) {
-      const readyGitTargets = readyTargets
-        .filter((target) => target.provider !== "grasp")
-        .map((target) => target.id);
-      const readyGraspTargets = readyTargets
-        .filter((target) => target.provider === "grasp")
-        .map((target) => target.id);
-
-      selectedImportTargetIds = [
-        ...readyGitTargets,
-        ...(readyGraspTargets.length > 0 ? [readyGraspTargets[0]] : []),
-      ];
+      selectedImportTargetIds = getDefaultSelectedRemoteTargetIds(nextTargets);
       initializedTargetSelection = true;
     }
   }
@@ -1235,18 +963,7 @@
 
     const selectedTargets: ImportRemoteTarget[] = importTargets
       .filter((target) => selectedImportTargetIds.includes(target.id) && target.status === "ready")
-      .map((target) => ({
-        id: target.id,
-        label: target.label,
-        provider: target.provider,
-        host: target.host,
-        relayUrl: target.relayUrl,
-        token: target.validatedToken,
-        tokens: target.candidateTokens,
-        existsAlready: target.existsAlready,
-        existingRemoteUrl: target.existingRemoteUrl,
-        existingWebUrl: target.existingWebUrl,
-      }));
+      .map((target) => toRemoteTargetSelection(target));
 
     if (!repoMetadata.isOwner && selectedTargets.length === 0) {
       validationError = "Select at least one writable import target";

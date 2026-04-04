@@ -1,54 +1,33 @@
 export interface ForkRollbackPlanInput {
-  provider: string;
-  publishAttempted: boolean;
-  graspEventsPublished: boolean;
-  graspPushCompleted: boolean;
-  graspPushAttempted: boolean;
-  graspPushedRefsCount: number;
+  successfulTargetCount: number;
   hasPublishedRepoRollbackContext: boolean;
   hasRollbackPublishedRepoEvents: boolean;
-  hasRollbackRemoteUrl: boolean;
-  hasProviderToken: boolean;
+  createdRemoteRepoCount: number;
   hasGitWorkerApi: boolean;
   hasRollbackLocalRepoId: boolean;
 }
 
 export interface ForkRollbackPlan {
-  rollbackGraspArtifacts: boolean;
   rollbackPublishedEvents: boolean;
-  rollbackRemoteRepo: boolean;
+  rollbackRemoteRepos: boolean;
   rollbackLocalRepo: boolean;
   hasAnyRollback: boolean;
 }
 
 export function getForkRollbackPlan(input: ForkRollbackPlanInput): ForkRollbackPlan {
-  const rollbackGraspArtifacts =
-    input.provider === "grasp" &&
-    !input.graspPushCompleted &&
-    input.graspPushedRefsCount === 0 &&
-    (input.publishAttempted || input.graspEventsPublished || input.graspPushAttempted);
+  const isTotalFailure = input.successfulTargetCount === 0;
 
   const rollbackPublishedEvents =
-    input.hasPublishedRepoRollbackContext &&
-    input.hasRollbackPublishedRepoEvents &&
-    (rollbackGraspArtifacts || (input.provider !== "grasp" && input.publishAttempted));
+    isTotalFailure && input.hasPublishedRepoRollbackContext && input.hasRollbackPublishedRepoEvents;
 
-  const rollbackRemoteRepo =
-    input.provider !== "grasp" &&
-    input.publishAttempted &&
-    input.hasRollbackRemoteUrl &&
-    input.hasProviderToken;
+  const rollbackRemoteRepos = isTotalFailure && input.createdRemoteRepoCount > 0;
 
-  const rollbackLocalRepo =
-    input.hasGitWorkerApi &&
-    input.hasRollbackLocalRepoId &&
-    (rollbackGraspArtifacts || (input.provider !== "grasp" && input.publishAttempted));
+  const rollbackLocalRepo = isTotalFailure && input.hasGitWorkerApi && input.hasRollbackLocalRepoId;
 
   return {
-    rollbackGraspArtifacts,
     rollbackPublishedEvents,
-    rollbackRemoteRepo,
+    rollbackRemoteRepos,
     rollbackLocalRepo,
-    hasAnyRollback: rollbackPublishedEvents || rollbackRemoteRepo || rollbackLocalRepo,
+    hasAnyRollback: rollbackPublishedEvents || rollbackRemoteRepos || rollbackLocalRepo,
   };
 }
