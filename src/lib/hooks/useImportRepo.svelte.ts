@@ -47,6 +47,12 @@ import {
   type RemoteSyncTargetResult,
 } from "../utils/remote-sync.js";
 import type { RemoteTargetSelection } from "../utils/remote-targets.js";
+import {
+  getEffectiveImportConfig,
+  shouldFetchBranchActivity,
+  sortImportBranches,
+  type SourceAccessMode,
+} from "../utils/import-source-access.js";
 
 /**
  * Import phase identifiers for structured progress reporting.
@@ -260,7 +266,7 @@ interface ImportContext {
   platform: string;
   parsed: ReturnType<typeof parseRepoUrl>;
   sourceToken?: string;
-  sourceAccessMode: "token" | "anonymous";
+  sourceAccessMode: SourceAccessMode;
 
   // Repository info
   finalRepo: RepoMetadata | null;
@@ -640,14 +646,8 @@ async function fetchRepoMetadata(
   context: ImportContext,
   ownershipRepo: RepoMetadata
 ): Promise<RepoMetadata> {
-  // If we already have the repo from ownership check, we might need to fetch full metadata
-  // For now, we'll fetch it if it's the same reference (meaning we didn't fork)
   if (context.finalRepo === ownershipRepo) {
-    context.updateProgress("Fetching repository metadata...");
-    context.abortController.throwIfAborted();
-    return await context.withRateLimit(context.platform, "GET", () =>
-      context.api.getRepo(context.parsed.owner, context.parsed.repo)
-    );
+    return ownershipRepo;
   }
 
   // At this point finalRepo should be set (either from fork or ownership check)
@@ -1666,6 +1666,27 @@ async function resolveRecentBranchPushRefs(
     (branchName) => branchName !== normalizedFallbackBranch
   );
 
+  if (!shouldFetchBranchActivity(context.sourceAccessMode)) {
+    const selectedOtherBranches = sortImportBranches(
+      otherBranchNames.map((branchName) => ({
+        name: branchName,
+        timestampMs: 0,
+        isDefault: false,
+      }))
+    ).slice(0, Math.max(0, IMPORT_BRANCH_PUSH_LIMIT - 1));
+
+    const selectedBranchNames = [
+      normalizedFallbackBranch,
+      ...selectedOtherBranches.map((branch) => branch.name),
+    ];
+
+    return Array.from(new Set(selectedBranchNames)).map((name) => ({
+      name,
+      ref: `refs/heads/${name}`,
+      commit: branchByName.get(name)?.commit,
+    }));
+  }
+
   const recencyScored = await mapWithConcurrency(otherBranchNames, 6, async (branchName) => {
     try {
       const commits = await context.withRateLimit(context.platform, "listCommits", () =>
@@ -1683,12 +1704,11 @@ async function resolveRecentBranchPushRefs(
     }
   });
 
-  recencyScored.sort((a, b) => {
-    if (b.timestampMs !== a.timestampMs) return b.timestampMs - a.timestampMs;
-    return a.name.localeCompare(b.name);
-  });
+  const orderedBranches = sortImportBranches(
+    recencyScored.map((branch) => ({ ...branch, isDefault: false }))
+  );
 
-  const selectedOtherBranches = recencyScored.slice(0, Math.max(0, IMPORT_BRANCH_PUSH_LIMIT - 1));
+  const selectedOtherBranches = orderedBranches.slice(0, Math.max(0, IMPORT_BRANCH_PUSH_LIMIT - 1));
   const selectedBranchNames = [
     normalizedFallbackBranch,
     ...selectedOtherBranches.map((branch) => branch.name),
@@ -2013,14 +2033,8 @@ export function useImportRepo(options: UseImportRepoOptions) {
     const rateLimiter = createRateLimiter(contextUpdateProgress);
     const withRateLimitFn = createWithRateLimit(rateLimiter, abortController);
     const normalizedToken = token?.trim() || "";
-    const normalizedConfig: ImportConfig = normalizedToken
-      ? config
-      : {
-          ...config,
-          mirrorIssues: false,
-          mirrorPullRequests: false,
-          mirrorComments: false,
-        };
+    const sourceAccessMode: SourceAccessMode = normalizedToken ? "token" : "anonymous";
+    const effectiveConfig = getEffectiveImportConfig(config, sourceAccessMode);
 
     try {
       // Initialize context
@@ -2030,7 +2044,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
       const partialContext = await initializeImportContext(
         repoUrl,
         normalizedToken,
-        normalizedConfig,
+        effectiveConfig,
         userPubkey,
         contextUpdateProgress,
         abortController,
@@ -2157,7 +2171,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       // Step 2: Stream issues (fetch, process, publish immediately)
       let issuesImported = 0;
-      if (config.mirrorIssues) {
+      if (context.config.mirrorIssues) {
         currentPhaseRef.current = "issues";
         const issueResult = await fetchAndPublishIssuesStreaming(context);
         issuesImported = issueResult.count;
@@ -2166,7 +2180,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       // Step 3: Stream PRs (fetch, process, publish immediately)
       let prsImported = 0;
-      if (config.mirrorPullRequests) {
+      if (context.config.mirrorPullRequests) {
         currentPhaseRef.current = "pull_requests";
         prsImported = await fetchAndPublishPRsStreaming(context);
         completedCountsRef.current.pull_requests = prsImported;
@@ -2174,7 +2188,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
       // Step 4: Stream comments (if enabled)
       let commentsImported = 0;
-      if (config.mirrorComments) {
+      if (context.config.mirrorComments) {
         currentPhaseRef.current = "comments";
         const issueNumbers = new Set(Array.from(context.issueEventIdMap.keys()));
         const prNumbers = new Set(Array.from(context.prEventIdMap.keys()));

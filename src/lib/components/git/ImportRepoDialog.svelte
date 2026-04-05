@@ -46,6 +46,12 @@
     validateRemoteTargetRepoName,
     type RemoteTargetOption,
   } from "../../utils/remote-targets.js";
+  import {
+    hasValidatedSourceAccess,
+    shouldFetchBranchActivity,
+    sortImportBranches,
+    type SourceAccessMode,
+  } from "../../utils/import-source-access.js";
 
   interface Props {
     pubkey: string;
@@ -136,7 +142,7 @@
   let validatedForUrl = $state<string | null>(null);
   let validationTimer: ReturnType<typeof setTimeout> | null = null;
   let sourceValidationRunId = 0;
-  let sourceAccessMode = $state<"token" | "anonymous" | null>(null);
+  let sourceAccessMode = $state<SourceAccessMode | null>(null);
   let validatedSourceAccess = $state<SourceAccessResult | null>(null);
 
   // Form state - Step 2
@@ -318,7 +324,8 @@
     owner: string,
     repo: string,
     token: string,
-    preferredDefaultBranch?: string
+    preferredDefaultBranch?: string,
+    accessMode: SourceAccessMode = token.trim() ? "token" : "anonymous"
   ) {
     isLoadingImportBranches = true;
     importBranchLoadError = undefined;
@@ -377,48 +384,51 @@
       }
 
       const branchCandidates = Array.from(branchByName.values());
-      const enriched = await mapWithConcurrency(branchCandidates, 6, async (candidate) => {
-        try {
-          let commitDate = "";
-          let commitSha = candidate.commitSha;
+      const enriched = shouldFetchBranchActivity(accessMode)
+        ? await mapWithConcurrency(branchCandidates, 6, async (candidate) => {
+            try {
+              let commitDate = "";
+              let commitSha = candidate.commitSha;
 
-          if (commitSha) {
-            const commit = await api.getCommit(owner, repo, commitSha);
-            commitDate = commit?.committer?.date || commit?.author?.date || "";
-          } else {
-            const commits = await api.listCommits(owner, repo, {
-              sha: candidate.name,
-              per_page: 1,
-            });
-            const latest = Array.isArray(commits) ? commits[0] : undefined;
-            commitSha = latest?.sha || commitSha;
-            commitDate = latest?.committer?.date || latest?.author?.date || "";
-          }
+              if (commitSha) {
+                const commit = await api.getCommit(owner, repo, commitSha);
+                commitDate = commit?.committer?.date || commit?.author?.date || "";
+              } else {
+                const commits = await api.listCommits(owner, repo, {
+                  sha: candidate.name,
+                  per_page: 1,
+                });
+                const latest = Array.isArray(commits) ? commits[0] : undefined;
+                commitSha = latest?.sha || commitSha;
+                commitDate = latest?.committer?.date || latest?.author?.date || "";
+              }
 
-          return {
-            name: candidate.name,
-            commitSha,
-            commitDate,
-            timestampMs: parseDateToTimestampMs(commitDate),
-            isDefault: candidate.name === normalizedDefaultBranch,
-          } satisfies ImportBranchOption;
-        } catch {
-          return {
+              return {
+                name: candidate.name,
+                commitSha,
+                commitDate,
+                timestampMs: parseDateToTimestampMs(commitDate),
+                isDefault: candidate.name === normalizedDefaultBranch,
+              } satisfies ImportBranchOption;
+            } catch {
+              return {
+                name: candidate.name,
+                commitSha: candidate.commitSha,
+                commitDate: undefined,
+                timestampMs: 0,
+                isDefault: candidate.name === normalizedDefaultBranch,
+              } satisfies ImportBranchOption;
+            }
+          })
+        : branchCandidates.map((candidate) => ({
             name: candidate.name,
             commitSha: candidate.commitSha,
             commitDate: undefined,
             timestampMs: 0,
             isDefault: candidate.name === normalizedDefaultBranch,
-          } satisfies ImportBranchOption;
-        }
-      });
+          }));
 
-      enriched.sort((a, b) => {
-        if (b.timestampMs !== a.timestampMs) return b.timestampMs - a.timestampMs;
-        return a.name.localeCompare(b.name);
-      });
-
-      importBranchOptions = enriched;
+      importBranchOptions = sortImportBranches(enriched);
       selectedAdditionalBranchNames = [];
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -619,7 +629,7 @@
   }
 
   interface SourceAccessResult {
-    mode: "token" | "anonymous";
+    mode: SourceAccessMode;
     token: string | null;
     ownership: Awaited<ReturnType<typeof checkRepoOwnership>> | null;
     repo: Awaited<ReturnType<typeof checkRepoOwnership>>["repo"];
@@ -881,7 +891,14 @@
       return;
     }
 
-    if (!tokenValidated || validatedForUrl !== repoUrl.trim() || !sourceToken) {
+    if (
+      !hasValidatedSourceAccess({
+        tokenValidated,
+        validatedForUrl,
+        currentUrl: repoUrl,
+        validatedSourceAccess,
+      })
+    ) {
       validationError = "Please validate source access before continuing";
       return;
     }
@@ -930,7 +947,8 @@
           parsed.owner,
           parsed.repo,
           access.token || "",
-          access.repo.defaultBranch || "main"
+          access.repo.defaultBranch || "main",
+          access.mode
         );
       } catch (err) {
         validationError = toFriendlySourceAccessError(err, parsed.host);
@@ -1121,7 +1139,14 @@
 
   // Computed properties
   const canProceedStep1 = $derived(
-    repoUrl.trim().length > 0 && tokenValidated && !isValidatingToken && !isCheckingOwnership
+    hasValidatedSourceAccess({
+      tokenValidated,
+      validatedForUrl,
+      currentUrl: repoUrl,
+      validatedSourceAccess,
+    }) &&
+      !isValidatingToken &&
+      !isCheckingOwnership
   );
   const canProceedStep2 = $derived(
     repoMetadata !== null &&
@@ -1399,8 +1424,8 @@
             <div class="mb-4">
               <h4 class="text-sm font-medium text-gray-300 mb-2">Branches to Import</h4>
               <p class="text-xs text-gray-400 mb-3">
-                Branches are ordered by latest commit time (newest first). Default branch is always
-                included.
+                Default branch is always included. When commit activity is available, newer branches
+                are listed first.
               </p>
 
               <div class="space-y-2 bg-gray-800 rounded-lg p-4 border border-gray-600">
@@ -1444,7 +1469,7 @@
                   {#if isLoadingImportBranches}
                     <div class="flex items-center gap-2 px-3 py-3 text-xs text-gray-300">
                       <Loader2 class="w-3.5 h-3.5 animate-spin" />
-                      Resolving branch activity timestamps...
+                      Resolving available branches...
                     </div>
                   {:else if importBranchOptions.length === 0}
                     <p class="px-3 py-3 text-xs text-gray-400">No branches detected.</p>

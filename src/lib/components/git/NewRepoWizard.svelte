@@ -387,7 +387,7 @@
 
   // Check repository name availability across all providers
   async function checkNameAvailability(name: string) {
-    if (!name.trim() || tokens.length === 0 || selectedProviders.length === 0) {
+    if (!name.trim() || selectedProviders.length === 0) {
       nameAvailabilityResults = null;
       return;
     }
