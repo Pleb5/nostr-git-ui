@@ -408,13 +408,19 @@ export async function waitForGraspRepoStateVisibility({
   const filters = buildRepoStateVisibilityFilters({ stateEvent, repoName, authorPubkey });
   const deadline = Date.now() + Math.max(0, visibilityTimeoutMs);
   let lastError = "";
+  let successfulQueryCount = 0;
 
   while (true) {
     try {
+      const remainingMs = Math.max(0, deadline - Date.now());
       const events = await fetchRelayEvents({
         relays: [normalizedRelayUrl],
         filters,
+        ...(visibilityTimeoutMs > 0
+          ? { timeoutMs: Math.max(1, Math.min(2500, remainingMs > 0 ? remainingMs : 1)) }
+          : {}),
       });
+      successfulQueryCount += 1;
 
       const visible = events.some((event) =>
         hasMatchingRepoStateEvent(event, { stateEvent, repoName, authorPubkey })
@@ -442,8 +448,17 @@ export async function waitForGraspRepoStateVisibility({
   const expectedRefs = getExpectedStateRefTags(stateEvent)
     .map((tag) => `${tag[0]}@${String(tag[1] || "").slice(0, 8)}`)
     .join(", ");
-  const suffix = lastError ? ` (${lastError})` : "";
-  const reason = `Repo state for ${repoName}${expectedRefs ? ` (${expectedRefs})` : ""} was not queryable on ${normalizedRelayUrl} before push${suffix}`;
+  const reasonPrefix =
+    successfulQueryCount > 0
+      ? `Repo state for ${repoName}${expectedRefs ? ` (${expectedRefs})` : ""} was not visible on ${normalizedRelayUrl} within the verification window before push`
+      : `Repo state for ${repoName}${expectedRefs ? ` (${expectedRefs})` : ""} could not be queried on ${normalizedRelayUrl} before push`;
+  const suffix =
+    lastError && successfulQueryCount > 0
+      ? ` (last query error: ${lastError})`
+      : lastError
+        ? ` (${lastError})`
+        : "";
+  const reason = `${reasonPrefix}${suffix}`;
 
   console.warn(`[GRASP] ${reason}. Continuing without strict state verification.`);
 

@@ -492,6 +492,48 @@ export class WorkerManager {
     return this.execute("listServerRefs", params);
   }
 
+  async discoverRemoteBackfill(params: { repoId: string; cloneUrls: string[] }): Promise<any> {
+    await this.initialize();
+    return this.execute("discoverRemoteBackfill", params, { timeoutMs: 120000 });
+  }
+
+  async prepareRemoteBackfill(params: {
+    repoId: string;
+    targets: Array<{
+      remoteUrl: string;
+      refs: Array<{
+        ref: string;
+        name: string;
+        type: "heads" | "tags";
+        effectiveOid: string;
+        currentOid?: string;
+        sourceUrls: string[];
+      }>;
+    }>;
+  }): Promise<any> {
+    await this.initialize();
+    return this.execute("prepareRemoteBackfill", params, { timeoutMs: 180000 });
+  }
+
+  async executeRemoteBackfill(params: {
+    repoId: string;
+    targets: Array<{
+      remoteUrl: string;
+      refs: Array<{
+        ref: string;
+        name: string;
+        type: "heads" | "tags";
+        effectiveOid: string;
+        currentOid?: string;
+        sourceUrls: string[];
+      }>;
+    }>;
+    userPubkey?: string;
+  }): Promise<any> {
+    await this.initialize();
+    return this.execute("executeRemoteBackfill", params, { timeoutMs: 180000 });
+  }
+
   /**
    * Safe push with preflight checks and optional destructive-action confirmation
    */

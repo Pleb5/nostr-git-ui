@@ -30,10 +30,16 @@ export { TokenError, AllTokensFailedError, TokenNotFoundError } from "./utils/to
 export {
   publishGraspRepoStateAndWait,
   publishGraspRepoStateForPush,
+  createGraspAnnouncementAndState,
   waitForGraspRepoStateVisibility,
   type FetchRelayEvents,
   type FetchRelayEventsParams,
 } from "./utils/grasp-pipeline";
+export {
+  syncLocalRepoToTargets,
+  type RemoteSyncRef,
+  type RemoteSyncTargetResult,
+} from "./utils/remote-sync";
 export {
   classifyCloneUrlIssue,
   getCloneUrlBannerTitle,

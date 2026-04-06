@@ -58,6 +58,7 @@ describe("grasp-pipeline", () => {
           limit: 10,
         },
       ],
+      timeoutMs: 50,
     });
   });
 
@@ -88,7 +89,7 @@ describe("grasp-pipeline", () => {
     expect(fetchRelayEvents).not.toHaveBeenCalled();
   });
 
-  it("treats repo state visibility as best effort and continues when it is not queryable", async () => {
+  it("treats repo state visibility as best effort and continues when it is not yet visible", async () => {
     const stateEvent = createRepoStateEvent({
       repoId: "flotilla-budabit",
       head: "dev",
@@ -103,6 +104,7 @@ describe("grasp-pipeline", () => {
       hasRelayOutcomes: true,
     });
     const fetchRelayEvents = vi.fn().mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await expect(
       publishGraspRepoStateAndWait({
@@ -120,6 +122,45 @@ describe("grasp-pipeline", () => {
       successCount: 1,
       hasRelayOutcomes: true,
     });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "was not visible on wss://relay.ngit.dev within the verification window"
+      )
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("describes true relay query failures as query errors", async () => {
+    const stateEvent = createRepoStateEvent({
+      repoId: "flotilla-budabit",
+      head: "dev",
+      refs: [{ type: "heads", name: "dev", commit: "abc123def456" }],
+      created_at: 1_717_171_717,
+    });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      waitForGraspRepoStateVisibility({
+        relayUrl: "https://relay.ngit.dev",
+        stateEvent,
+        fetchRelayEvents: vi.fn().mockRejectedValue(new Error("relay unavailable")),
+        authorPubkey: "f".repeat(64),
+        pollIntervalMs: 0,
+        settleDelayMs: 0,
+        visibilityTimeoutMs: 0,
+      })
+    ).resolves.toEqual({
+      visible: false,
+      reason:
+        "Repo state for flotilla-budabit (refs/heads/dev@abc123de) could not be queried on wss://relay.ngit.dev before push (relay unavailable)",
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("could not be queried on wss://relay.ngit.dev before push")
+    );
+    warnSpy.mockRestore();
   });
 
   it("builds and publishes branch state for GRASP push targets", async () => {

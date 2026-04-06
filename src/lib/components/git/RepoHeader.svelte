@@ -13,6 +13,7 @@
     Bell,
     X,
     Info,
+    Globe,
   } from "@lucide/svelte";
   import { useRegistry } from "../../useRegistry";
   const { Button, Markdown } = useRegistry();
@@ -276,6 +277,18 @@
         <RotateCcw class="h-4 w-4 {isRefreshing ? 'animate-spin' : ''}" />
         <span class="hidden sm:inline">{isRefreshing ? "Syncing..." : "Refresh"}</span>
       </Button>
+      {#if resolveCloneUrlIssues}
+        <Button
+          variant="outline"
+          size="sm"
+          class="gap-1 sm:gap-2 px-2 sm:px-3 flex-shrink-0"
+          onclick={resolveCloneUrlIssues}
+          title="Review remotes and backfill"
+        >
+          <Globe class="h-4 w-4" />
+          <span class="hidden sm:inline">Remotes</span>
+        </Button>
+      {/if}
       {#if canEdit}
         <Button
           variant="outline"
