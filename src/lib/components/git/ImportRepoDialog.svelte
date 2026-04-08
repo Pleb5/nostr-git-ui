@@ -24,7 +24,7 @@
     type ImportPhase,
   } from "../../hooks/useImportRepo.svelte";
   import { tokens } from "../../stores/tokens.js";
-  import { graspServersStore } from "../../stores/graspServers.js";
+  import { getRecommendedGraspServerUrls, graspServersStore } from "../../stores/graspServers.js";
   import {
     parseRepoUrl,
     DEFAULT_RELAYS,
@@ -213,6 +213,10 @@
   }
 
   let relaySearchTimeout: ReturnType<typeof setTimeout> | null = null;
+  const recommendedGraspServerOptions = $derived.by(() =>
+    getRecommendedGraspServerUrls(graspServerOptions)
+  );
+
   $effect(() => {
     const query = relaySearchQuery.trim();
     if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
@@ -1574,9 +1578,9 @@
                     </button>
                   </div>
                 </div>
-                {#if graspServerOptions.length > 0}
+                {#if recommendedGraspServerOptions.length > 0}
                   <div class="flex flex-wrap gap-1">
-                    {#each graspServerOptions.filter((opt) => !graspRelayUrls.includes(normalizeRelayUrl(opt))) as opt}
+                    {#each recommendedGraspServerOptions.filter((opt) => !graspRelayUrls.includes(normalizeRelayUrl(opt))) as opt}
                       <button
                         type="button"
                         class="px-2 py-1 text-xs rounded-full border border-dashed border-gray-500 text-gray-300 hover:border-blue-400 hover:text-blue-300"

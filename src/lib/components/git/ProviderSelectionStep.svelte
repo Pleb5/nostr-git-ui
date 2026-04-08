@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useRegistry } from "../../useRegistry";
+  import { getRecommendedGraspServerUrls } from "../../stores/graspServers.js";
   import { tokens as tokensStore, type Token } from "../../stores/tokens.js";
   import { onMount } from "svelte";
 
@@ -58,6 +59,10 @@
       graspRelayUrls = next;
     }
   });
+
+  const recommendedGraspServerOptions = $derived.by(() =>
+    getRecommendedGraspServerUrls(graspServerOptions)
+  );
 
   function updateAvailableProviders() {
     const providers = [
@@ -284,9 +289,9 @@
                     </div>
                   </div>
 
-                  {#if graspServerOptions.length > 0}
+                  {#if recommendedGraspServerOptions.length > 0}
                     <div class="flex flex-wrap gap-1 mt-2">
-                      {#each graspServerOptions.filter((opt) => !graspRelayUrls.includes(opt
+                      {#each recommendedGraspServerOptions.filter((opt) => !graspRelayUrls.includes(opt
                               .trim()
                               .replace(/\/$/, ""))) as opt}
                         <button
