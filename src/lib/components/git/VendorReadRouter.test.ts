@@ -23,7 +23,7 @@ describe("VendorReadRouter.listRefs", () => {
     const result = await router.listRefs({
       workerManager,
       repoEvent: { id: "repo", pubkey: "owner", tags: [] } as any,
-      cloneUrls: ["https://relay.ngit.dev/owner/repo.git"],
+      cloneUrls: ["https://example.com/owner/repo.git"],
     });
 
     expect(result.source.kind).toBe("git-remote");

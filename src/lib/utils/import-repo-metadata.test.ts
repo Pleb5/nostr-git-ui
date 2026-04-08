@@ -69,8 +69,10 @@ describe("import-repo-metadata", () => {
       remotePushResults: [
         {
           success: true,
-          remoteUrl: "https://gitnostr.com/npub1example/flotilla-budabit.git",
-          webUrl: "https://gitnostr.com/npub1example/flotilla-budabit",
+          remoteUrl:
+            "https://gitnostr.com/npub16p8v7varqwjes5hak6q7mz6pygqm4pwc6gve4mrned3xs8tz42gq7kfhdw/flotilla-budabit.git",
+          webUrl:
+            "https://gitnostr.com/npub16p8v7varqwjes5hak6q7mz6pygqm4pwc6gve4mrned3xs8tz42gq7kfhdw/flotilla-budabit",
         },
         {
           success: true,
@@ -101,13 +103,13 @@ describe("import-repo-metadata", () => {
     expect(dTag).toEqual(["d", "renamed-budabit"]);
     expect(cloneTag).toEqual([
       "clone",
-      "https://gitnostr.com/npub1example/flotilla-budabit.git",
+      "https://gitnostr.com/npub16p8v7varqwjes5hak6q7mz6pygqm4pwc6gve4mrned3xs8tz42gq7kfhdw/flotilla-budabit.git",
       "https://github.com/me/flotilla-budabit.git",
       "https://gitlab.com/me/flotilla-budabit.git",
     ]);
     expect(webTag).toEqual([
       "web",
-      "https://gitnostr.com/npub1example/flotilla-budabit",
+      "https://gitnostr.com/npub16p8v7varqwjes5hak6q7mz6pygqm4pwc6gve4mrned3xs8tz42gq7kfhdw/flotilla-budabit",
       "https://github.com/me/flotilla-budabit",
       "https://gitlab.com/me/flotilla-budabit",
     ]);

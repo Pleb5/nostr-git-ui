@@ -109,15 +109,15 @@ All vendor routing methods now include `grasp-rest` cases with proper default er
 private async vendorListRefsGraspRest(remoteUrl: string): Promise<VendorRef[]> {
   const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
   const apiBase = this.getApiBase("grasp-rest", host);
-  
+
   const branchesUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`;
   const tagsUrl = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tags`;
-  
+
   const [branchesJson, tagsJson] = await Promise.all([
     this.fetchJsonWithOptionalTokenRetry({ host, url: branchesUrl, vendor: "grasp-rest", ctx }),
     this.fetchJsonWithOptionalTokenRetry({ host, url: tagsUrl, vendor: "grasp-rest", ctx }),
   ]);
-  
+
   // Parse and return refs
 }
 ```
@@ -141,13 +141,13 @@ private async vendorListRefsGraspRest(remoteUrl: string): Promise<VendorRef[]> {
 
 The grasp-rest vendor implementation expects the following REST API endpoints:
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/repos/{owner}/{repo}/branches` | GET | List all branches |
-| `/repos/{owner}/{repo}/tags` | GET | List all tags |
-| `/repos/{owner}/{repo}/tree/{branch}/{path}` | GET | List directory contents |
-| `/repos/{owner}/{repo}/blob/{branch}/{path}` | GET | Get file content |
-| `/repos/{owner}/{repo}/commits?sha={branch}` | GET | List commits |
+| Endpoint                                     | Method | Purpose                 |
+| -------------------------------------------- | ------ | ----------------------- |
+| `/repos/{owner}/{repo}/branches`             | GET    | List all branches       |
+| `/repos/{owner}/{repo}/tags`                 | GET    | List all tags           |
+| `/repos/{owner}/{repo}/tree/{branch}/{path}` | GET    | List directory contents |
+| `/repos/{owner}/{repo}/blob/{branch}/{path}` | GET    | Get file content        |
+| `/repos/{owner}/{repo}/commits?sha={branch}` | GET    | List commits            |
 
 ## URL Format
 
@@ -159,6 +159,7 @@ ws://relay.example.com   →  http://relay.example.com
 ```
 
 Repository paths:
+
 ```
 {http-base}/repos/{npub}/{repo-name}
 ```
@@ -176,6 +177,7 @@ The token is typically the user's Nostr private key or a derived authentication 
 ## Error Handling
 
 All vendor methods include:
+
 - Context strings for debugging
 - Optional token retry logic
 - Proper error propagation
@@ -217,29 +219,28 @@ To test the grasp-rest integration:
 ## Usage Example
 
 ```typescript
-import { VendorReadRouter } from '@nostr-git/ui';
+import { VendorReadRouter } from "@nostr-git/ui";
 
 const router = new VendorReadRouter({
-  getTokens: async () => [{ host: 'relay.example.com', token: 'user-token' }],
+  getTokens: async () => [{ host: "relay.example.com", token: "user-token" }],
   preferVendorReads: true,
 });
 
 // List refs from a GRASP relay
-const refs = await router.listRefs(['wss://relay.example.com/npub.../repo.git']);
+const refs = await router.listRefs(["https://relay.example.com/npub.../repo.git"]);
 
 // Get file content
 const content = await router.getFileContent(
-  ['wss://relay.example.com/npub.../repo.git'],
-  'main',
-  'src/index.ts'
+  ["https://relay.example.com/npub.../repo.git"],
+  "main",
+  "src/index.ts"
 );
 
 // List commits
-const commits = await router.listCommits(
-  ['wss://relay.example.com/npub.../repo.git'],
-  'main',
-  { page: 1, perPage: 30 }
-);
+const commits = await router.listCommits(["https://relay.example.com/npub.../repo.git"], "main", {
+  page: 1,
+  perPage: 30,
+});
 ```
 
 ## Next Steps

@@ -2225,11 +2225,10 @@ export class Repo {
         provider = undefined;
       }
 
-      // Acquire token per host when possible (best-effort). GRASP/wss remotes may not require tokens.
+      // Acquire token per host when possible (best-effort). GRASP remotes use pubkey auth.
       let token: string | undefined = undefined;
 
-      const looksLikeGrasp =
-        provider === "grasp" || /^wss?:\/\//i.test(remoteUrl) || isGraspRepoHttpUrl(remoteUrl);
+      const looksLikeGrasp = isGraspRepoHttpUrl(remoteUrl);
       if (!looksLikeGrasp) {
         if (!host) {
           results.push({

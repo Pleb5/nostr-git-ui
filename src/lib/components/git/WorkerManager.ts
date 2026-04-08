@@ -13,7 +13,8 @@ import {
   GitErrorCode,
   GitErrorCategory,
 } from "@nostr-git/core/errors";
-import { isGraspRepoHttpUrl } from "$lib/utils/grasp-url";
+import { isGraspRepoHttpUrl, parseGraspRepoHttpUrl } from "$lib/utils/grasp-url";
+import { normalizeGraspOrigins } from "$lib/utils/grasp-pipeline";
 
 // Worker URL/factory must be injected by the consuming app (not imported here)
 // because ?url imports only work at the app's bundler level, not in pre-built packages
@@ -961,11 +962,13 @@ export class WorkerManager {
 
           for (const remote of graspRemotes) {
             try {
-              // Extract relay WebSocket URL and repo identifier from the GRASP clone URL
-              const u = new URL(remote.url);
-              const relayUrl = `wss://${u.host}`;
-              const parts = u.pathname.replace(/^\//, "").split("/");
-              const repoName = (parts[1] || "").replace(/\.git$/, "");
+              const parsedRemote = parseGraspRepoHttpUrl(remote.url);
+              if (!parsedRemote) {
+                throw new Error(`Invalid GRASP clone URL: ${remote.url}`);
+              }
+
+              const relayUrl = normalizeGraspOrigins(remote.url).wsOrigin;
+              const repoName = parsedRemote.identifier;
 
               // Publish state event with new SHA — GRASP relay must confirm before push
               await params.publishStateEvent({
