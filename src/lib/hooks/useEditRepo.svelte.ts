@@ -6,9 +6,10 @@ import {
   getTagValue,
 } from "@nostr-git/core/events";
 import { detectVendorFromUrl } from "@nostr-git/core/git";
+import { isGraspRepoHttpUrl } from "@nostr-git/core/utils";
 import { tokens as tokensStore } from "../stores/tokens.js";
+import { normalizeGraspOrigins } from "../utils/grasp-pipeline.js";
 import { tryTokensForHost } from "../utils/tokenHelpers.js";
-
 
 // Types for edit configuration and progress
 interface EditConfig {
@@ -45,6 +46,14 @@ export function useEditRepo(hookOptions: UseEditRepoOptions = {}) {
   let progress = $state<EditProgress | undefined>();
   let error = $state<string | undefined>();
   let isEditing = $state(false);
+
+  const deriveGraspRelayUrl = (remoteUrl: string): string | undefined => {
+    try {
+      return normalizeGraspOrigins(remoteUrl).wsOrigin;
+    } catch {
+      return undefined;
+    }
+  };
 
   /**
    * Edit a repository with full workflow
@@ -132,8 +141,7 @@ export function useEditRepo(hookOptions: UseEditRepoOptions = {}) {
           percentage: 10,
           isComplete: false,
         };
-        
-        
+
         // Get tokens from store and use fallback retry
         const tokens = await tokensStore.waitForInitialization();
         const metadataResult = await tryTokensForHost(
@@ -152,7 +160,6 @@ export function useEditRepo(hookOptions: UseEditRepoOptions = {}) {
             });
           }
         );
-        
 
         if (!metadataResult.success) {
           throw new Error(metadataResult.error || "Failed to update repository metadata");
@@ -184,8 +191,7 @@ export function useEditRepo(hookOptions: UseEditRepoOptions = {}) {
         }
 
         if (filesToUpdate.length > 0) {
-          // Determine provider from clone URL
-          const provider = detectVendorFromUrl(cloneUrl);
+          const provider = isGraspRepoHttpUrl(cloneUrl) ? "grasp" : detectVendorFromUrl(cloneUrl);
 
           // Get tokens from store and use fallback retry
           const tokens = await tokensStore.waitForInitialization();
@@ -223,17 +229,10 @@ export function useEditRepo(hookOptions: UseEditRepoOptions = {}) {
           ? cloneUrl.replace(`/${repo}.git`, `/${config.name}.git`)
           : cloneUrl;
 
-      // Determine provider from clone URL
-      const provider = detectVendorFromUrl(cloneUrl);
-
-      // For GRASP repositories, we need to ensure the relay URL is included in both clone and relays tags
+      const isGraspRepo = isGraspRepoHttpUrl(updatedCloneUrl);
       const cloneUrls = [updatedCloneUrl];
-      let relayUrls: string[] = [];
-
-      if (provider === "grasp") {
-        // For GRASP, the clone URL is the relay URL, so we need to add it to both clone and relays tags
-        relayUrls = [updatedCloneUrl];
-      }
+      const relayUrl = isGraspRepo ? deriveGraspRelayUrl(updatedCloneUrl) : undefined;
+      const relayUrls = relayUrl ? [relayUrl] : [];
 
       const announcementEvent = createRepoAnnouncementEvent({
         repoId: repoId,
