@@ -615,7 +615,6 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         updateProgress: (message) => updateProgress("fork", message, "running"),
         throwIfAborted: () => throwIfAborted(abortSignal),
       });
-
       const preparedSource = filterPreparedSourceRefs({
         preparedSource: discoveredSource,
         includeBranches: config.includeBranches,

@@ -4,6 +4,7 @@
     GitFork,
     AlertCircle,
     CheckCircle2,
+    Info,
     Loader2,
     ChevronDown,
     ExternalLink,
@@ -28,6 +29,11 @@
   import type { ForkResult, ForkConfig } from "../../hooks/useForkRepo.svelte";
   import { toast } from "../../stores/toast";
   import {
+    DEFAULT_BRANCH_COPY_FILTER_TOOLTIP,
+    deriveBranchCopyFilterState,
+    type BranchCopyFilterConfig,
+  } from "./fork-branch-filter";
+  import {
     buildRemoteTargetOptions,
     getDefaultSelectedRemoteTargetIds,
     normalizeRelayUrl,
@@ -39,12 +45,7 @@
   interface Props {
     repo: Repo;
     pubkey: string;
-    branchCopyFilter?: {
-      branchNames: string[];
-      label: string;
-      description?: string;
-      minBranchCount?: number;
-    };
+    branchCopyFilter?: BranchCopyFilterConfig;
     workerApi?: any;
     workerInstance?: Worker;
     onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<unknown>;
@@ -201,14 +202,6 @@
     return owner;
   }
 
-  function normalizeBranchName(value: string): string {
-    return String(value || "").trim();
-  }
-
-  function getUniqueBranchNames(values: string[]): string[] {
-    return Array.from(new Set(values.map(normalizeBranchName).filter(Boolean)));
-  }
-
   const cloneUrl = $derived(
     (repo.clone || []).find((url) => {
       const trimmed = String(url || "").trim();
@@ -237,30 +230,15 @@
     if (completedResult?.repoId) return completedResult.repoId;
     return `${ownerDisplayOwner}/${forkName}`;
   });
-  const availableBranchNames = $derived.by(() =>
-    getUniqueBranchNames((repo?.branches || []).map((branch) => branch?.name || ""))
+  const branchCopyFilterState = $derived.by(() =>
+    deriveBranchCopyFilterState({
+      branchNames: (repo?.branches || []).map((branch) => branch?.name || ""),
+      branchCopyFilter,
+    })
   );
-  const suggestedBranchNames = $derived.by(() =>
-    getUniqueBranchNames(branchCopyFilter?.branchNames || [])
+  const branchCopyFilterTooltip = $derived.by(
+    () => branchCopyFilter?.tooltip || DEFAULT_BRANCH_COPY_FILTER_TOOLTIP
   );
-  const filteredSuggestedBranchNames = $derived.by(() => {
-    if (availableBranchNames.length === 0) return suggestedBranchNames;
-
-    const available = new Set(availableBranchNames);
-    return suggestedBranchNames.filter((branchName) => available.has(branchName));
-  });
-  const branchCopyFilterThreshold = $derived.by(() =>
-    Math.max(0, branchCopyFilter?.minBranchCount ?? 20)
-  );
-  const branchCopyFilterVisible = $derived.by(() => {
-    const totalBranches = availableBranchNames.length;
-    return Boolean(
-      branchCopyFilter &&
-      totalBranches > branchCopyFilterThreshold &&
-      filteredSuggestedBranchNames.length > 0 &&
-      filteredSuggestedBranchNames.length < totalBranches
-    );
-  });
 
   let isOpen = $state(true);
   let tokenList = $state<Token[]>([]);
@@ -503,7 +481,7 @@
   let commitInputFocused = $state(false);
 
   $effect(() => {
-    if (!branchCopyFilterVisible && useBranchCopyFilter) {
+    if (branchCopyFilterState.mode !== "toggle" && useBranchCopyFilter) {
       useBranchCopyFilter = false;
     }
   });
@@ -808,8 +786,10 @@
       visibility: "public",
       targets: selectedForkTargets,
       includeBranches:
-        useBranchCopyFilter && filteredSuggestedBranchNames.length > 0
-          ? filteredSuggestedBranchNames
+        branchCopyFilterState.mode === "toggle" &&
+        useBranchCopyFilter &&
+        branchCopyFilterState.trustedBranchNames.length > 0
+          ? branchCopyFilterState.trustedBranchNames
           : undefined,
       earliestUniqueCommit: earliestUniqueCommit || undefined,
       tags,
@@ -1153,32 +1133,63 @@
               </p>
             </div>
 
-            {#if branchCopyFilterVisible}
+            {#if branchCopyFilterState.mode !== "hidden"}
               <div class="space-y-3 border border-gray-700 rounded-lg p-4 bg-gray-900/60">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-200">Branch copy filter</h3>
+                  <div class="flex items-center gap-2">
+                    <h3 class="text-sm font-medium text-gray-200">Branch copy filter</h3>
+                    <button
+                      type="button"
+                      title={branchCopyFilterTooltip}
+                      aria-label="About trusted branch filtering"
+                      class="text-gray-400 hover:text-gray-300 cursor-help"
+                    >
+                      <Info class="w-4 h-4" />
+                    </button>
+                  </div>
                   <p class="text-xs text-gray-400">
                     {branchCopyFilter?.description ||
                       "For large repositories, you can limit which branches are copied into the fork."}
                   </p>
                 </div>
 
-                <label class="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    bind:checked={useBranchCopyFilter}
-                    disabled={isForking}
-                    class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
-                  />
-                  <div class="flex-1 min-w-0">
-                    <div class="text-sm text-white">{branchCopyFilter?.label}</div>
-                    <p class="text-xs text-gray-400 mt-0.5">
-                      Copy {filteredSuggestedBranchNames.length} of {availableBranchNames.length}
-                      current branch{availableBranchNames.length === 1 ? "" : "es"}. The default
-                      branch stays included.
+                {#if branchCopyFilterState.mode === "loading"}
+                  <div class="flex items-center gap-2 text-sm text-gray-300">
+                    <Loader2 class="w-4 h-4 animate-spin text-gray-400" />
+                    <p>
+                      Checking trusted branches for this {branchCopyFilterState.totalBranches}-branch
+                      repo...
                     </p>
                   </div>
-                </label>
+                {:else if branchCopyFilterState.mode === "toggle"}
+                  <label class="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      bind:checked={useBranchCopyFilter}
+                      disabled={isForking}
+                      class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                    <div class="flex-1 min-w-0">
+                      <div class="text-sm text-white">{branchCopyFilter?.label}</div>
+                      <p class="text-xs text-gray-400 mt-0.5">
+                        Copy {branchCopyFilterState.trustedBranchNames.length} of {branchCopyFilterState.totalBranches}
+                        current branch{branchCopyFilterState.totalBranches === 1 ? "" : "es"}. The
+                        default branch stays included.
+                      </p>
+                    </div>
+                  </label>
+                {:else if branchCopyFilterState.mode === "empty"}
+                  <p class="text-sm text-gray-300">
+                    No trusted branches found; including all {branchCopyFilterState.totalBranches}
+                    branch{branchCopyFilterState.totalBranches === 1 ? "" : "es"} in this fork.
+                  </p>
+                {:else}
+                  <p class="text-sm text-gray-300">
+                    Trusted maintainer merges cover all {branchCopyFilterState.totalBranches}
+                    branch{branchCopyFilterState.totalBranches === 1 ? "" : "es"}; including all
+                    branches in this fork.
+                  </p>
+                {/if}
               </div>
             {/if}
 
