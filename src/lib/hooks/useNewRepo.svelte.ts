@@ -815,6 +815,10 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         includesGrasp && byProvider.has("grasp") && (userPubkey || config.authorPubkey)
           ? getSelectedGraspRepoUrls(config, userPubkey || config.authorPubkey || "").cloneUrls
           : [];
+      const finalRelays = sanitizeRelays([
+        ...sanitizedRelays,
+        ...selectedGraspCloneUrls.map((url) => normalizeGraspOrigins(url).wsOrigin),
+      ]);
 
       const finalCloneUrls = normalizeList(
         providerPriority
@@ -872,7 +876,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           ownerPubkey: graspPubkey,
           repoName: config.name,
           description: config.description || "",
-          relays: sanitizedRelays,
+          relays: finalRelays,
           cloneUrls: finalCloneUrls,
           webUrls: finalWebUrls,
           maintainers:
@@ -902,7 +906,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           description: config.description || "",
           web: finalWebUrls.length > 0 ? finalWebUrls : undefined,
           clone: finalCloneUrls.length > 0 ? finalCloneUrls : undefined,
-          relays: sanitizedRelays,
+          relays: finalRelays,
           maintainers:
             config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
           hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
