@@ -2,9 +2,10 @@
   import { useRegistry } from "../../useRegistry";
   import { getRecommendedGraspServerUrls } from "../../stores/graspServers.js";
   import { tokens as tokensStore, type Token } from "../../stores/tokens.js";
+  import { ACCESS_TOKEN_SETTINGS_PATH } from "../../utils/tokenManagement";
   import { onMount } from "svelte";
 
-  const { Button, Card, CardContent } = useRegistry();
+  const { Card, CardContent } = useRegistry();
 
   interface Props {
     selectedProviders: string[];
@@ -221,6 +222,18 @@
                 <p class="text-xs text-muted-foreground mt-1">
                   Token configured for {provider.host}
                 </p>
+              {:else if !provider.hasToken && provider.id !== "grasp"}
+                <p class="text-xs text-muted-foreground mt-1">
+                  Add a token in
+                  <a
+                    href={ACCESS_TOKEN_SETTINGS_PATH}
+                    class="text-blue-500 underline underline-offset-2 hover:text-blue-400"
+                    onclick={(e) => e.stopPropagation()}
+                  >
+                    Settings
+                  </a>
+                  to enable {provider.name}.
+                </p>
               {:else if provider.id === "grasp"}
                 <p class="text-xs text-muted-foreground mt-1">
                   Uses Nostr signer for authentication
@@ -347,7 +360,12 @@
           repository. Go to Settings to add your GitHub, GitLab, Gitea, or Bitbucket tokens.
         </p>
       </div>
-      <Button variant="outline" size="sm">Go to Settings</Button>
+      <a
+        href={ACCESS_TOKEN_SETTINGS_PATH}
+        class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+      >
+        Go to Settings
+      </a>
     </div>
   {:else if selectedProviders.length === 0}
     <div class="text-center py-4">

@@ -28,6 +28,14 @@ export { tryTokensForHost, getTokensForHost } from "./utils/tokenHelpers";
 export { matchesHost, createHostMatcher } from "./utils/tokenMatcher";
 export { TokenError, AllTokensFailedError, TokenNotFoundError } from "./utils/tokenErrors";
 export {
+  ACCESS_TOKEN_SETTINGS_LINKS,
+  ACCESS_TOKEN_SETTINGS_PATH,
+  getAccessTokenManagementMessage,
+  getAccessTokenSettingsLink,
+  isAccessTokenManagementIssue,
+  isWorkflowScopeIssue,
+} from "./utils/tokenManagement";
+export {
   publishGraspRepoStateAndWait,
   publishGraspRepoStateForPush,
   createGraspAnnouncementAndState,

@@ -1,5 +1,10 @@
 <script lang="ts">
   import type { NewRepoResult } from "../../hooks/useNewRepo.svelte";
+  import {
+    ACCESS_TOKEN_SETTINGS_PATH,
+    getAccessTokenManagementMessage,
+    isAccessTokenManagementIssue,
+  } from "../../utils/tokenManagement";
 
   interface Props {
     isCreating: boolean;
@@ -30,9 +35,6 @@
   const progressPercentage = $derived(totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0);
   const hasErrors = $derived(progress.some((step) => step.error));
   const isComplete = $derived(completedSteps === totalSteps && !hasErrors);
-  const hasWorkflowScopeIssue = $derived(
-    progress.some((step) => step.error && /workflow|\.github\/workflows/i.test(step.error))
-  );
 </script>
 
 <div class="space-y-6">
@@ -135,17 +137,16 @@
               <div class="text-sm text-red-400 mt-1">
                 Error: {step.error}
               </div>
-              {#if hasWorkflowScopeIssue}
+              {#if isAccessTokenManagementIssue(step.error)}
                 <div class="text-xs text-red-300 mt-2">
-                  GitHub requires the workflow token scope to push files under
-                  <span class="font-mono">.github/workflows</span>.
+                  {getAccessTokenManagementMessage(step.error)}
                   <a
-                    href="/settings/profile"
+                    href={ACCESS_TOKEN_SETTINGS_PATH}
                     target="_blank"
                     rel="noopener noreferrer"
                     class="ml-2 inline-flex items-center text-red-200 hover:text-red-100 underline"
                   >
-                    Open settings
+                    Open token settings
                   </a>
                 </div>
               {/if}
