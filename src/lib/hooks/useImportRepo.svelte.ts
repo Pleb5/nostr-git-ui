@@ -25,7 +25,7 @@ import {
   type UserProfileMap,
   type CommentEventMap,
 } from "@nostr-git/core";
-import { parseRepoId } from "@nostr-git/core/utils";
+import { isGraspRepoHttpUrl, parseRepoId } from "@nostr-git/core/utils";
 import type {
   RepoAnnouncementEvent,
   RepoStateEvent,
@@ -1858,7 +1858,16 @@ function convertRepoEvents(context: ImportContext): {
   }
 
   // Get relays from config (required for repo announcement)
-  const relays: string[] = context.config.relays || [];
+  const relays = Array.from(
+    new Set([
+      ...(context.config.relays || []),
+      ...context.remotePushResults
+        .filter(
+          (result) => result.success && result.remoteUrl && isGraspRepoHttpUrl(result.remoteUrl)
+        )
+        .map((result) => normalizeGraspOrigins(result.remoteUrl as string).wsOrigin),
+    ])
+  );
 
   if (relays.length === 0) {
     throw new Error("At least one relay is required for repository announcement");

@@ -225,7 +225,7 @@
       relaySearchTimeout = setTimeout(async () => {
         try {
           const results = await searchRelays(query);
-          relaySearchResults = results.filter((relay) => !selectedRelays.includes(relay));
+          relaySearchResults = results.filter((relay) => !effectiveSelectedRelays.includes(relay));
           showRelayAutocomplete = relaySearchResults.length > 0;
         } catch (error) {
           console.error("Failed to search relays", error);
@@ -261,9 +261,15 @@
   }
 
   function syncGraspRelaysToPreferredRelays(urls: string[]) {
-    const normalized = (urls || []).map(normalizeRelayUrl).filter(Boolean);
-    if (normalized.length === 0) return;
-    selectedRelays = Array.from(new Set([...(selectedRelays || []), ...normalized]));
+    const selectedRelaySet = new Set((urls || []).map(normalizeRelayUrl).filter(Boolean));
+    if (selectedRelaySet.size === 0) return;
+    selectedRelays = Array.from(
+      new Set(
+        (selectedRelays || [])
+          .map(normalizeRelayUrl)
+          .filter((relayUrl) => Boolean(relayUrl) && !selectedRelaySet.has(relayUrl))
+      )
+    );
   }
 
   function normalizeTokenHostForTarget(host: string): string {
@@ -510,6 +516,28 @@
     graspRelayUrls = graspRelayUrls.filter((_, i) => i !== index);
     initializedTargetSelection = false;
   }
+
+  const selectedGraspTargetRelays = $derived.by(() =>
+    importTargets
+      .filter(
+        (target) =>
+          selectedImportTargetIds.includes(target.id) &&
+          target.status === "ready" &&
+          target.provider === "grasp" &&
+          target.relayUrl
+      )
+      .map((target) => normalizeRelayUrl(target.relayUrl || ""))
+      .filter(Boolean)
+  );
+
+  const effectiveSelectedRelays = $derived.by(() =>
+    Array.from(
+      new Set([
+        ...(selectedRelays || []).map(normalizeRelayUrl).filter(Boolean),
+        ...selectedGraspTargetRelays,
+      ])
+    )
+  );
 
   function commitNewGraspRelay() {
     if (!newGraspRelayUrl.trim()) return;
@@ -978,7 +1006,7 @@
     }
 
     // Validate relays
-    if (selectedRelays.length === 0) {
+    if (effectiveSelectedRelays.length === 0) {
       validationError = "At least one relay is required";
       return;
     }
@@ -1010,7 +1038,7 @@
       mirrorIssues: sourceAccessMode === "anonymous" ? false : mirrorIssues,
       mirrorPullRequests: sourceAccessMode === "anonymous" ? false : mirrorPullRequests,
       mirrorComments: sourceAccessMode === "anonymous" ? false : mirrorComments,
-      relays: selectedRelays,
+      relays: effectiveSelectedRelays,
     };
     (config as ImportConfig & { selectedBranches?: string[] }).selectedBranches =
       selectedBranchNamesForImport;

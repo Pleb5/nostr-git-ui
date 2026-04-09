@@ -267,6 +267,40 @@ export function toNpubOrSelf(value: string): string {
   return nip19.npubEncode(value);
 }
 
+export function buildGraspRepoUrls(params: {
+  relayUrls: string[];
+  ownerPubkey: string;
+  repoName: string;
+}): { ownerNpub: string; cloneUrls: string[]; webUrls: string[] } {
+  const { relayUrls, ownerPubkey, repoName } = params;
+  const ownerNpub = toNpubOrSelf(ownerPubkey);
+  const cloneUrls: string[] = [];
+  const webUrls: string[] = [];
+  const seenCloneUrls = new Set<string>();
+  const seenWebUrls = new Set<string>();
+
+  for (const relayUrl of relayUrls) {
+    const trimmed = String(relayUrl || "").trim();
+    if (!trimmed) continue;
+
+    const { httpOrigin } = normalizeGraspOrigins(trimmed);
+    const webUrl = `${httpOrigin}/${ownerNpub}/${repoName}`;
+    const cloneUrl = `${webUrl}.git`;
+
+    if (!seenWebUrls.has(webUrl)) {
+      seenWebUrls.add(webUrl);
+      webUrls.push(webUrl);
+    }
+
+    if (!seenCloneUrls.has(cloneUrl)) {
+      seenCloneUrls.add(cloneUrl);
+      cloneUrls.push(cloneUrl);
+    }
+  }
+
+  return { ownerNpub, cloneUrls, webUrls };
+}
+
 export interface CreateGraspEventsParams {
   relayUrl: string;
   ownerPubkey: string;
@@ -306,9 +340,17 @@ export function createGraspAnnouncementAndState({
   stateEvent: RepoStateEvent;
 } {
   const { wsOrigin, httpOrigin } = normalizeGraspOrigins(relayUrl);
-  const ownerNpub = toNpubOrSelf(ownerPubkey);
-  const webUrl = `${httpOrigin}/${ownerNpub}/${repoName}`;
-  const cloneUrl = `${webUrl}.git`;
+  const {
+    ownerNpub,
+    cloneUrls: defaultCloneUrls,
+    webUrls: defaultWebUrls,
+  } = buildGraspRepoUrls({
+    relayUrls: [relayUrl],
+    ownerPubkey,
+    repoName,
+  });
+  const webUrl = defaultWebUrls[0] || `${httpOrigin}/${ownerNpub}/${repoName}`;
+  const cloneUrl = defaultCloneUrls[0] || `${webUrl}.git`;
 
   const normalizedRelays = sanitizeRelays(relays);
   const finalCloneUrls = cloneUrls && cloneUrls.length > 0 ? cloneUrls : [cloneUrl];

@@ -652,8 +652,15 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       const cloneUrls = sameLogicalRepo
         ? dedupeCloneUrls([...successfulRemoteUrls, ...(originalRepo.cloneUrls || [])])
         : dedupeCloneUrls(successfulRemoteUrls);
+      const graspTargetRelays = selectedTargets
+        .filter((target) => target.provider === "grasp" && target.relayUrl)
+        .map((target) => normalizeRelayUrl(target.relayUrl as string))
+        .filter(Boolean);
       const relays = Array.from(
-        new Set((config.relays || []).map(normalizeRelayUrl).filter(Boolean))
+        new Set([
+          ...(config.relays || []).map(normalizeRelayUrl).filter(Boolean),
+          ...graspTargetRelays,
+        ])
       );
       const maintainers = Array.from(
         new Set(

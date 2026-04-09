@@ -4,6 +4,9 @@ import {
   type RepoMetadata,
   type NostrEvent,
 } from "@nostr-git/core";
+import { isGraspRepoHttpUrl } from "@nostr-git/core/utils";
+
+import { normalizeGraspOrigins } from "./grasp-pipeline.js";
 
 export function trackLatestRepoMetadataCreatedAt(
   current: number,
@@ -130,6 +133,17 @@ export function buildImportedRepoEvents(params: {
     )
   );
 
+  const successfulGraspRelays = Array.from(
+    new Set(
+      remotePushResults
+        .filter(
+          (result) => result.success && result.remoteUrl && isGraspRepoHttpUrl(result.remoteUrl)
+        )
+        .map((result) => normalizeGraspOrigins(result.remoteUrl as string).wsOrigin)
+        .filter(Boolean)
+    )
+  );
+
   if (successfulRemoteUrls.length > 0) {
     announcement.tags = [
       ...announcement.tags.filter((tag) => tag[0] !== "clone"),
@@ -156,8 +170,10 @@ export function buildImportedRepoEvents(params: {
       }))
   );
 
-  if (relays.length > 0 && !state.tags.some((tag) => tag[0] === "relays")) {
-    state.tags = [...state.tags, ["relays", ...relays] as any];
+  const finalRelays = Array.from(new Set([...(relays || []), ...successfulGraspRelays]));
+
+  if (finalRelays.length > 0 && !state.tags.some((tag) => tag[0] === "relays")) {
+    state.tags = [...state.tags, ["relays", ...finalRelays] as any];
   }
 
   return { announcement, state };

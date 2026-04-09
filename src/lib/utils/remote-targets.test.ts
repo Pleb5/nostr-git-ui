@@ -27,7 +27,7 @@ describe("remote target helpers", () => {
     ]);
   });
 
-  it("defaults to all ready git targets and the first ready GRASP target", () => {
+  it("defaults to all ready GRASP targets before falling back to git targets", () => {
     const selectedIds = getDefaultSelectedRemoteTargetIds([
       { id: "git:github.com", label: "GitHub", provider: "github", status: "ready" },
       { id: "git:gitlab.com", label: "GitLab", provider: "gitlab", status: "ready" },
@@ -36,7 +36,17 @@ describe("remote target helpers", () => {
       { id: "git:bitbucket.org", label: "Bitbucket", provider: "bitbucket", status: "failed" },
     ]);
 
-    expect(selectedIds).toEqual(["git:github.com", "git:gitlab.com", "grasp:wss://one"]);
+    expect(selectedIds).toEqual(["grasp:wss://one", "grasp:wss://two"]);
+  });
+
+  it("falls back to ready git targets when no GRASP targets are ready", () => {
+    const selectedIds = getDefaultSelectedRemoteTargetIds([
+      { id: "git:github.com", label: "GitHub", provider: "github", status: "ready" },
+      { id: "git:gitlab.com", label: "GitLab", provider: "gitlab", status: "ready" },
+      { id: "grasp:wss://one", label: "GRASP One", provider: "grasp", status: "failed" },
+    ]);
+
+    expect(selectedIds).toEqual(["git:github.com", "git:gitlab.com"]);
   });
 
   it("validates remote target repository names", () => {

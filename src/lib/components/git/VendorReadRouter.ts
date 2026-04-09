@@ -598,7 +598,7 @@ export class VendorReadRouter {
       if (v === "gitlab") return "gitlab";
       if (v === "gitea") return "gitea";
       if (v === "bitbucket") return "bitbucket";
-      if (v === "grasp-rest") return "grasp-rest";
+      if (v === "grasp-rest") return null;
       return null;
     } catch {
       return null;

@@ -61,7 +61,7 @@ describe("import-repo-metadata", () => {
           type: "User",
         },
       },
-      relays: ["wss://relay.one", "wss://relay.two"],
+      relays: ["wss://relay.one"],
       userPubkey: "f".repeat(64),
       repoName: "renamed-budabit",
       importTimestamp: 2000,
@@ -113,6 +113,6 @@ describe("import-repo-metadata", () => {
       "https://github.com/me/flotilla-budabit",
       "https://gitlab.com/me/flotilla-budabit",
     ]);
-    expect(relayTag).toEqual(["relays", "wss://relay.one", "wss://relay.two"]);
+    expect(relayTag).toEqual(["relays", "wss://relay.one", "wss://gitnostr.com"]);
   });
 });

@@ -207,18 +207,23 @@
 
   function syncGraspRelaysToPreferredRelays(urls: string[]) {
     if (!selectedProviders.includes("grasp")) return;
-    const normalized = dedupeStrings(urls || []);
-    if (normalized.length === 0) return;
+    const selectedRelaySet = new Set(dedupeStrings(urls || []));
+    if (selectedRelaySet.size === 0) return;
 
-    const graspOnly = selectedProviders.length === 1 && selectedProviders[0] === "grasp";
-    const nextRelays =
-      graspOnly && !userEditedRelays
-        ? normalized
-        : dedupeStrings([...(advancedSettings.relays || []), ...normalized]);
+    const nextRelays = dedupeStrings(advancedSettings.relays || []).filter(
+      (relayUrl) => !selectedRelaySet.has(relayUrl)
+    );
 
     if (!arraysEqual(advancedSettings.relays, nextRelays)) {
       advancedSettings.relays = nextRelays;
     }
+  }
+
+  function getEffectiveRepoRelays(): string[] {
+    return dedupeStrings([
+      ...(advancedSettings.relays || []),
+      ...(selectedProviders.includes("grasp") ? graspRelayUrls || [] : []),
+    ]);
   }
 
   function buildBudabitRepoUrl(name: string): string | undefined {
@@ -231,7 +236,7 @@
 
     const relays = dedupeStrings([
       ...platformRelays,
-      ...advancedSettings.relays,
+      ...getEffectiveRepoRelays(),
       ...defaultRelays,
       routeRelay,
     ]);
@@ -318,11 +323,7 @@
     }
 
     if (!userEditedRelays) {
-      const defaultRelaySet = selectedProviders.includes("grasp")
-        ? selectedProviders.length === 1 && selectedProviders[0] === "grasp"
-          ? dedupeStrings([...(graspRelayUrls || [])])
-          : dedupeStrings([...(defaultRelays || []), ...(graspRelayUrls || [])])
-        : dedupeStrings([...(defaultRelays || [])]);
+      const defaultRelaySet = dedupeStrings([...(defaultRelays || [])]);
       if (!arraysEqual(advancedSettings.relays, defaultRelaySet)) {
         advancedSettings.relays = defaultRelaySet;
       }
@@ -576,7 +577,7 @@
 
     if (selectedProviders.length === 0) return;
 
-    const relayCount = advancedSettings.relays.filter((value) => value && value.trim()).length;
+    const relayCount = getEffectiveRepoRelays().length;
     if (relayCount === 0) return;
 
     const providerDefaults = getProviderUrlDefaults(repoDetails.name.trim());
@@ -599,7 +600,7 @@
         authorEmail: advancedSettings.authorEmail,
         authorPubkey: userPubkey,
         maintainers: advancedSettings.maintainers,
-        relays: advancedSettings.relays,
+        relays: getEffectiveRepoRelays(),
         tags: advancedSettings.tags,
         webUrls: advancedSettings.webUrls.filter((v) => v && v.trim()),
         cloneUrls: advancedSettings.cloneUrls.filter((v) => v && v.trim()),
@@ -883,8 +884,7 @@
               (selectedProviders.length === 0 ||
                 (selectedProviders.includes("grasp") && !isValidGraspConfig()))) ||
               (currentStep === 2 && !validateStep1()) ||
-              (currentStep === 3 &&
-                advancedSettings.relays.filter((value) => value && value.trim()).length === 0)}
+              (currentStep === 3 && getEffectiveRepoRelays().length === 0)}
             variant="git"
             class="btn btn-primary"
           >

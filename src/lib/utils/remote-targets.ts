@@ -426,7 +426,7 @@ export function getDefaultSelectedRemoteTargetIds(targets: RemoteTargetOption[])
     .filter((target) => target.provider === "grasp")
     .map((target) => target.id);
 
-  return [...readyGitTargets, ...(readyGraspTargets.length > 0 ? [readyGraspTargets[0]] : [])];
+  return readyGraspTargets.length > 0 ? readyGraspTargets : readyGitTargets;
 }
 
 export function toRemoteTargetSelection(target: RemoteTargetOption): RemoteTargetSelection {

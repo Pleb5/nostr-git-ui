@@ -9,6 +9,7 @@ import { sanitizeRelays, parseRepoId } from "@nostr-git/core/utils";
 import { tryTokensForHost, getTokensForHost } from "../utils/tokenHelpers.js";
 import { checkGraspRepoExists } from "../utils/grasp-availability.js";
 import {
+  buildGraspRepoUrls,
   createGraspAnnouncementAndState,
   didRelayAckGraspEvents,
   normalizeGraspOrigins,
@@ -572,6 +573,14 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
     return values.length > 0 ? values : [config.provider];
   }
 
+  function getSelectedGraspRepoUrls(config: NewRepoConfig, ownerPubkey: string) {
+    return buildGraspRepoUrls({
+      relayUrls: normalizeList([config.relayUrl || "", ...(config.relayUrls || [])]),
+      ownerPubkey,
+      repoName: config.name,
+    });
+  }
+
   function isProviderUrl(url: string, provider: string, relayUrls: string[]): boolean {
     try {
       const parsed = new URL(url);
@@ -614,7 +623,10 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
 
       const selectedProviders = getSelectedProviders(config);
       const includesGrasp = selectedProviders.includes("grasp");
-      const sanitizedRelays = sanitizeRelays(config.relays || []);
+      const sanitizedRelays = sanitizeRelays([
+        ...(config.relays || []),
+        ...(includesGrasp ? config.relayUrls || [] : []),
+      ]);
 
       // Step 1: Create local repository
       updateProgress("local", "Creating local repository...", "running");
@@ -643,6 +655,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           throw new Error("GRASP provider requires user pubkey");
         }
         graspStateAuthorPubkey = graspPubkey;
+        const selectedGraspRepoUrls = getSelectedGraspRepoUrls(config, graspPubkey);
 
         const refs =
           localRepo?.initialCommit && config.defaultBranch
@@ -661,6 +674,7 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
           repoName: config.name,
           description: config.description || "",
           relays: sanitizedRelays,
+          cloneUrls: selectedGraspRepoUrls.cloneUrls,
           maintainers:
             config.maintainers && config.maintainers.length > 0 ? config.maintainers : undefined,
           hashtags: config.tags && config.tags.length > 0 ? config.tags : undefined,
@@ -797,9 +811,21 @@ export function useNewRepo(options: UseNewRepoOptions = {}) {
         ...(config.cloneUrlOrder || []),
         ...selectedProviders,
       ]);
+      const selectedGraspCloneUrls =
+        includesGrasp && byProvider.has("grasp") && (userPubkey || config.authorPubkey)
+          ? getSelectedGraspRepoUrls(config, userPubkey || config.authorPubkey || "").cloneUrls
+          : [];
 
       const finalCloneUrls = normalizeList(
-        providerPriority.map((provider) => byProvider.get(provider)?.url || "").filter(Boolean)
+        providerPriority
+          .flatMap((provider) => {
+            if (provider === "grasp") {
+              return selectedGraspCloneUrls;
+            }
+
+            return [byProvider.get(provider)?.url || ""];
+          })
+          .filter(Boolean)
       );
 
       const providerWebUrls = normalizeList(

@@ -1,6 +1,7 @@
 import { getGitServiceApiFromUrl, parseRepoUrl, type NostrEvent } from "@nostr-git/core";
 
 import {
+  buildGraspRepoUrls,
   createGraspAnnouncementAndState,
   didRelayAckGraspEvents,
   extractPublishRelayAck,
@@ -256,6 +257,13 @@ export async function syncLocalRepoToTargets(
     return aIsGrasp - bIsGrasp;
   });
   const hasAnyNonGraspTarget = orderedTargets.some((target) => target.provider !== "grasp");
+  const selectedGraspCloneUrls = buildGraspRepoUrls({
+    relayUrls: orderedTargets
+      .filter((target) => target.provider === "grasp" && target.relayUrl)
+      .map((target) => target.relayUrl as string),
+    ownerPubkey: userPubkey,
+    repoName,
+  }).cloneUrls;
 
   const results: RemoteSyncTargetResult[] = [];
   let latestRepoMetadataCreatedAt = options.latestRepoMetadataCreatedAt || 0;
@@ -331,7 +339,8 @@ export async function syncLocalRepoToTargets(
             repoName,
             description: repoDescription,
             relays: graspRelays,
-            cloneUrls: [graspRemoteUrl],
+            cloneUrls:
+              selectedGraspCloneUrls.length > 0 ? selectedGraspCloneUrls : [graspRemoteUrl],
             webUrls: webUrl ? [webUrl] : undefined,
             maintainers,
           });
@@ -436,7 +445,8 @@ export async function syncLocalRepoToTargets(
                 relays: Array.from(
                   new Set([normalizeGraspOrigins(target.relayUrl).wsOrigin, ...relays])
                 ),
-                cloneUrls: [graspRemoteUrl],
+                cloneUrls:
+                  selectedGraspCloneUrls.length > 0 ? selectedGraspCloneUrls : [graspRemoteUrl],
                 webUrls: [
                   webUrl || guessWebUrl(graspRemoteUrl) || graspRemoteUrl.replace(/\.git$/, ""),
                 ],

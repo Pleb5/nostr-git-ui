@@ -2,12 +2,26 @@ import { describe, expect, it, vi } from "vitest";
 import { createRepoStateEvent } from "@nostr-git/core/events";
 
 import {
+  buildGraspRepoUrls,
   publishGraspRepoStateAndWait,
   publishGraspRepoStateForPush,
   waitForGraspRepoStateVisibility,
 } from "./grasp-pipeline.js";
 
 describe("grasp-pipeline", () => {
+  it("builds clone URLs for every selected GRASP server", () => {
+    const result = buildGraspRepoUrls({
+      relayUrls: ["wss://relay.one", "https://relay.two", "wss://relay.one/"],
+      ownerPubkey: "a".repeat(64),
+      repoName: "flotilla-budabit",
+    });
+
+    expect(result.cloneUrls).toEqual([
+      `https://relay.one/${result.ownerNpub}/flotilla-budabit.git`,
+      `https://relay.two/${result.ownerNpub}/flotilla-budabit.git`,
+    ]);
+  });
+
   it("waits until a matching GRASP repo state is visible on the relay", async () => {
     const stateEvent = createRepoStateEvent({
       repoId: "flotilla-budabit",

@@ -361,6 +361,22 @@
       .filter(Boolean)
   );
 
+  $effect(() => {
+    const selectedRelaySet = new Set(selectedGraspRelayUrls.map(normalizeRelayUrl).filter(Boolean));
+    if (selectedRelaySet.size === 0) return;
+
+    const nextPreferredRelays = preferredRelays
+      .map(normalizeRelayUrl)
+      .filter((relayUrl) => Boolean(relayUrl) && !selectedRelaySet.has(relayUrl));
+
+    if (
+      nextPreferredRelays.length !== preferredRelays.length ||
+      nextPreferredRelays.some((value, index) => value !== preferredRelays[index])
+    ) {
+      preferredRelays = nextPreferredRelays;
+    }
+  });
+
   function targetStatusLabel(target: RemoteTargetOption): string {
     if (target.status === "ready") return target.existsAlready ? "Ready (existing)" : "Ready";
     if (target.status === "checking") return "Checking";
@@ -1423,7 +1439,7 @@
                   {/if}
                 </div>
                 <p class="mt-1 text-xs text-gray-400">
-                  Selected GRASP target relays are automatically included above.
+                  Selected GRASP target relays are included automatically when publishing.
                 </p>
               </div>
             </div>
