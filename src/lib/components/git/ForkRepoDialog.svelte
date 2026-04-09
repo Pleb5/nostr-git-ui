@@ -39,6 +39,12 @@
   interface Props {
     repo: Repo;
     pubkey: string;
+    branchCopyFilter?: {
+      branchNames: string[];
+      label: string;
+      description?: string;
+      minBranchCount?: number;
+    };
     workerApi?: any;
     workerInstance?: Worker;
     onPublishEvent: (event: RepoAnnouncementEvent | RepoStateEvent) => Promise<unknown>;
@@ -75,6 +81,7 @@
   const {
     repo,
     pubkey,
+    branchCopyFilter,
     workerApi,
     workerInstance,
     onPublishEvent,
@@ -194,6 +201,14 @@
     return owner;
   }
 
+  function normalizeBranchName(value: string): string {
+    return String(value || "").trim();
+  }
+
+  function getUniqueBranchNames(values: string[]): string[] {
+    return Array.from(new Set(values.map(normalizeBranchName).filter(Boolean)));
+  }
+
   const cloneUrl = $derived(
     (repo.clone || []).find((url) => {
       const trimmed = String(url || "").trim();
@@ -221,6 +236,30 @@
   const forkOwnerDisplay = $derived.by(() => {
     if (completedResult?.repoId) return completedResult.repoId;
     return `${ownerDisplayOwner}/${forkName}`;
+  });
+  const availableBranchNames = $derived.by(() =>
+    getUniqueBranchNames((repo?.branches || []).map((branch) => branch?.name || ""))
+  );
+  const suggestedBranchNames = $derived.by(() =>
+    getUniqueBranchNames(branchCopyFilter?.branchNames || [])
+  );
+  const filteredSuggestedBranchNames = $derived.by(() => {
+    if (availableBranchNames.length === 0) return suggestedBranchNames;
+
+    const available = new Set(availableBranchNames);
+    return suggestedBranchNames.filter((branchName) => available.has(branchName));
+  });
+  const branchCopyFilterThreshold = $derived.by(() =>
+    Math.max(0, branchCopyFilter?.minBranchCount ?? 20)
+  );
+  const branchCopyFilterVisible = $derived.by(() => {
+    const totalBranches = availableBranchNames.length;
+    return Boolean(
+      branchCopyFilter &&
+      totalBranches > branchCopyFilterThreshold &&
+      filteredSuggestedBranchNames.length > 0 &&
+      filteredSuggestedBranchNames.length < totalBranches
+    );
   });
 
   let isOpen = $state(true);
@@ -456,11 +495,18 @@
   });
 
   let earliestUniqueCommit = $state("");
+  let useBranchCopyFilter = $state(false);
   let availableCommits = $state<Array<any>>([]);
   let loadingCommits = $state(false);
   let commitSearchQuery = $state("");
   let showCommitDropdown = $state(false);
   let commitInputFocused = $state(false);
+
+  $effect(() => {
+    if (!branchCopyFilterVisible && useBranchCopyFilter) {
+      useBranchCopyFilter = false;
+    }
+  });
 
   $effect(() => {
     if (!repo) return;
@@ -761,6 +807,10 @@
       forkName: forkName.trim(),
       visibility: "public",
       targets: selectedForkTargets,
+      includeBranches:
+        useBranchCopyFilter && filteredSuggestedBranchNames.length > 0
+          ? filteredSuggestedBranchNames
+          : undefined,
       earliestUniqueCommit: earliestUniqueCommit || undefined,
       tags,
       maintainers,
@@ -1102,6 +1152,35 @@
                 {/if}
               </p>
             </div>
+
+            {#if branchCopyFilterVisible}
+              <div class="space-y-3 border border-gray-700 rounded-lg p-4 bg-gray-900/60">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-200">Branch copy filter</h3>
+                  <p class="text-xs text-gray-400">
+                    {branchCopyFilter?.description ||
+                      "For large repositories, you can limit which branches are copied into the fork."}
+                  </p>
+                </div>
+
+                <label class="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    bind:checked={useBranchCopyFilter}
+                    disabled={isForking}
+                    class="mt-1 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                  />
+                  <div class="flex-1 min-w-0">
+                    <div class="text-sm text-white">{branchCopyFilter?.label}</div>
+                    <p class="text-xs text-gray-400 mt-0.5">
+                      Copy {filteredSuggestedBranchNames.length} of {availableBranchNames.length}
+                      current branch{availableBranchNames.length === 1 ? "" : "es"}. The default
+                      branch stays included.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            {/if}
 
             <div>
               <label for="earliest-commit" class="block text-sm font-medium text-gray-300 mb-2">

@@ -30,6 +30,7 @@ export interface ForkConfig {
   tags?: string[];
   maintainers?: string[];
   relays?: string[];
+  includeBranches?: string[];
 }
 
 export interface ForkProgress {
@@ -72,7 +73,7 @@ export interface UseForkRepoOptions {
   onRollbackPublishedRepoEvents?: (params: { repoName: string; relays: string[] }) => Promise<void>;
 }
 
-interface PreparedSourceRefs {
+export interface PreparedSourceRefs {
   defaultBranch: string;
   branches: string[];
   tags: string[];
@@ -366,6 +367,46 @@ async function discoverSourceRefs(params: {
   };
 }
 
+export function filterPreparedSourceRefs(params: {
+  preparedSource: PreparedSourceRefs;
+  includeBranches?: string[];
+  preserveDefaultBranch?: boolean;
+}): PreparedSourceRefs {
+  const { preparedSource, includeBranches, preserveDefaultBranch = true } = params;
+  const normalizedBranchNames = Array.from(
+    new Set(
+      (includeBranches || []).map((branchName) => String(branchName || "").trim()).filter(Boolean)
+    )
+  );
+
+  if (normalizedBranchNames.length === 0) {
+    return preparedSource;
+  }
+
+  const allowedBranches = new Set(normalizedBranchNames);
+  const defaultBranch = String(preparedSource.defaultBranch || "").trim();
+  if (preserveDefaultBranch && defaultBranch) {
+    allowedBranches.add(defaultBranch);
+  }
+
+  const branches = preparedSource.branches.filter((branchName) =>
+    allowedBranches.has(String(branchName || "").trim())
+  );
+  const refs = preparedSource.refs.filter(
+    (ref) => ref.type !== "heads" || allowedBranches.has(String(ref.name || "").trim())
+  );
+
+  return {
+    ...preparedSource,
+    defaultBranch:
+      branches.includes(defaultBranch) || branches.length === 0
+        ? preparedSource.defaultBranch
+        : branches[0],
+    branches,
+    refs,
+  };
+}
+
 export function useForkRepo(options: UseForkRepoOptions = {}) {
   let isForking = $state(false);
   let isComplete = $state(false);
@@ -566,13 +607,18 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
         );
       }
 
-      const preparedSource = await discoverSourceRefs({
+      const discoveredSource = await discoverSourceRefs({
         workerApi: gitWorkerApi,
         sourceUrlCandidates,
         localRepoId,
         fallbackDefaultBranch: originalRepo.defaultBranch,
         updateProgress: (message) => updateProgress("fork", message, "running"),
         throwIfAborted: () => throwIfAborted(abortSignal),
+      });
+
+      const preparedSource = filterPreparedSourceRefs({
+        preparedSource: discoveredSource,
+        includeBranches: config.includeBranches,
       });
 
       updateProgress(
