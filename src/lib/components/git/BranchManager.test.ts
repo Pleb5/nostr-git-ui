@@ -22,6 +22,14 @@ describe("BranchManager", () => {
     vi.clearAllMocks();
   });
 
+  it("uses the selected branch before falling back to synthetic master", () => {
+    const manager = new BranchManager({} as any);
+
+    manager.setSelectedBranch("main");
+
+    expect(manager.getMainBranch()).toBe("main");
+  });
+
   it("replaces optimistic stale heads with discovered refs", async () => {
     const vendorReadRouter = {
       listRefs: vi.fn(async () => ({

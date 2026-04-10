@@ -548,9 +548,6 @@ export class Repo {
     // Worker initialization happens in background, refs fallback runs after worker is ready
     (async () => {
       try {
-        // Don't block on refs here - let subscriptions populate them
-        // The fallback will run after worker initialization if still needed
-
         // Initialize the WorkerManager (can be slow)
         await this.workerManager.initialize();
 
@@ -563,7 +560,15 @@ export class Repo {
           console.log("No authentication tokens found");
         }
 
-        if (initialRepoEvent && (this.#repoStateEvent || this.#repoStateEventsArr?.length)) {
+        const branchStats = this.branchManager.getStats();
+        const needsInitialBranchResolution =
+          !!initialRepoEvent &&
+          (this.refs.length === 0 ||
+            this.#refsSeededFromHead ||
+            !branchStats.mainBranch ||
+            !branchStats.selectedBranch);
+
+        if (needsInitialBranchResolution && initialRepoEvent) {
           await this.#loadBranchesFromRepo(initialRepoEvent);
         }
 
@@ -575,7 +580,7 @@ export class Repo {
         try {
           const repoId = this.key;
           const cloneUrls = [...(this.#repo?.clone || [])];
-          const branch = this.branchManager.getMainBranch();
+          const branch = this.#getKnownMainBranch() || this.branchManager.getMainBranch();
           const hasVendorApi = this.vendorReadRouter?.hasVendorSupport(cloneUrls) ?? false;
 
           if (repoId && cloneUrls.length > 0 && !hasVendorApi) {
@@ -704,7 +709,8 @@ export class Repo {
     console.log("Resolving default branch (cache miss or expired)");
 
     // Use BranchManager's robust branch resolution
-    const resolvedBranch = requestedBranch || this.branchManager.getMainBranch();
+    const resolvedBranch =
+      requestedBranch || this.#getKnownMainBranch() || this.branchManager.getMainBranch();
 
     // Cache the result
     this.#resolvedDefaultBranch = resolvedBranch;
@@ -1138,21 +1144,23 @@ export class Repo {
   }
 
   async #loadCommits() {
+    const mainBranch = this.#getKnownMainBranch();
+
     // Validate repoId is not empty string
-    if (!this.repoEvent || !this.mainBranch || !this.key || this.key.trim() === "") {
+    if (!this.repoEvent || !mainBranch || !this.key || this.key.trim() === "") {
       console.debug("[Repo] #loadCommits skipped: missing repoEvent, mainBranch, or key", {
         hasRepoEvent: !!this.repoEvent,
-        mainBranch: this.mainBranch,
+        mainBranch,
         key: this.key,
       });
       return;
     }
 
     // Use selected branch if available, otherwise fall back to mainBranch
-    const branchToLoad = this.selectedBranch || this.mainBranch;
+    const branchToLoad = this.selectedBranch || mainBranch;
 
     // Delegate to CommitManager
-    await this.commitManager.loadCommits(this.key, branchToLoad, this.mainBranch);
+    await this.commitManager.loadCommits(this.key, branchToLoad, mainBranch);
   }
 
   async #loadBranchesFromRepo(repoEvent: RepoAnnouncementEvent) {
@@ -1327,6 +1335,27 @@ export class Repo {
     const normalized = raw.replace(/^ref:\s*/i, "");
     const match = normalized.match(/^refs\/heads\/(.+)$/);
     return match ? match[1] : normalized;
+  }
+
+  #getKnownMainBranch(): string | undefined {
+    const branchStats = this.branchManager.getStats();
+    if (branchStats.mainBranch) {
+      return branchStats.mainBranch;
+    }
+
+    const headName = this.#getHeadBranchName(this.#state?.head);
+    if (headName) {
+      return headName;
+    }
+
+    const selectedBranch = normalizeGitRefName(this.selectedBranch || "");
+    if (selectedBranch) {
+      return selectedBranch;
+    }
+
+    const heads = this.refs.filter((ref) => ref.type === "heads");
+    const commonDefaults = ["main", "master", "develop", "dev"];
+    return commonDefaults.find((name) => heads.some((ref) => ref.name === name)) || heads[0]?.name;
   }
 
   #seedRefsFromHead(headHint?: string) {

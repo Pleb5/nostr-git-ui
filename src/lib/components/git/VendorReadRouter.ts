@@ -501,6 +501,7 @@ export class VendorReadRouter {
     const depth = params.depth || 30;
     const page = params.page || 1;
     const perPage = params.perPage || 30;
+    let pendingVendorFailures: Array<{ url: string; error?: string }> = [];
 
     // 1) Vendor-first with URL fallback
     if (this.preferVendorReads && remotes.length > 0) {
@@ -541,22 +542,39 @@ export class VendorReadRouter {
         console.warn(
           `[VendorReadRouter] All ${vendorResult.attempts.length} vendor URL(s) failed for listCommits`
         );
-        for (const attempt of vendorResult.attempts) {
-          if (!attempt.success) {
-            const status = this.extractHttpStatus(attempt.error);
-            this.reportCloneUrlError(attempt.url, attempt.error || "Unknown error", status);
-          }
-        }
+        pendingVendorFailures = vendorResult.attempts
+          .filter((attempt) => !attempt.success)
+          .map((attempt) => ({
+            url: attempt.url,
+            error: attempt.error || "Unknown error",
+          }));
       }
     }
 
     // 2) Git worker fallback
     console.log(`[VendorReadRouter] Using git worker fallback`);
-    const commitsResult = await params.workerManager.getCommitHistory({
-      repoId: params.repoKey || "",
-      branch,
-      depth,
-    });
+    let commitsResult: any;
+
+    try {
+      commitsResult = await params.workerManager.getCommitHistory({
+        repoId: params.repoKey || "",
+        branch,
+        depth,
+      });
+    } catch (error) {
+      for (const attempt of pendingVendorFailures) {
+        const status = this.extractHttpStatus(attempt.error);
+        this.reportCloneUrlError(attempt.url, attempt.error || "Unknown error", status);
+      }
+      throw error;
+    }
+
+    if (commitsResult?.success === false) {
+      for (const attempt of pendingVendorFailures) {
+        const status = this.extractHttpStatus(attempt.error);
+        this.reportCloneUrlError(attempt.url, attempt.error || "Unknown error", status);
+      }
+    }
 
     const commits: VendorCommit[] = (commitsResult.commits || []).map((c: any) => ({
       sha: c.oid || c.sha || "",

@@ -65,3 +65,89 @@ describe("VendorReadRouter.listRefs", () => {
     fetchSpy.mockRestore();
   });
 });
+
+describe("VendorReadRouter.listCommits", () => {
+  it("does not persist a branch-specific vendor 404 when git fallback succeeds", async () => {
+    const router = new VendorReadRouter({
+      getTokens: async () => [],
+      preferVendorReads: true,
+    });
+
+    const reportCloneUrlError = vi.fn();
+    router.setCloneUrlErrorCallback(reportCloneUrlError);
+
+    vi.spyOn(router as any, "vendorListCommits").mockRejectedValue(
+      new Error(
+        "Not found (HTTP 404). (op=listCommits, remote=https://github.com/example/repo.git, branch=master)"
+      )
+    );
+
+    const workerManager = {
+      getCommitHistory: vi.fn(async () => ({
+        success: true,
+        commits: [
+          {
+            oid: "abc123",
+            commit: {
+              message: "Initial commit",
+              author: { name: "Alice", email: "alice@example.com", timestamp: 1 },
+              committer: { name: "Alice", email: "alice@example.com", timestamp: 1 },
+              parent: [],
+            },
+          },
+        ],
+      })),
+    } as any;
+
+    const result = await router.listCommits({
+      workerManager,
+      repoEvent: { id: "repo", pubkey: "owner", tags: [] } as any,
+      repoKey: "owner/repo",
+      cloneUrls: ["https://github.com/example/repo.git"],
+      branch: "master",
+    });
+
+    expect(result.fromVendor).toBe(false);
+    expect(result.commits).toHaveLength(1);
+    expect(reportCloneUrlError).not.toHaveBeenCalled();
+  });
+
+  it("records the vendor 404 when git fallback also fails", async () => {
+    const router = new VendorReadRouter({
+      getTokens: async () => [],
+      preferVendorReads: true,
+    });
+
+    const reportCloneUrlError = vi.fn();
+    router.setCloneUrlErrorCallback(reportCloneUrlError);
+
+    vi.spyOn(router as any, "vendorListCommits").mockRejectedValue(
+      new Error(
+        "Not found (HTTP 404). (op=listCommits, remote=https://github.com/example/repo.git, branch=master)"
+      )
+    );
+
+    const workerManager = {
+      getCommitHistory: vi.fn(async () => ({
+        success: false,
+        error: "Branch not found",
+      })),
+    } as any;
+
+    const result = await router.listCommits({
+      workerManager,
+      repoEvent: { id: "repo", pubkey: "owner", tags: [] } as any,
+      repoKey: "owner/repo",
+      cloneUrls: ["https://github.com/example/repo.git"],
+      branch: "master",
+    });
+
+    expect(result.fromVendor).toBe(false);
+    expect(result.commits).toHaveLength(0);
+    expect(reportCloneUrlError).toHaveBeenCalledWith(
+      "https://github.com/example/repo.git",
+      expect.stringContaining("HTTP 404"),
+      404
+    );
+  });
+});

@@ -512,6 +512,10 @@ export class BranchManager {
       return this.branches[0].name;
     }
 
+    if (this.selectedBranch) {
+      return this.selectedBranch;
+    }
+
     // Ultimate fallback
     return "master";
   }
