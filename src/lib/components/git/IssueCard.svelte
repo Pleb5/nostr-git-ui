@@ -188,7 +188,7 @@
   }
 </script>
 
-<div transition:fly>
+<div in:fly>
   <BaseItemCard clickable={true} href={`issues/${id}`} variant="issue">
     <!-- title -->
     {#snippet slotTitle()}
