@@ -921,6 +921,7 @@
             disabled={isEditing}
             maxSelections={50}
             showAvatars={true}
+            showSuggestionsOnFocus={true}
             compact={false}
             getProfile={getProfile}
             searchProfiles={searchProfiles}

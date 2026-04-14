@@ -25,6 +25,7 @@
     showAvatars?: boolean;
     compact?: boolean;
     suggestionLimit?: number;
+    showSuggestionsOnFocus?: boolean;
     getProfile?: (pubkey: string) => Promise<PersonProfile | null>;
     searchProfiles?: (query: string) => Promise<PersonSuggestion[]>;
     add?: (pubkey: string) => void | Promise<void>;
@@ -39,6 +40,7 @@
     maxSelections = 10,
     showAvatars = true,
     suggestionLimit = 10,
+    showSuggestionsOnFocus = false,
     getProfile,
     searchProfiles,
     add,
@@ -53,6 +55,7 @@
   let loading = $state(false);
   let resolving = $state(false);
   let profileCache = $state(new Map<string, PersonProfile>());
+  let inputEl = $state<HTMLInputElement | null>(null);
 
   const showMobileAdd = $derived(!disabled && inputValue.trim().length > 0);
   const isAddDisabled = $derived(disabled || !inputValue.trim() || resolving);
@@ -62,25 +65,28 @@
     if (!searchProfiles) return;
     const query = inputValue.trim();
     if (searchTimeout) clearTimeout(searchTimeout);
-    if (!query) {
+    if (!query && !showSuggestionsOnFocus) {
       suggestions = [];
       open = false;
       return;
     }
-    searchTimeout = setTimeout(async () => {
-      loading = true;
-      try {
-        const res = await searchProfiles(query);
-        suggestions = res.slice(0, suggestionLimit);
-        open = suggestions.length > 0;
-      } catch (e) {
-        console.error("searchProfiles failed", e);
-        suggestions = [];
-        open = false;
-      } finally {
-        loading = false;
-      }
-    }, 300);
+    searchTimeout = setTimeout(
+      async () => {
+        loading = true;
+        try {
+          const res = await searchProfiles(query);
+          suggestions = res.slice(0, suggestionLimit);
+          open = document.activeElement === inputEl && suggestions.length > 0;
+        } catch (e) {
+          console.error("searchProfiles failed", e);
+          suggestions = [];
+          open = false;
+        } finally {
+          loading = false;
+        }
+      },
+      query ? 300 : 0
+    );
   });
 
   onDestroy(() => {
@@ -323,6 +329,7 @@
   {#if (selected?.length || 0) < maxSelections}
     <div class="relative">
       <input
+        bind:this={inputEl}
         bind:value={inputValue}
         onkeydown={onKeydown}
         onfocus={() => (open = suggestions.length > 0)}
