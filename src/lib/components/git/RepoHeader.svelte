@@ -82,6 +82,71 @@
     }
   };
 
+  const getRepoTabsScrollKey = () => {
+    if (typeof window === "undefined") return "";
+
+    const match = window.location.pathname.match(/(\/spaces\/[^/]+\/git\/[^/]+)/);
+    return `repo-tabs-scroll:${match?.[1] || window.location.pathname}`;
+  };
+
+  const readTabsScroll = (key: string) => {
+    if (!key || typeof window === "undefined") return 0;
+
+    try {
+      const value = Number(window.sessionStorage.getItem(key) || "0");
+      return Number.isFinite(value) ? value : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  const writeTabsScroll = (key: string, value: number) => {
+    if (!key || typeof window === "undefined") return;
+
+    try {
+      window.sessionStorage.setItem(key, String(value));
+    } catch {
+      // pass
+    }
+  };
+
+  function persistTabsScroll(node: HTMLElement) {
+    if (typeof window === "undefined") {
+      return { destroy: () => {} };
+    }
+
+    const key = getRepoTabsScrollKey();
+    let raf = 0;
+    let timeout = 0;
+
+    const restore = () => {
+      const storedScrollLeft = readTabsScroll(key);
+
+      if (Math.abs(node.scrollLeft - storedScrollLeft) > 1) {
+        node.scrollLeft = storedScrollLeft;
+      }
+    };
+
+    const persist = () => writeTabsScroll(key, node.scrollLeft);
+
+    raf = window.requestAnimationFrame(restore);
+    timeout = window.setTimeout(restore, 0);
+
+    node.addEventListener("scroll", persist, { passive: true });
+    node.addEventListener("pointerdown", persist, true);
+    node.addEventListener("click", persist, true);
+
+    return {
+      destroy: () => {
+        window.cancelAnimationFrame(raf);
+        window.clearTimeout(timeout);
+        node.removeEventListener("scroll", persist);
+        node.removeEventListener("pointerdown", persist, true);
+        node.removeEventListener("click", persist, true);
+      },
+    };
+  }
+
   const primaryCloneUrl = $derived.by(() =>
     normalizeUrl(filterValidCloneUrls(repoClass.cloneUrls || [])[0] || "")
   );
@@ -383,7 +448,7 @@
     "sticky top-0 z-10 w-full rounded-md bg-base-200/95 text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-base-200/80"
   )}
 >
-  <div data-repo-tabs-scroll class="flex overflow-x-auto scrollbar-hide">
+  <div use:persistTabsScroll data-repo-tabs-scroll class="flex overflow-x-auto scrollbar-hide">
     <div class="m-1 flex w-full min-w-max justify-evenly gap-1">
       {@render children?.(activeTab)}
     </div>
