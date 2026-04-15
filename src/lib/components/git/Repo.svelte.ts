@@ -48,6 +48,11 @@ import {
 import { VendorReadRouter } from "./VendorReadRouter";
 import { isDisplayableGitRef, normalizeGitRefName } from "./branch-ref";
 import { resolveLoadPageBranch } from "./load-page-branch";
+import {
+  disposeSubscriptions,
+  getRepoStateEventsSignature,
+  getRepoStateSnapshotSignature,
+} from "./repo-runtime-utils";
 import { isGraspRepoHttpUrl } from "$lib/utils/grasp-url";
 
 export type PushFanoutMode = "best-effort" | "all-or-nothing";
@@ -161,7 +166,9 @@ export class Repo {
     branches: null as string | null,
     clone: null as string | null,
   };
-  #viewerPubkeyUnsub?: () => void;
+  #storeUnsubs: Array<() => void> = [];
+  #repoStateEventsSignature = "";
+  #repoStateSnapshotSignature = "";
 
   // Clone progress state
   cloneProgress = $state<CloneProgress>({
@@ -182,6 +189,21 @@ export class Repo {
   #updateEditable() {
     const viewer = this.viewerPubkey;
     this.editable = !!(viewer && this.isAuthorized(viewer));
+  }
+
+  #trackStoreSubscription(unsubscribe?: (() => void) | void) {
+    if (typeof unsubscribe === "function") {
+      this.#storeUnsubs.push(unsubscribe);
+    }
+  }
+
+  #updateRepoStateSnapshotSignature(
+    refs: Array<{ name: string; type: "heads" | "tags"; fullRef: string; commitId: string }>
+  ): boolean {
+    const nextSignature = getRepoStateSnapshotSignature(refs);
+    const changed = nextSignature !== this.#repoStateSnapshotSignature;
+    this.#repoStateSnapshotSignature = nextSignature;
+    return changed;
   }
 
   assertEditable(action: string = "edit") {
@@ -256,25 +278,29 @@ export class Repo {
 
     // Keep worker auth config synced with token store updates
     // Single consolidated subscription for tokens - handles both local state and WorkerManager auth
-    tokens.subscribe(async (tokenList) => {
-      this.tokens = tokenList;
-      try {
-        await this.workerManager.setAuthConfig({ tokens: tokenList });
-        if (tokenList?.length) {
-          console.log("🔐 Updated git auth tokens for", tokenList.length, "hosts");
-        } else {
-          console.log("🔐 Cleared git auth tokens");
+    this.#trackStoreSubscription(
+      tokens.subscribe(async (tokenList) => {
+        this.tokens = tokenList;
+        try {
+          await this.workerManager.setAuthConfig({ tokens: tokenList });
+          if (tokenList?.length) {
+            console.log("🔐 Updated git auth tokens for", tokenList.length, "hosts");
+          } else {
+            console.log("🔐 Cleared git auth tokens");
+          }
+        } catch (e) {
+          console.warn("🔐 Failed to update worker auth config from token changes:", e);
         }
-      } catch (e) {
-        console.warn("🔐 Failed to update worker auth config from token changes:", e);
-      }
-    });
+      })
+    );
 
     if (viewerPubkey) {
-      this.#viewerPubkeyUnsub = viewerPubkey.subscribe((pubkey) => {
-        this.viewerPubkey = pubkey;
-        this.#updateEditable();
-      });
+      this.#trackStoreSubscription(
+        viewerPubkey.subscribe((pubkey) => {
+          this.viewerPubkey = pubkey;
+          this.#updateEditable();
+        })
+      );
     } else {
       this.#updateEditable();
     }
@@ -348,127 +374,151 @@ export class Repo {
     // Store initial repo event for deferred branch loading
     let initialRepoEvent: RepoAnnouncementEvent | null = null;
 
-    repoEvent.subscribe((event) => {
-      if (event) {
-        if (this.repoEvent?.id === event.id) return;
-        this.repoEvent = event;
-        this.#repo = parseRepoAnnouncementEvent(event);
-        this.name = this.#repo!.name!;
-        this.description = this.#repo!.description!;
-        // Compute canonical key from "pubkey:name" string (matches current @nostr-git/core signature)
-        const _owner = this.getCanonicalRepoOwner();
-        this.key = parseRepoId(`${_owner}:${this.#repo!.name}`);
-        this.commitManager.setRepoKeys({
-          canonicalKey: this.key,
-          workerRepoId: this.repoEvent!.id,
-        });
-        this.commitManager.setRepoEvent(event);
-
-        // Invalidate branch cache when repo event changes
-        this.invalidateBranchCache();
-        // Invalidate DAG cache when repo event changes
-        this.#patchDagCache = undefined;
-
-        // Store the initial event for later processing
-        if (!initialRepoEvent) {
-          initialRepoEvent = event;
-        }
-
-        // Load branches if WorkerManager is ready and refs aren't populated yet
-        if (
-          this.workerManager.isReady &&
-          (this.refs.length === 0 || this.#refsSeededFromHead) &&
-          !this.#refsLoading
-        ) {
-          void this.#loadBranchesFromRepo(event);
-        }
-
-        this.clone = this.#repo!.clone!;
-        this.web = this.#repo!.web!;
-        this.hashtags = this.#repo!.hashtags!;
-        this.earliestUniqueCommit = this.#repo!.earliestUniqueCommit!;
-        this.createdAt = this.#repo!.createdAt;
-        this.address = this.#repo!.address;
-        this.#updateEditable();
-      }
-    });
-
-    repoStateEvent.subscribe((event) => {
-      if (event) {
-        if (this.#repoStateEvent?.id === event.id) return;
-        console.log(
-          `[Repo] repoStateEvent subscription fired:`,
-          `has event with ${event.tags?.length || 0} tags`
-        );
-        this.#repoStateEvent = event; // Set the reactive state
-        this.#state = parseRepoStateEvent(event);
-
-        // IMMEDIATELY extract refs from RepoStateEvent for instant UI display
-        // This is synchronous and doesn't require any network/worker calls
-        const parsedState = this.#state;
-        console.log(`[Repo] Parsed state refs:`, parsedState?.refs?.length || 0);
-        if (parsedState?.refs && parsedState.refs.length > 0) {
-          // parsedState.refs has structure: { ref: "refs/heads/master", commit: "abc123", lineage?: string[] }
-          const immediateRefs = parsedState.refs
-            .filter((r: any) => r.ref && r.commit) // Filter out invalid refs
-            .map((r: any) => {
-              // Parse "refs/heads/master" or "refs/tags/v1.0" into name and type
-              const parts = r.ref.split("/");
-              const type = parts[1] === "heads" ? "heads" : parts[1] === "tags" ? "tags" : "heads";
-              const name = parts.slice(2).join("/"); // Handle names with slashes like "feature/foo"
-              return {
-                name,
-                type: type as "heads" | "tags",
-                fullRef: r.ref,
-                commitId: r.commit,
-              };
-            })
-            .filter((r: any) => r.name)
-            .filter((r: any) => isDisplayableGitRef(r));
-          // Sort refs: heads first, then tags (with null-safe comparison)
-          this.refs = immediateRefs.sort((a, b) => {
-            if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
-            return (a.name || "").localeCompare(b.name || "");
+    this.#trackStoreSubscription(
+      repoEvent.subscribe((event) => {
+        if (event) {
+          if (this.repoEvent?.id === event.id) return;
+          this.repoEvent = event;
+          this.#repo = parseRepoAnnouncementEvent(event);
+          this.name = this.#repo!.name!;
+          this.description = this.#repo!.description!;
+          // Compute canonical key from "pubkey:name" string (matches current @nostr-git/core signature)
+          const _owner = this.getCanonicalRepoOwner();
+          this.key = parseRepoId(`${_owner}:${this.#repo!.name}`);
+          this.commitManager.setRepoKeys({
+            canonicalKey: this.key,
+            workerRepoId: this.repoEvent!.id,
           });
-          this.#refsSeededFromHead = false;
-          console.log(`⚡ Instantly loaded ${this.refs.length} refs from RepoStateEvent`);
-          this.refDiscoverySource = {
-            kind: "repo-state",
-            label: "Repo state snapshot",
-            details:
-              "Using signed repo-state refs until remote discovery confirms the live ref set.",
-          };
-          this.#maybeSelectBranchFromRefs(this.refs, parsedState?.head);
-        } else {
-          this.#seedRefsFromHead(parsedState?.head);
-        }
+          this.commitManager.setRepoEvent(event);
 
-        // Process the Repository State event in BranchManager (verified against worker when possible)
-        if (initialRepoEvent) {
-          // Fire-and-forget; verification is async
-          void this.branchManager.processRepoStateEventVerified(event, initialRepoEvent);
-          if (this.workerManager.isReady && !this.#refsLoading) {
-            void this.#loadBranchesFromRepo(initialRepoEvent);
+          // Invalidate branch cache when repo event changes
+          this.invalidateBranchCache();
+          // Invalidate DAG cache when repo event changes
+          this.#patchDagCache = undefined;
+
+          // Store the initial event for later processing
+          if (!initialRepoEvent) {
+            initialRepoEvent = event;
           }
-        } else {
-          this.branchManager.processRepoStateEvent(event);
-        }
 
-        // Invalidate branch cache when repo state changes
-        this.invalidateBranchCache();
-        // Invalidate DAG cache when repo state changes (may affect patch interpretation)
-        this.#patchDagCache = undefined;
-      }
-    });
+          // Load branches if WorkerManager is ready and refs aren't populated yet
+          if (
+            this.workerManager.isReady &&
+            (this.refs.length === 0 || this.#refsSeededFromHead) &&
+            !this.#refsLoading
+          ) {
+            void this.#loadBranchesFromRepo(event);
+          }
+
+          this.clone = this.#repo!.clone!;
+          this.web = this.#repo!.web!;
+          this.hashtags = this.#repo!.hashtags!;
+          this.earliestUniqueCommit = this.#repo!.earliestUniqueCommit!;
+          this.createdAt = this.#repo!.createdAt;
+          this.address = this.#repo!.address;
+          this.#updateEditable();
+        }
+      })
+    );
+
+    this.#trackStoreSubscription(
+      repoStateEvent.subscribe((event) => {
+        if (event) {
+          if (this.#repoStateEvent?.id === event.id) return;
+          console.log(
+            `[Repo] repoStateEvent subscription fired:`,
+            `has event with ${event.tags?.length || 0} tags`
+          );
+          this.#repoStateEvent = event; // Set the reactive state
+          this.#state = parseRepoStateEvent(event);
+
+          // IMMEDIATELY extract refs from RepoStateEvent for instant UI display
+          // This is synchronous and doesn't require any network/worker calls
+          const parsedState = this.#state;
+          let repoStateSnapshotChanged = false;
+          console.log(`[Repo] Parsed state refs:`, parsedState?.refs?.length || 0);
+          if (parsedState?.refs && parsedState.refs.length > 0) {
+            // parsedState.refs has structure: { ref: "refs/heads/master", commit: "abc123", lineage?: string[] }
+            const immediateRefs = parsedState.refs
+              .filter((r: any) => r.ref && r.commit) // Filter out invalid refs
+              .map((r: any) => {
+                // Parse "refs/heads/master" or "refs/tags/v1.0" into name and type
+                const parts = r.ref.split("/");
+                const type =
+                  parts[1] === "heads" ? "heads" : parts[1] === "tags" ? "tags" : "heads";
+                const name = parts.slice(2).join("/"); // Handle names with slashes like "feature/foo"
+                return {
+                  name,
+                  type: type as "heads" | "tags",
+                  fullRef: r.ref,
+                  commitId: r.commit,
+                };
+              })
+              .filter((r: any) => r.name)
+              .filter((r: any) => isDisplayableGitRef(r));
+            const sortedImmediateRefs = immediateRefs.sort((a, b) => {
+              if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
+              return (a.name || "").localeCompare(b.name || "");
+            });
+            repoStateSnapshotChanged = this.#updateRepoStateSnapshotSignature(sortedImmediateRefs);
+            if (repoStateSnapshotChanged || this.refs.length === 0 || this.#refsSeededFromHead) {
+              this.refs = sortedImmediateRefs;
+              this.#refsSeededFromHead = false;
+              console.log(`⚡ Instantly loaded ${this.refs.length} refs from RepoStateEvent`);
+              this.refDiscoverySource = {
+                kind: "repo-state",
+                label: "Repo state snapshot",
+                details:
+                  "Using signed repo-state refs until remote discovery confirms the live ref set.",
+              };
+            }
+            this.#maybeSelectBranchFromRefs(sortedImmediateRefs, parsedState?.head);
+          } else {
+            repoStateSnapshotChanged = this.#updateRepoStateSnapshotSignature([]);
+            this.#seedRefsFromHead(parsedState?.head);
+          }
+
+          // Process the Repository State event in BranchManager (verified against worker when possible)
+          if (initialRepoEvent) {
+            // Fire-and-forget; verification is async
+            void this.branchManager.processRepoStateEventVerified(event, initialRepoEvent);
+            if (repoStateSnapshotChanged && this.workerManager.isReady && !this.#refsLoading) {
+              void this.#loadBranchesFromRepo(initialRepoEvent);
+            }
+          } else {
+            this.branchManager.processRepoStateEvent(event);
+          }
+
+          // Invalidate branch cache when repo state changes
+          this.invalidateBranchCache();
+          // Invalidate DAG cache when repo state changes (may affect patch interpretation)
+          this.#patchDagCache = undefined;
+        }
+      })
+    );
 
     // Optional streams
-    repoStateEvents?.subscribe((events) => {
-      this.#repoStateEventsArr = events;
-      this.#mergedRefsCache = undefined; // invalidate
+    this.#trackStoreSubscription(
+      repoStateEvents?.subscribe((events) => {
+        const nextRepoStateEvents = events && events.length > 0 ? events : undefined;
+        const repoStateEventsSignature = getRepoStateEventsSignature(nextRepoStateEvents);
+        if (repoStateEventsSignature !== this.#repoStateEventsSignature) {
+          this.#repoStateEventsArr = nextRepoStateEvents;
+          this.#repoStateEventsSignature = repoStateEventsSignature;
+        }
 
-      // IMMEDIATELY extract refs from merged RepoStateEvents for instant UI display
-      if (events && events.length > 0) {
-        const merged = this.mergeRepoStateByMaintainers(events);
+        if (!nextRepoStateEvents || nextRepoStateEvents.length === 0) {
+          this.#mergedRefsCache = undefined;
+          if (this.#updateRepoStateSnapshotSignature([])) {
+            this.#seedRefsFromHead(this.#state?.head);
+          }
+          return;
+        }
+
+        const merged = this.mergeRepoStateByMaintainers(nextRepoStateEvents);
+        this.#mergedRefsCache = merged;
+
+        // IMMEDIATELY extract refs from merged RepoStateEvents for instant UI display
         if (merged.size > 0) {
           const immediateRefs: Array<{
             name: string;
@@ -491,50 +541,67 @@ export class Repo {
               }
             }
           }
-          // Sort refs: heads first, then tags (with null-safe comparison)
-          this.refs = immediateRefs.sort((a, b) => {
+          const sortedImmediateRefs = immediateRefs.sort((a, b) => {
             if (a.type !== b.type) return a.type === "heads" ? -1 : 1;
             return (a.name || "").localeCompare(b.name || "");
           });
-          this.#refsSeededFromHead = false;
-          console.log(`⚡ Instantly loaded ${this.refs.length} refs from merged RepoStateEvents`);
-          this.refDiscoverySource = {
-            kind: "repo-state",
-            label: "Repo state snapshot",
-            details:
-              "Using merged signed repo-state refs until remote discovery confirms the live ref set.",
-          };
-          this.#maybeSelectBranchFromRefs(this.refs);
-          if (this.workerManager.isReady && initialRepoEvent && !this.#refsLoading) {
+          const repoStateSnapshotChanged =
+            this.#updateRepoStateSnapshotSignature(sortedImmediateRefs);
+          if (repoStateSnapshotChanged || this.refs.length === 0 || this.#refsSeededFromHead) {
+            this.refs = sortedImmediateRefs;
+            this.#refsSeededFromHead = false;
+            console.log(`⚡ Instantly loaded ${this.refs.length} refs from merged RepoStateEvents`);
+            this.refDiscoverySource = {
+              kind: "repo-state",
+              label: "Repo state snapshot",
+              details:
+                "Using merged signed repo-state refs until remote discovery confirms the live ref set.",
+            };
+          }
+          this.#maybeSelectBranchFromRefs(sortedImmediateRefs);
+          if (
+            repoStateSnapshotChanged &&
+            this.workerManager.isReady &&
+            initialRepoEvent &&
+            !this.#refsLoading
+          ) {
             void this.#loadBranchesFromRepo(initialRepoEvent);
           }
-        } else {
+        } else if (this.#updateRepoStateSnapshotSignature([])) {
           this.#seedRefsFromHead(this.#state?.head);
         }
-      }
-    });
-    statusEvents?.subscribe((events) => {
-      this.#statusEventsArr = events;
-      this.#statusCache.clear();
-    });
-    commentEvents?.subscribe((events) => {
-      this.#commentEventsArr = events;
-      this.#issueThreadCache.clear();
-    });
-    labelEvents?.subscribe((events) => {
-      this.#labelEventsArr = events;
-      this.#labelsCache.clear();
-    });
+      })
+    );
+    this.#trackStoreSubscription(
+      statusEvents?.subscribe((events) => {
+        this.#statusEventsArr = events;
+        this.#statusCache.clear();
+      })
+    );
+    this.#trackStoreSubscription(
+      commentEvents?.subscribe((events) => {
+        this.#commentEventsArr = events;
+        this.#issueThreadCache.clear();
+      })
+    );
+    this.#trackStoreSubscription(
+      labelEvents?.subscribe((events) => {
+        this.#labelEventsArr = events;
+        this.#labelsCache.clear();
+      })
+    );
 
-    patches.subscribe((patchEvents) => {
-      this.patches = patchEvents;
-      // Only perform merge analysis if explicitly enabled and WorkerManager is ready
-      if (this.#autoMergeAnalysisEnabled && this.workerManager.isReady) {
-        this.#performMergeAnalysis(patchEvents);
-      }
-      // Invalidate DAG cache when patch set changes
-      this.#patchDagCache = undefined;
-    });
+    this.#trackStoreSubscription(
+      patches.subscribe((patchEvents) => {
+        this.patches = patchEvents;
+        // Only perform merge analysis if explicitly enabled and WorkerManager is ready
+        if (this.#autoMergeAnalysisEnabled && this.workerManager.isReady) {
+          this.#performMergeAnalysis(patchEvents);
+        }
+        // Invalidate DAG cache when patch set changes
+        this.#patchDagCache = undefined;
+      })
+    );
 
     // Note: Token subscription consolidated above in constructor
 
@@ -663,9 +730,11 @@ export class Repo {
       }
     })();
 
-    issues.subscribe((issueEvents) => {
-      this.issues = issueEvents;
-    });
+    this.#trackStoreSubscription(
+      issues.subscribe((issueEvents) => {
+        this.issues = issueEvents;
+      })
+    );
     // Note: Token subscription consolidated at the top of constructor
   }
 
@@ -2125,10 +2194,7 @@ export class Repo {
   }
 
   dispose() {
-    if (this.#viewerPubkeyUnsub) {
-      this.#viewerPubkeyUnsub();
-      this.#viewerPubkeyUnsub = undefined;
-    }
+    disposeSubscriptions(this.#storeUnsubs.splice(0));
     this.cacheManager?.dispose();
     // MergeAnalysisCacheManager doesn't have a dispose method - it's managed by CacheManager
     this.patchManager?.dispose();
