@@ -3,7 +3,6 @@
   import { filterValidCloneUrls } from "@nostr-git/core/utils";
   import { classifyCloneUrlIssue, getCloneUrlBannerTitle } from "../../utils/cloneUrlIssues";
   import {
-    GitBranch,
     GitFork,
     RotateCcw,
     Settings,
@@ -213,21 +212,10 @@
       </div>
     </div>
   {/if}
-  <div class="flex flex-col gap-4 mb-5">
-    <h1
-      class="text-xl sm:text-2xl font-bold flex flex-col items-start gap-3 min-w-0 sm:flex-row sm:items-center"
-      style="margin-bottom:0.75rem;"
-    >
-      <div class="flex min-w-0 items-center gap-2">
-        <GitBranch class="h-5 w-5 sm:h-6 sm:w-6 flex-shrink-0" />
-        <button onclick={overviewRepo} class="truncate text-left" title={name}>
-          {name}
-        </button>
-      </div>
-      <div class="w-full min-w-0 sm:ml-3 sm:w-auto" style="margin-top:0.25rem;">
-        <BranchSelector repo={repoClass} />
-      </div>
-    </h1>
+  <div class="mb-5 flex flex-col gap-4">
+    <div class="w-full min-w-0" style="margin-top:0.25rem;">
+      <BranchSelector repo={repoClass} />
+    </div>
     <div class="flex items-center flex-wrap gap-2 sm:gap-3" style="margin-top:0.5rem;">
       {#if bookmarkRepo}
         <Button
@@ -387,14 +375,20 @@
       {/if}
     </div>
   {/if}
-  <nav class={cn("bg-muted text-muted-foreground rounded-md w-full")} style="margin-top:1rem;">
-    <div class="flex overflow-x-auto scrollbar-hide">
-      <div class="w-full flex justify-evenly gap-1 m-1 min-w-max">
-        {@render children?.(activeTab)}
-      </div>
-    </div>
-  </nav>
 </div>
+
+<nav
+  data-repo-tabs
+  class={cn(
+    "sticky top-0 z-10 w-full rounded-md bg-base-200/95 text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-base-200/80"
+  )}
+>
+  <div data-repo-tabs-scroll class="flex overflow-x-auto scrollbar-hide">
+    <div class="m-1 flex w-full min-w-max justify-evenly gap-1">
+      {@render children?.(activeTab)}
+    </div>
+  </div>
+</nav>
 
 <style>
   /* Ensure long commit messages don't break layout */
