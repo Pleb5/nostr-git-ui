@@ -3,6 +3,10 @@ import { createRepoStateEvent } from "@nostr-git/core/events";
 
 import {
   buildGraspRepoUrls,
+  getEditableRepoRelayUrls,
+  getEffectiveRepoRelayUrls,
+  getMandatoryGraspRelayUrls,
+  getSuccessfulGraspRelayUrls,
   publishGraspRepoStateAndWait,
   publishGraspRepoStateForPush,
   waitForGraspRepoStateVisibility,
@@ -20,6 +24,32 @@ describe("grasp-pipeline", () => {
       `https://relay.one/${result.ownerNpub}/flotilla-budabit.git`,
       `https://relay.two/${result.ownerNpub}/flotilla-budabit.git`,
     ]);
+  });
+
+  it("derives mandatory and editable relay sets for GRASP targets", () => {
+    expect(
+      getMandatoryGraspRelayUrls(["https://relay.one/api", "wss://relay.two/", "relay.one"])
+    ).toEqual(["wss://relay.one", "wss://relay.two"]);
+
+    expect(
+      getEditableRepoRelayUrls(
+        ["wss://relay.one", "wss://relay.extra", "wss://relay.two/"],
+        ["https://relay.one", "wss://relay.two"]
+      )
+    ).toEqual(["wss://relay.extra"]);
+
+    expect(
+      getEffectiveRepoRelayUrls(["wss://relay.one", "wss://relay.extra"], ["https://relay.one"])
+    ).toEqual(["wss://relay.extra", "wss://relay.one"]);
+  });
+
+  it("derives successful GRASP relays from successful remote URLs only", () => {
+    expect(
+      getSuccessfulGraspRelayUrls([
+        "https://gitnostr.com/npub16p8v7varqwjes5hak6q7mz6pygqm4pwc6gve4mrned3xs8tz42gq7kfhdw/flotilla-budabit.git",
+        "https://github.com/me/flotilla-budabit.git",
+      ])
+    ).toEqual(["wss://gitnostr.com"]);
   });
 
   it("waits until a matching GRASP repo state is visible on the relay", async () => {

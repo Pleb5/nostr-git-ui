@@ -24,6 +24,7 @@
   import { PeoplePicker } from "@nostr-git/ui";
   import { commonHashtags } from "../../stores/hashtags";
   import { getRecommendedGraspServerUrls } from "../../stores/graspServers.js";
+  import type { NostrEvent } from "@nostr-git/core";
   import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
   import type { Token } from "$lib/stores/tokens";
   import type { ForkResult, ForkConfig } from "../../hooks/useForkRepo.svelte";
@@ -41,6 +42,10 @@
     toRemoteTargetSelection,
     type RemoteTargetOption,
   } from "../../utils/remote-targets.js";
+  import {
+    getEditableRepoRelayUrls,
+    getEffectiveRepoRelayUrls,
+  } from "../../utils/grasp-pipeline.js";
 
   interface Props {
     repo: Repo;
@@ -281,22 +286,19 @@
   let initializedGraspTargetRelayUrls = $state(false);
 
   $effect(() => {
-    const incoming = (graspServerUrls || []).map(normalizeRelayUrl).filter(Boolean);
-    if (incoming.length === 0) return;
-
-    if (graspServerUrlsLocal.length === 0) {
-      graspServerUrlsLocal = [...incoming];
-    }
+    const incoming = Array.from(
+      new Set((graspServerUrls || []).map(normalizeRelayUrl).filter(Boolean))
+    );
 
     const changed =
       incoming.length !== graspServerUrlsLocal.length ||
       incoming.some((value, index) => value !== graspServerUrlsLocal[index]);
     if (changed) {
-      graspServerUrlsLocal = Array.from(new Set(incoming));
+      graspServerUrlsLocal = incoming;
     }
 
-    if (!initializedGraspTargetRelayUrls) {
-      graspTargetRelayUrls = [incoming[0]];
+    if (!initializedGraspTargetRelayUrls && incoming.length > 0) {
+      graspTargetRelayUrls = [...incoming];
       initializedGraspTargetRelayUrls = true;
     }
   });
@@ -379,12 +381,7 @@
   );
 
   $effect(() => {
-    const selectedRelaySet = new Set(selectedGraspRelayUrls.map(normalizeRelayUrl).filter(Boolean));
-    if (selectedRelaySet.size === 0) return;
-
-    const nextPreferredRelays = preferredRelays
-      .map(normalizeRelayUrl)
-      .filter((relayUrl) => Boolean(relayUrl) && !selectedRelaySet.has(relayUrl));
+    const nextPreferredRelays = getEditableRepoRelayUrls(preferredRelays, selectedGraspRelayUrls);
 
     if (
       nextPreferredRelays.length !== preferredRelays.length ||
@@ -570,8 +567,7 @@
   });
 
   const effectivePreferredRelays = $derived.by(() => {
-    const relays = preferredRelays.map(normalizeRelayUrl).filter(Boolean);
-    return Array.from(new Set([...selectedGraspRelayUrls, ...relays]));
+    return getEffectiveRepoRelayUrls(preferredRelays, selectedGraspRelayUrls);
   });
 
   let relaySearchQuery = $state("");

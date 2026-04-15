@@ -52,6 +52,12 @@
     sortImportBranches,
     type SourceAccessMode,
   } from "../../utils/import-source-access.js";
+  import { canProceedImportStep2 } from "../../utils/import-dialog-state.js";
+  import {
+    getEditableRepoRelayUrls,
+    getEffectiveRepoRelayUrls,
+    getMandatoryGraspRelayUrls,
+  } from "../../utils/grasp-pipeline.js";
 
   interface Props {
     pubkey: string;
@@ -204,7 +210,6 @@
     graspServerOptions = urls;
     if (graspRelayUrls.length === 0 && urls.length > 0) {
       graspRelayUrls = [...urls];
-      syncGraspRelaysToPreferredRelays(urls);
     }
   });
 
@@ -251,25 +256,13 @@
     const normalized = normalizeRelayUrl(relayUrl);
     if (!normalized) return;
 
-    if (!selectedRelays.includes(normalized)) {
+    if (!effectiveSelectedRelays.includes(normalized)) {
       selectedRelays = [...selectedRelays, normalized];
     }
 
     relaySearchQuery = "";
     relaySearchResults = [];
     showRelayAutocomplete = false;
-  }
-
-  function syncGraspRelaysToPreferredRelays(urls: string[]) {
-    const selectedRelaySet = new Set((urls || []).map(normalizeRelayUrl).filter(Boolean));
-    if (selectedRelaySet.size === 0) return;
-    selectedRelays = Array.from(
-      new Set(
-        (selectedRelays || [])
-          .map(normalizeRelayUrl)
-          .filter((relayUrl) => Boolean(relayUrl) && !selectedRelaySet.has(relayUrl))
-      )
-    );
   }
 
   function normalizeTokenHostForTarget(host: string): string {
@@ -509,7 +502,6 @@
       graspRelayUrls = [...graspRelayUrls, normalized];
       initializedTargetSelection = false;
     }
-    syncGraspRelaysToPreferredRelays([normalized]);
   }
 
   function removeGraspRelay(index: number) {
@@ -530,13 +522,23 @@
       .filter(Boolean)
   );
 
+  const mandatoryGraspRelays = $derived.by(() =>
+    getMandatoryGraspRelayUrls(selectedGraspTargetRelays)
+  );
+
+  $effect(() => {
+    const nextSelectedRelays = getEditableRepoRelayUrls(selectedRelays || [], mandatoryGraspRelays);
+
+    if (
+      nextSelectedRelays.length !== selectedRelays.length ||
+      nextSelectedRelays.some((value, index) => value !== selectedRelays[index])
+    ) {
+      selectedRelays = nextSelectedRelays;
+    }
+  });
+
   const effectiveSelectedRelays = $derived.by(() =>
-    Array.from(
-      new Set([
-        ...(selectedRelays || []).map(normalizeRelayUrl).filter(Boolean),
-        ...selectedGraspTargetRelays,
-      ])
-    )
+    getEffectiveRepoRelayUrls(selectedRelays || [], mandatoryGraspRelays)
   );
 
   function commitNewGraspRelay() {
@@ -1064,7 +1066,7 @@
   }
 
   function removeRelay(index: number) {
-    if (selectedRelays.length > 1) {
+    if (selectedRelays.length > 1 || mandatoryGraspRelays.length > 0) {
       selectedRelays = selectedRelays.filter((_, i) => i !== index);
     }
   }
@@ -1181,12 +1183,13 @@
       !isCheckingOwnership
   );
   const canProceedStep2 = $derived(
-    repoMetadata !== null &&
-      selectedRelays.length > 0 &&
-      (repoMetadata.isOwner ||
-        importTargets.some(
-          (target) => selectedImportTargetIds.includes(target.id) && target.status === "ready"
-        ))
+    canProceedImportStep2({
+      hasRepoMetadata: repoMetadata !== null,
+      effectiveRelayCount: effectiveSelectedRelays.length,
+      isOwner: Boolean(repoMetadata?.isOwner),
+      selectedImportTargetIds,
+      importTargets,
+    })
   );
   const targetPreflightPending = $derived(
     currentStep === 2 && importTargets.some((target) => target.status === "checking")
@@ -1673,6 +1676,23 @@
                 <span class="text-sm font-medium text-gray-300">Nostr Relays *</span>
               </div>
               <div class="space-y-2">
+                {#each mandatoryGraspRelays as relayUrl}
+                  <div class="flex items-center space-x-2">
+                    <input
+                      type="text"
+                      value={relayUrl}
+                      readonly
+                      aria-label="Selected GRASP relay"
+                      class="flex-1 px-3 py-2 bg-gray-800 border border-blue-500/40 rounded-lg text-white focus:outline-none"
+                    />
+                    <span
+                      class="px-2.5 py-2 text-xs font-medium text-blue-300 bg-blue-500/10 border border-blue-500/30 rounded-lg whitespace-nowrap"
+                    >
+                      GRASP target
+                    </span>
+                  </div>
+                {/each}
+
                 {#each selectedRelays as relay, index}
                   <div class="flex items-center space-x-2">
                     <input
@@ -1684,7 +1704,7 @@
                     <button
                       type="button"
                       onclick={() => removeRelay(index)}
-                      disabled={selectedRelays.length === 1}
+                      disabled={selectedRelays.length === 1 && mandatoryGraspRelays.length === 0}
                       class="p-2 text-red-400 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
                       aria-label="Remove relay"
                     >
@@ -1769,7 +1789,8 @@
                 {/if}
               </div>
               <p class="mt-1 text-xs text-gray-400">
-                Repository metadata will be published to these relays
+                Repository metadata will be published to these relays. Selected GRASP targets add
+                matching repo relays automatically.
               </p>
             </div>
 

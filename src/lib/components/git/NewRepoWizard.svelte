@@ -6,6 +6,12 @@
   import { nip19, type Event as NostrEvent } from "nostr-tools";
   import { useRegistry } from "../../useRegistry";
   import {
+    buildGraspRepoUrls,
+    getEditableRepoRelayUrls,
+    getEffectiveRepoRelayUrls,
+    getMandatoryGraspRelayUrls,
+  } from "../../utils/grasp-pipeline.js";
+  import {
     useNewRepo,
     type NewRepoResult,
     checkProviderRepoAvailability,
@@ -207,12 +213,7 @@
 
   function syncGraspRelaysToPreferredRelays(urls: string[]) {
     if (!selectedProviders.includes("grasp")) return;
-    const selectedRelaySet = new Set(dedupeStrings(urls || []));
-    if (selectedRelaySet.size === 0) return;
-
-    const nextRelays = dedupeStrings(advancedSettings.relays || []).filter(
-      (relayUrl) => !selectedRelaySet.has(relayUrl)
-    );
+    const nextRelays = getEditableRepoRelayUrls(advancedSettings.relays || [], urls || []);
 
     if (!arraysEqual(advancedSettings.relays, nextRelays)) {
       advancedSettings.relays = nextRelays;
@@ -220,11 +221,15 @@
   }
 
   function getEffectiveRepoRelays(): string[] {
-    return dedupeStrings([
-      ...(advancedSettings.relays || []),
-      ...(selectedProviders.includes("grasp") ? graspRelayUrls || [] : []),
-    ]);
+    return getEffectiveRepoRelayUrls(
+      advancedSettings.relays || [],
+      selectedProviders.includes("grasp") ? graspRelayUrls || [] : []
+    );
   }
+
+  const mandatoryGraspRelays = $derived.by(() =>
+    selectedProviders.includes("grasp") ? getMandatoryGraspRelayUrls(graspRelayUrls || []) : []
+  );
 
   function buildBudabitRepoUrl(name: string): string | undefined {
     if (!userPubkey || typeof window === "undefined") return undefined;
@@ -262,14 +267,21 @@
   }
 
   function getProviderUrlDefaults(name: string) {
-    const ownerNpub = userPubkey ? nip19.npubEncode(userPubkey) : undefined;
-    const entries = selectedProviders.map((provider) => {
+    const entries = selectedProviders.flatMap((provider) => {
       if (provider === "grasp") {
-        const primaryRelay = graspRelayUrls[0] || "";
-        const { httpOrigin } = deriveOrigins(primaryRelay);
-        const webUrl = httpOrigin && ownerNpub ? `${httpOrigin}/${ownerNpub}/${name}` : "";
-        const cloneUrl = webUrl ? `${webUrl}.git` : "";
-        return { provider, webUrl, cloneUrl };
+        if (!userPubkey) return [];
+
+        const graspUrls = buildGraspRepoUrls({
+          relayUrls: graspRelayUrls || [],
+          ownerPubkey: userPubkey,
+          repoName: name,
+        });
+
+        return graspUrls.cloneUrls.map((cloneUrl, index) => ({
+          provider,
+          cloneUrl,
+          webUrl: graspUrls.webUrls[index] || cloneUrl.replace(/\.git$/, ""),
+        }));
       }
 
       const providerResult = getProviderResult(provider);
@@ -277,7 +289,7 @@
       const host = providerResult?.host || providerHost(provider);
       const webUrl = host && username ? `https://${host}/${username}/${name}` : "";
       const cloneUrl = webUrl ? `${webUrl}.git` : "";
-      return { provider, webUrl, cloneUrl };
+      return [{ provider, webUrl, cloneUrl }];
     });
 
     return entries;
@@ -680,7 +692,10 @@
   }
 
   function handleRelaysChange(relays: string[]) {
-    advancedSettings.relays = relays;
+    advancedSettings.relays = getEditableRepoRelayUrls(
+      relays,
+      selectedProviders.includes("grasp") ? graspRelayUrls || [] : []
+    );
     userEditedRelays = true;
   }
 
@@ -837,6 +852,7 @@
           authorEmail={advancedSettings.authorEmail}
           maintainers={advancedSettings.maintainers}
           relays={advancedSettings.relays}
+          mandatoryRelays={mandatoryGraspRelays}
           tags={advancedSettings.tags}
           webUrls={advancedSettings.webUrls}
           cloneUrls={advancedSettings.cloneUrls}

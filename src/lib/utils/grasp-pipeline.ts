@@ -5,7 +5,7 @@ import {
   type RepoStateEvent,
 } from "@nostr-git/core/events";
 import type { NostrEvent, NostrFilter } from "@nostr-git/core";
-import { sanitizeRelays } from "@nostr-git/core/utils";
+import { isGraspRepoHttpUrl, sanitizeRelays } from "@nostr-git/core/utils";
 import { nip19 } from "nostr-tools";
 import { checkGraspRepoExists, checkGraspReceivePackReady } from "./grasp-availability.js";
 
@@ -117,6 +117,62 @@ function intersectRelays(a: string[], b: string[]): string[] {
 
 function normalizeRelayOrigin(relayUrl: string): string {
   return normalizeGraspOrigins(relayUrl).wsOrigin.replace(/\/+$/, "");
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  return result;
+}
+
+export function getMandatoryGraspRelayUrls(relayUrls: string[] = []): string[] {
+  return dedupeStrings(
+    relayUrls
+      .map((relayUrl) => {
+        try {
+          return normalizeGraspOrigins(relayUrl).wsOrigin;
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean)
+  );
+}
+
+export function getEditableRepoRelayUrls(
+  relayUrls: string[] = [],
+  mandatoryGraspRelayUrls: string[] = []
+): string[] {
+  const mandatoryRelaySet = new Set(getMandatoryGraspRelayUrls(mandatoryGraspRelayUrls));
+
+  return sanitizeRelays(relayUrls).filter((relayUrl) => !mandatoryRelaySet.has(relayUrl));
+}
+
+export function getEffectiveRepoRelayUrls(
+  relayUrls: string[] = [],
+  mandatoryGraspRelayUrls: string[] = []
+): string[] {
+  return sanitizeRelays([
+    ...getEditableRepoRelayUrls(relayUrls, mandatoryGraspRelayUrls),
+    ...getMandatoryGraspRelayUrls(mandatoryGraspRelayUrls),
+  ]);
+}
+
+export function getSuccessfulGraspRelayUrls(remoteUrls: string[] = []): string[] {
+  return dedupeStrings(
+    remoteUrls
+      .filter((remoteUrl) => isGraspRepoHttpUrl(remoteUrl))
+      .map((remoteUrl) => normalizeGraspOrigins(remoteUrl).wsOrigin)
+      .filter(Boolean)
+  );
 }
 
 function getRepoNameFromStateEvent(stateEvent: RepoStateEvent): string {

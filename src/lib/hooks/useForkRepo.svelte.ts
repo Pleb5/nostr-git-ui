@@ -19,7 +19,13 @@ import {
   type RemoteTargetSelection,
 } from "../utils/remote-targets.js";
 import { matchesHost } from "../utils/tokenMatcher.js";
-import { normalizeGraspOrigins, toNpubOrSelf } from "../utils/grasp-pipeline.js";
+import {
+  getEditableRepoRelayUrls,
+  getEffectiveRepoRelayUrls,
+  getSuccessfulGraspRelayUrls,
+  normalizeGraspOrigins,
+  toNpubOrSelf,
+} from "../utils/grasp-pipeline.js";
 import { getForkRollbackPlan } from "./fork-rollback";
 
 export interface ForkConfig {
@@ -697,15 +703,16 @@ export function useForkRepo(options: UseForkRepoOptions = {}) {
       const cloneUrls = sameLogicalRepo
         ? dedupeCloneUrls([...successfulRemoteUrls, ...(originalRepo.cloneUrls || [])])
         : dedupeCloneUrls(successfulRemoteUrls);
-      const graspTargetRelays = selectedTargets
+      const selectedGraspTargetRelays = selectedTargets
         .filter((target) => target.provider === "grasp" && target.relayUrl)
         .map((target) => normalizeRelayUrl(target.relayUrl as string))
         .filter(Boolean);
-      const relays = Array.from(
-        new Set([
-          ...(config.relays || []).map(normalizeRelayUrl).filter(Boolean),
-          ...graspTargetRelays,
-        ])
+      const successfulGraspRelays = getSuccessfulGraspRelayUrls(
+        successfulTargets.map((result) => result.remoteUrl || "")
+      );
+      const relays = getEffectiveRepoRelayUrls(
+        getEditableRepoRelayUrls(config.relays || [], selectedGraspTargetRelays),
+        successfulGraspRelays
       );
       const maintainers = Array.from(
         new Set(

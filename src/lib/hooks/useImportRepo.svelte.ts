@@ -25,7 +25,7 @@ import {
   type UserProfileMap,
   type CommentEventMap,
 } from "@nostr-git/core";
-import { isGraspRepoHttpUrl, parseRepoId } from "@nostr-git/core/utils";
+import { parseRepoId } from "@nostr-git/core/utils";
 import type {
   RepoAnnouncementEvent,
   RepoStateEvent,
@@ -35,7 +35,11 @@ import type {
 } from "@nostr-git/core";
 import type { GitComment as Comment, RepoMetadata } from "@nostr-git/core";
 import { nip19 } from "nostr-tools";
-import { normalizeGraspOrigins } from "../utils/grasp-pipeline.js";
+import {
+  getEditableRepoRelayUrls,
+  getEffectiveRepoRelayUrls,
+  getSuccessfulGraspRelayUrls,
+} from "../utils/grasp-pipeline.js";
 import {
   buildImportedRepoMetadata,
   buildImportedRepoEvents,
@@ -321,6 +325,7 @@ interface ImportContext {
 
   // Remote sync results
   remotePushResults: ImportRemotePushResult[];
+  remoteTargets: ImportRemoteTarget[];
   selectedBranchRefs?: ImportBranchPushRef[];
 }
 
@@ -1859,14 +1864,19 @@ function convertRepoEvents(context: ImportContext): {
 
   // Get relays from config (required for repo announcement)
   const relays = Array.from(
-    new Set([
-      ...(context.config.relays || []),
-      ...context.remotePushResults
-        .filter(
-          (result) => result.success && result.remoteUrl && isGraspRepoHttpUrl(result.remoteUrl)
+    new Set(
+      getEffectiveRepoRelayUrls(
+        getEditableRepoRelayUrls(
+          context.config.relays || [],
+          context.remoteTargets
+            .filter((target) => target.provider === "grasp" && target.relayUrl)
+            .map((target) => target.relayUrl as string)
+        ),
+        getSuccessfulGraspRelayUrls(
+          context.remotePushResults.map((result) => result.remoteUrl || "")
         )
-        .map((result) => normalizeGraspOrigins(result.remoteUrl as string).wsOrigin),
-    ])
+      )
+    )
   );
 
   if (relays.length === 0) {
@@ -2088,6 +2098,7 @@ export function useImportRepo(options: UseImportRepoOptions) {
         prsPublished: 0,
         commentsPublished: 0,
         remotePushResults: [],
+        remoteTargets,
         selectedBranchRefs: [],
       } as ImportContext;
 
@@ -2151,12 +2162,19 @@ export function useImportRepo(options: UseImportRepoOptions) {
 
           if (hasGraspTarget && onRollbackPublishedRepoEvents) {
             const rollbackRelays = Array.from(
-              new Set([
-                ...(context.config.relays || []),
-                ...remoteTargets
-                  .filter((target) => target.provider === "grasp" && target.relayUrl)
-                  .map((target) => normalizeGraspOrigins(target.relayUrl as string).wsOrigin),
-              ])
+              new Set(
+                getEffectiveRepoRelayUrls(
+                  getEditableRepoRelayUrls(
+                    context.config.relays || [],
+                    remoteTargets
+                      .filter((target) => target.provider === "grasp" && target.relayUrl)
+                      .map((target) => target.relayUrl as string)
+                  ),
+                  remoteTargets
+                    .filter((target) => target.provider === "grasp" && target.relayUrl)
+                    .map((target) => target.relayUrl as string)
+                )
+              )
             );
 
             try {

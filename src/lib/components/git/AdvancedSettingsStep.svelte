@@ -11,6 +11,7 @@
     authorEmail: string;
     maintainers: string[];
     relays: string[];
+    mandatoryRelays?: string[];
     tags: string[];
     webUrls: string[];
     cloneUrls: string[];
@@ -47,6 +48,7 @@
     authorEmail,
     maintainers,
     relays,
+    mandatoryRelays = [],
     tags,
     webUrls,
     cloneUrls,
@@ -94,6 +96,19 @@
 
   // Handle relay search with debounce
   let relaySearchTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function normalizeRelayValue(value: string): string {
+    return (value || "").trim().replace(/\/+$/, "");
+  }
+
+  function hasRelay(relayUrl: string): boolean {
+    const normalized = normalizeRelayValue(relayUrl);
+
+    return [...mandatoryRelays, ...relays].some(
+      (existing) => normalizeRelayValue(existing) === normalized
+    );
+  }
+
   $effect(() => {
     const query = relaySearchQuery;
     if (relaySearchTimeout) clearTimeout(relaySearchTimeout);
@@ -102,8 +117,8 @@
       relaySearchTimeout = setTimeout(async () => {
         try {
           const results = await searchRelays(query);
-          relaySearchResults = results;
-          showRelayAutocomplete = results.length > 0;
+          relaySearchResults = results.filter((relayUrl) => !hasRelay(relayUrl));
+          showRelayAutocomplete = relaySearchResults.length > 0;
         } catch (e) {
           console.error("Failed to search relays", e);
           relaySearchResults = [];
@@ -553,6 +568,23 @@
             Preferred Relays
           </legend>
           <div class="space-y-2">
+            {#each mandatoryRelays as relayUrl}
+              <div class="flex items-center space-x-2">
+                <input
+                  type="text"
+                  value={relayUrl}
+                  readonly
+                  aria-label="GRASP target relay"
+                  class="flex-1 px-3 py-2 border border-blue-500/40 rounded-md shadow-sm bg-gray-800/60 text-gray-100 focus:outline-none"
+                />
+                <span
+                  class="px-2 py-1 text-xs rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 whitespace-nowrap"
+                >
+                  GRASP target
+                </span>
+              </div>
+            {/each}
+
             {#each relays as r, index}
               <div class="flex items-center space-x-2">
                 <input
@@ -613,7 +645,7 @@
                           e.preventDefault();
                         }}
                         onclick={() => {
-                          if (!relays.includes(relayUrl)) {
+                          if (!hasRelay(relayUrl)) {
                             onRelaysChange([...relays, relayUrl]);
                           }
                           relaySearchQuery = "";
@@ -638,7 +670,9 @@
               </button>
             {/if}
           </div>
-          <p class="mt-1 text-sm text-gray-400">Preferred relay URLs (wss://)</p>
+          <p class="mt-1 text-sm text-gray-400">
+            Preferred relay URLs (wss://). Selected GRASP target relays are included automatically.
+          </p>
         </fieldset>
       </div>
     </div>
