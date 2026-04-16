@@ -75,7 +75,7 @@
   const commitBody = commitLines.slice(1).join("\n").trim();
 </script>
 
-<div class="border-b border-border bg-card">
+<div class="sticky z-10 border-b border-border bg-card" style="top: var(--repo-tabs-height, 0px);">
   <div class="px-6 py-4">
     <!-- Commit Title -->
     <div class="mb-4">
@@ -105,7 +105,9 @@
             class="h-6 w-6 flex-shrink-0"
             title={displayName || author}
           />
-          <span class="font-medium text-foreground truncate" title={displayName || author}>{displayName || author}</span>
+          <span class="font-medium text-foreground truncate" title={displayName || author}
+            >{displayName || author}</span
+          >
           {#if email}
             <span class="text-muted-foreground truncate" title={email}>({email})</span>
           {/if}
