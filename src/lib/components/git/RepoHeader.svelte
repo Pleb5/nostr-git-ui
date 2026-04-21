@@ -215,7 +215,7 @@
   )}
 >
   <div use:persistTabsScroll data-repo-tabs-scroll class="flex overflow-x-auto scrollbar-hide">
-    <div class="m-1 flex w-full min-w-max justify-evenly gap-1">
+    <div class="m-1 flex min-w-max gap-1">
       {@render children?.(activeTab)}
     </div>
   </div>
