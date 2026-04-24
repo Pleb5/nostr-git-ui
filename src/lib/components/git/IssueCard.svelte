@@ -15,8 +15,7 @@
   import { useRegistry } from "../../useRegistry";
   import NostrAvatar from "./NostrAvatar.svelte";
   import { fly } from "svelte/transition";
-  import RichText from "../RichText.svelte";
-  const { ProfileLink, Card, EventActions, ReactionSummary } = useRegistry();
+  const { ProfileLink, Card, EventActions, ReactionSummary, Markdown } = useRegistry();
   import BaseItemCard from "../BaseItemCard.svelte";
 
   interface Props {
@@ -30,8 +29,7 @@
     repo?: any;
     statusEvents?: StatusEvent[];
     actorPubkey?: string;
-    // When provided, NIP-19 codes in description are replaced by this URL template.
-    // e.g. "https://njump.me/{raw}" or "/spaces/{type}/{id}"
+    // Deprecated: IssueCard now relies on the injected Markdown renderer.
     nip19LinkTemplate?: string;
     assignees?: string[]; // Array of assignee pubkeys
     assigneeCount?: number; // Optional prop for displaying number of assignees
@@ -50,7 +48,6 @@
     repo,
     statusEvents = [],
     actorPubkey,
-    nip19LinkTemplate,
     assigneeCount = 0,
     assignees = [],
     relays = [],
@@ -252,11 +249,16 @@
 
     <!-- body content -->
     <div class="line-clamp-2 prose prose-sm max-w-none">
-      <RichText
-        content={description || ""}
-        prose={false}
-        linkTemplate={nip19LinkTemplate ?? "https://njump.me/{raw}"}
-      />
+      {#if Markdown}
+        <Markdown
+          content={description || ""}
+          event={event as any}
+          relays={commentRelays}
+          variant="comment"
+        />
+      {:else}
+        <p>{description || ""}</p>
+      {/if}
     </div>
 
     <!-- tags -->
