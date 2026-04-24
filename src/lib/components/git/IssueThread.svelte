@@ -9,7 +9,7 @@
   import { slide } from "svelte/transition";
   import RichText from "../RichText.svelte";
   import { toast } from "../../stores/toast";
-  const { Button, Textarea, Card, ProfileComponent, Markdown } = useRegistry();
+  const { Button, Textarea, Card, ProfileComponent, Markdown, CommentStatus } = useRegistry();
 
   interface Props {
     issueId: string;
@@ -239,6 +239,9 @@
                 <RichText content={c.content} prose={false} />
               {/if}
             </div>
+            {#if CommentStatus}
+              <CommentStatus event={c.raw as any} />
+            {/if}
           </div>
         </div>
       {/each}
