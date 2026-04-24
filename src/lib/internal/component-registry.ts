@@ -30,6 +30,7 @@ export type Registry = {
   EventActions: typeof import("../components/EventActions.svelte").default;
   ReactionSummary: typeof import("../components/ReactionSummary.svelte").default;
   Spinner: typeof import("../components/editor/Spinner.svelte").default;
+  CommentStatus?: any; // Optional component provided by consuming app
   Markdown?: any; // Optional component provided by consuming app
 };
 
@@ -93,5 +94,6 @@ export const defaultRegistry: Registry = {
   EventActions,
   ReactionSummary,
   Spinner,
+  CommentStatus: undefined,
   Markdown: undefined,
 };
