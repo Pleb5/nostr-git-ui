@@ -1364,6 +1364,16 @@ export class Repo {
     return this.#repo?.relays ?? [];
   }
 
+  // Latest NIP-34 repo state event (30618) from the maintainer set
+  get repoStateEvent(): RepoStateEvent | undefined {
+    return this.#repoStateEvent;
+  }
+
+  // All known 30618 events from the maintainer set
+  get repoStateEvents(): RepoStateEvent[] {
+    return this.#repoStateEventsArr || [];
+  }
+
   // Expose maintainers from the parsed repo announcement
   get maintainers(): string[] {
     const owner = this.getOwnerPubkey();
