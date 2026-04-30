@@ -11,7 +11,7 @@ describe("VendorReadRouter.listRefs", () => {
 
     const workerManager = {
       listServerRefs: vi.fn(async () => [
-        { ref: "HEAD", oid: "head" },
+        { ref: "HEAD", oid: "head", target: "refs/heads/openwrt-packaging" },
         { ref: "refs/heads/add-logos", oid: "111111" },
         { ref: "refs/heads/openwrt-packaging", oid: "222222" },
         { ref: "refs/tags/v0.2.0", oid: "333333" },
@@ -27,6 +27,8 @@ describe("VendorReadRouter.listRefs", () => {
     });
 
     expect(result.source.kind).toBe("git-remote");
+    expect(result.defaultBranch).toBe("openwrt-packaging");
+    expect(result.source.defaultBranch).toBe("openwrt-packaging");
     expect(result.refs.map((ref) => ref.name)).toEqual([
       "add-logos",
       "openwrt-packaging",
@@ -63,6 +65,48 @@ describe("VendorReadRouter.listRefs", () => {
     expect(workerManager.listServerRefs).toHaveBeenCalledTimes(1);
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+
+  it("propagates vendor default branch metadata", async () => {
+    const router = new VendorReadRouter({
+      getTokens: async () => [],
+      preferVendorReads: true,
+    });
+
+    vi.spyOn(router as any, "vendorListRefs").mockResolvedValue({
+      refs: [
+        {
+          name: "dev",
+          type: "heads",
+          fullRef: "refs/heads/dev",
+          commitId: "111111",
+        },
+        {
+          name: "master",
+          type: "heads",
+          fullRef: "refs/heads/master",
+          commitId: "222222",
+        },
+      ],
+      defaultBranch: "master",
+    });
+
+    const workerManager = {
+      listServerRefs: vi.fn(async () => []),
+      listBranchesFromEvent: vi.fn(async () => []),
+    } as any;
+
+    const result = await router.listRefs({
+      workerManager,
+      repoEvent: { id: "repo", pubkey: "owner", tags: [] } as any,
+      cloneUrls: ["https://github.com/example/repo.git"],
+    });
+
+    expect(result.source.kind).toBe("vendor");
+    expect(result.defaultBranch).toBe("master");
+    expect(result.source.defaultBranch).toBe("master");
+    expect(result.refs.map((ref) => ref.name)).toEqual(["dev", "master"]);
+    expect(workerManager.listServerRefs).not.toHaveBeenCalled();
   });
 });
 

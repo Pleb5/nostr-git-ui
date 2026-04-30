@@ -5,7 +5,7 @@ import { toast } from "$lib/stores/toast";
 import type { RepoAnnouncementEvent, RepoStateEvent } from "@nostr-git/core/events";
 import { GIT_REPO_STATE, parseRepoAnnouncementEvent } from "@nostr-git/core/events";
 import type { RefDiscoverySource, VendorReadRouter } from "./VendorReadRouter";
-import { isDisplayableGitRef, isPeeledTagName } from "./branch-ref";
+import { isDisplayableGitRef, isPeeledTagName, normalizeGitRefName } from "./branch-ref";
 
 export type { RefDiscoverySource } from "./VendorReadRouter";
 
@@ -362,12 +362,16 @@ export class BranchManager {
     return this.sortRefs(Array.from(nextRefs.values()));
   }
 
-  private syncBranchSelectionFromRefs(): void {
+  private syncBranchSelectionFromRefs(defaultBranchHint?: string): void {
     const headNames = this.refs.filter((ref) => ref.type === "heads").map((ref) => ref.name);
     const refNames = new Set(this.refs.map((ref) => ref.name));
+    const previousMainBranch = this.mainBranch;
+    const discoveredDefaultBranch = normalizeGitRefName(defaultBranchHint || "");
 
     if (headNames.length > 0) {
-      if (!this.mainBranch || !headNames.includes(this.mainBranch)) {
+      if (discoveredDefaultBranch && headNames.includes(discoveredDefaultBranch)) {
+        this.mainBranch = discoveredDefaultBranch;
+      } else if (!this.mainBranch || !headNames.includes(this.mainBranch)) {
         const commonDefaults = ["main", "master", "develop", "dev"];
         this.mainBranch = commonDefaults.find((name) => headNames.includes(name)) || headNames[0];
       }
@@ -377,7 +381,12 @@ export class BranchManager {
 
     if (this.selectedBranch && !refNames.has(this.selectedBranch)) {
       this.selectedBranch = this.mainBranch || headNames[0] || this.refs[0]?.name;
-    } else if (!this.selectedBranch) {
+    } else if (
+      !this.selectedBranch ||
+      (previousMainBranch &&
+        previousMainBranch !== this.mainBranch &&
+        this.selectedBranch === previousMainBranch)
+    ) {
       this.selectedBranch = this.mainBranch || headNames[0] || this.refs[0]?.name;
     }
   }
@@ -512,10 +521,6 @@ export class BranchManager {
       return this.branches[0].name;
     }
 
-    if (this.selectedBranch) {
-      return this.selectedBranch;
-    }
-
     // Ultimate fallback
     return "master";
   }
@@ -593,6 +598,7 @@ export class BranchManager {
         : undefined;
 
       const loadedHeadCount = (loadedRefs || []).filter((ref) => ref.type === "heads").length;
+      let discoveredDefaultBranch: string | undefined;
       if (this.vendorReadRouter && this.repoEventSnapshot) {
         try {
           const cloneUrls = this.getCloneUrlsFromRepoEvent(this.repoEventSnapshot);
@@ -608,6 +614,7 @@ export class BranchManager {
             fullRef: r.fullRef,
             commitId: r.commitId,
           }));
+          discoveredDefaultBranch = vendorRes.defaultBranch;
 
           if (discoveredRefs.length > 0) {
             loadedRefs = this.reconcileRefsWithDiscovered(loadedRefs || [], discoveredRefs);
@@ -626,7 +633,7 @@ export class BranchManager {
 
       this.refs = this.sortRefs(loadedRefs || []);
       this.refDiscoverySource = refSource;
-      this.syncBranchSelectionFromRefs();
+      this.syncBranchSelectionFromRefs(discoveredDefaultBranch);
 
       // Convert refs to ProcessedBranch format for backward compatibility
       this.branches = this.refs

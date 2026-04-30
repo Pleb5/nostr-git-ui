@@ -864,7 +864,7 @@
                 <option value={branch.name}>
                   {branch.name}
                   {#if branch.name === repo.mainBranch || branch.fullRef === repo.mainBranch}
-                    (current)
+                    (current default)
                   {/if}
                 </option>
               {/each}

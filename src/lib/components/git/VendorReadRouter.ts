@@ -28,6 +28,11 @@ export interface VendorRef {
   commitId: string;
 }
 
+export interface VendorRefResult {
+  refs: VendorRef[];
+  defaultBranch?: string;
+}
+
 export interface VendorFileInfo {
   path: string;
   type: "file" | "directory" | string;
@@ -83,6 +88,7 @@ export interface RefDiscoverySource {
   label: string;
   remoteUrl?: string;
   attemptedUrls?: string[];
+  defaultBranch?: string;
   details?: string;
 }
 
@@ -333,7 +339,12 @@ export class VendorReadRouter {
     workerManager: WorkerManager;
     repoEvent: RepoAnnouncementEvent;
     cloneUrls: string[];
-  }): Promise<{ refs: VendorRef[]; fromVendor: boolean; source: RefDiscoverySource }> {
+  }): Promise<{
+    refs: VendorRef[];
+    fromVendor: boolean;
+    source: RefDiscoverySource;
+    defaultBranch?: string;
+  }> {
     const remotes = this.getValidRemotes(params.cloneUrls);
 
     // 1) Vendor-first with URL fallback
@@ -359,13 +370,15 @@ export class VendorReadRouter {
           }
           console.log(`[VendorReadRouter] REST API success (fromVendor: true)`);
           return {
-            refs: vendorResult.result.filter((ref) => isDisplayableGitRef(ref)),
+            refs: vendorResult.result.refs.filter((ref) => isDisplayableGitRef(ref)),
             fromVendor: true,
+            defaultBranch: vendorResult.result.defaultBranch,
             source: {
               kind: "vendor",
               label: "Vendor API",
               remoteUrl: vendorResult.usedUrl || vendorUrls[0],
               attemptedUrls: vendorResult.attempts.map((attempt) => attempt.url),
+              defaultBranch: vendorResult.result.defaultBranch,
               details: "Ref list comes from the remote provider API.",
             },
           };
@@ -405,13 +418,15 @@ export class VendorReadRouter {
         }
 
         return {
-          refs: gitResult.result,
+          refs: gitResult.result.refs,
           fromVendor: false,
+          defaultBranch: gitResult.result.defaultBranch,
           source: {
             kind: "git-remote",
             label: "Git remote",
             remoteUrl: gitResult.usedUrl || remotes[0],
             attemptedUrls: gitResult.attempts.map((attempt) => attempt.url),
+            defaultBranch: gitResult.result.defaultBranch,
           },
         };
       }
@@ -454,11 +469,28 @@ export class VendorReadRouter {
     };
   }
 
-  private parseServerRefs(refs: Array<{ ref?: string; oid?: string }>): VendorRef[] {
+  private parseServerRefs(
+    refs: Array<{
+      ref?: string;
+      oid?: string;
+      target?: string;
+      symref?: string;
+      symrefTarget?: string;
+    }>
+  ): VendorRefResult {
     const merged = new Map<string, VendorRef>();
+    let defaultBranch: string | undefined;
 
     for (const ref of refs || []) {
       const fullRef = String(ref?.ref || "");
+      if (fullRef === "HEAD") {
+        const target = String(ref?.target || ref?.symref || ref?.symrefTarget || "");
+        if (target.startsWith("refs/heads/")) {
+          defaultBranch = normalizeGitRefName(target);
+        }
+        continue;
+      }
+
       const commitId = String(ref?.oid || "");
       if (!fullRef || !commitId) continue;
 
@@ -477,9 +509,12 @@ export class VendorReadRouter {
       }
     }
 
-    return Array.from(merged.values()).sort((a, b) =>
-      a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
-    );
+    return {
+      refs: Array.from(merged.values()).sort((a, b) =>
+        a.type === b.type ? a.name.localeCompare(b.name) : a.type === "heads" ? -1 : 1
+      ),
+      defaultBranch,
+    };
   }
 
   /**
@@ -750,7 +785,7 @@ export class VendorReadRouter {
   private async vendorListRefs(params: {
     vendor: SupportedVendor;
     remoteUrl: string;
-  }): Promise<VendorRef[]> {
+  }): Promise<VendorRefResult> {
     switch (params.vendor) {
       case "github":
         return this.vendorListRefsGitHub(params.remoteUrl);
@@ -925,7 +960,7 @@ export class VendorReadRouter {
     throw createUnknownError(`Vendor did not return file content.${ctx}`);
   }
 
-  private async vendorListRefsGitHub(remoteUrl: string): Promise<VendorRef[]> {
+  private async vendorListRefsGitHub(remoteUrl: string): Promise<VendorRefResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
     const apiBase = this.getApiBase("github", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
@@ -952,7 +987,13 @@ export class VendorReadRouter {
       return allItems;
     };
 
-    const [branchesJson, tagsJson] = await Promise.all([
+    const [repoJson, branchesJson, tagsJson] = await Promise.all([
+      this.fetchJsonWithOptionalTokenRetry({
+        host,
+        url: `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        vendor: "github",
+        ctx,
+      }),
       fetchAllPages(
         `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`
       ),
@@ -978,10 +1019,13 @@ export class VendorReadRouter {
         out.push({ name, type: "tags", fullRef: `refs/tags/${name}`, commitId });
       }
     }
-    return out;
+    return {
+      refs: out,
+      defaultBranch: normalizeGitRefName((repoJson as any)?.default_branch) || undefined,
+    };
   }
 
-  private async vendorListRefsGitea(remoteUrl: string): Promise<VendorRef[]> {
+  private async vendorListRefsGitea(remoteUrl: string): Promise<VendorRefResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
     const apiBase = this.getApiBase("gitea", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
@@ -1007,7 +1051,13 @@ export class VendorReadRouter {
       return allItems;
     };
 
-    const [branchesJson, tagsJson] = await Promise.all([
+    const [repoJson, branchesJson, tagsJson] = await Promise.all([
+      this.fetchJsonWithOptionalTokenRetry({
+        host,
+        url: `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        vendor: "gitea",
+        ctx,
+      }),
       fetchAllPages(
         `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`
       ),
@@ -1033,7 +1083,10 @@ export class VendorReadRouter {
         out.push({ name, type: "tags", fullRef: `refs/tags/${name}`, commitId });
       }
     }
-    return out;
+    return {
+      refs: out,
+      defaultBranch: normalizeGitRefName((repoJson as any)?.default_branch) || undefined,
+    };
   }
 
   // -------------------------
@@ -1131,7 +1184,7 @@ export class VendorReadRouter {
     };
   }
 
-  private async vendorListRefsGitLab(remoteUrl: string): Promise<VendorRef[]> {
+  private async vendorListRefsGitLab(remoteUrl: string): Promise<VendorRefResult> {
     const parsed = this.parseOwnerRepoFromCloneUrl(remoteUrl);
     const host = parsed.host;
     const projectPath = `${parsed.owner}/${parsed.repo}`;
@@ -1160,7 +1213,13 @@ export class VendorReadRouter {
       return allItems;
     };
 
-    const [branchesJson, tagsJson] = await Promise.all([
+    const [projectJson, branchesJson, tagsJson] = await Promise.all([
+      this.fetchJsonWithOptionalTokenRetry({
+        host,
+        url: `${apiBase}/projects/${projectId}`,
+        vendor: "gitlab",
+        ctx,
+      }),
       fetchAllPages(`${apiBase}/projects/${projectId}/repository/branches`),
       fetchAllPages(`${apiBase}/projects/${projectId}/repository/tags`),
     ]);
@@ -1185,7 +1244,10 @@ export class VendorReadRouter {
       }
     }
 
-    return out;
+    return {
+      refs: out,
+      defaultBranch: normalizeGitRefName((projectJson as any)?.default_branch) || undefined,
+    };
   }
 
   // -------------------------
@@ -1280,7 +1342,7 @@ export class VendorReadRouter {
     };
   }
 
-  private async vendorListRefsBitbucket(remoteUrl: string): Promise<VendorRef[]> {
+  private async vendorListRefsBitbucket(remoteUrl: string): Promise<VendorRefResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
     const apiBase = this.getApiBase("bitbucket", host);
     const ctx = this.ctx({ op: "listRefs", remote: remoteUrl });
@@ -1309,7 +1371,13 @@ export class VendorReadRouter {
       return allItems;
     };
 
-    const [branchesValues, tagsValues] = await Promise.all([
+    const [repoJson, branchesValues, tagsValues] = await Promise.all([
+      this.fetchJsonWithOptionalTokenRetry({
+        host,
+        url: `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        vendor: "bitbucket",
+        ctx,
+      }),
       fetchAllPages(
         `${apiBase}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/refs/branches`
       ),
@@ -1338,7 +1406,10 @@ export class VendorReadRouter {
       }
     }
 
-    return out;
+    return {
+      refs: out,
+      defaultBranch: normalizeGitRefName((repoJson as any)?.mainbranch?.name) || undefined,
+    };
   }
 
   // -------------------------
@@ -1430,7 +1501,7 @@ export class VendorReadRouter {
     };
   }
 
-  private async vendorListRefsGraspRest(remoteUrl: string): Promise<VendorRef[]> {
+  private async vendorListRefsGraspRest(remoteUrl: string): Promise<VendorRefResult> {
     const { host, owner, repo } = this.parseOwnerRepoFromCloneUrl(remoteUrl);
     const ownerNpub = this.normalizeGraspOwner(owner);
     const apiBase = this.getApiBase("grasp-rest", host);
@@ -1466,7 +1537,7 @@ export class VendorReadRouter {
       }
     }
 
-    return out;
+    return { refs: out };
   }
 
   private async vendorListCommitsGraspRest(params: {

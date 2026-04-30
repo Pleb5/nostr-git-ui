@@ -206,6 +206,68 @@ export class Repo {
     return changed;
   }
 
+  #getBranchSelectionStorageKeys(): string[] {
+    const identities = new Set<string>();
+    for (const value of [this.address, this.key, this.repoEvent?.id]) {
+      const normalized = String(value || "").trim();
+      if (normalized) identities.add(normalized);
+    }
+    return Array.from(identities).map((identity) => `nostr-git:selected-ref:${identity}`);
+  }
+
+  #readPersistedSelectedBranch(): string {
+    if (typeof window === "undefined") return "";
+
+    try {
+      for (const key of this.#getBranchSelectionStorageKeys()) {
+        const branch = normalizeGitRefName(window.localStorage.getItem(key) || "");
+        if (branch) return branch;
+      }
+    } catch {
+      return "";
+    }
+
+    return "";
+  }
+
+  #persistSelectedBranch(branchName?: string): void {
+    if (typeof window === "undefined") return;
+
+    const branch = normalizeGitRefName(branchName || "");
+    if (!branch) return;
+
+    try {
+      for (const key of this.#getBranchSelectionStorageKeys()) {
+        window.localStorage.setItem(key, branch);
+      }
+    } catch {
+      // Ignore storage failures; branch selection still works in memory.
+    }
+  }
+
+  #restorePersistedSelectedBranch(): boolean {
+    const branch = this.#readPersistedSelectedBranch();
+    if (!branch) return false;
+
+    const exists = (this.refs || []).some(
+      (ref) => (ref.type === "heads" || ref.type === "tags") && ref.name === branch
+    );
+    if (!exists) return false;
+
+    this.branchManager.setSelectedBranch(branch);
+    this.#selectedBranchState = branch;
+    return true;
+  }
+
+  hasRestorablePersistedSelectedBranch(): boolean {
+    const branch = this.#readPersistedSelectedBranch();
+    if (!branch) return false;
+
+    return (this.refs || []).some(
+      (ref) => (ref.type === "heads" || ref.type === "tags") && ref.name === branch
+    );
+  }
+
   assertEditable(action: string = "edit") {
     if (!this.editable) {
       const error = createPermissionDeniedError();
@@ -687,15 +749,19 @@ export class Repo {
             if (loadedRefs.length > 0) {
               this.refs = loadedRefs;
               this.#refsSeededFromHead = false;
-              this.#selectedBranchState =
-                this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+              if (!this.#restorePersistedSelectedBranch()) {
+                this.#selectedBranchState =
+                  this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+              }
               this.refDiscoverySource =
                 this.branchManager.getRefDiscoverySource() || this.refDiscoverySource;
             } else {
               this.#seedRefsFromHead(this.#state?.head);
             }
             console.log(`✅ Loaded ${this.refs.length} refs from vendor/git fallback`);
-            this.#maybeSelectBranchFromRefs(this.refs, this.#state?.head);
+            if (!this.#selectedBranchState) {
+              this.#maybeSelectBranchFromRefs(this.refs, this.#state?.head);
+            }
           } catch (error) {
             console.error("Failed to load branches:", error);
             this.refs = [];
@@ -1252,14 +1318,18 @@ export class Repo {
       if (loadedRefs.length > 0) {
         this.refs = loadedRefs;
         this.#refsSeededFromHead = false;
-        this.#selectedBranchState =
-          this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+        if (!this.#restorePersistedSelectedBranch()) {
+          this.#selectedBranchState =
+            this.branchManager.getSelectedBranch() || this.#selectedBranchState;
+        }
         this.refDiscoverySource =
           this.branchManager.getRefDiscoverySource() || this.refDiscoverySource;
       } else {
         this.#seedRefsFromHead(this.#state?.head);
       }
-      this.#maybeSelectBranchFromRefs(this.refs, this.#state?.head);
+      if (!this.#selectedBranchState) {
+        this.#maybeSelectBranchFromRefs(this.refs, this.#state?.head);
+      }
 
       // Sync selected branch state from BranchManager to reactive state
       // This ensures the UI reflects the auto-selected main branch
@@ -1277,6 +1347,10 @@ export class Repo {
 
   get repoId() {
     return this.key;
+  }
+
+  get repoStateEvent(): RepoStateEvent | undefined {
+    return this.#repoStateEvent;
   }
 
   get mainBranch() {
@@ -1425,11 +1499,6 @@ export class Repo {
     const headName = this.#getHeadBranchName(this.#state?.head);
     if (headName) {
       return headName;
-    }
-
-    const selectedBranch = normalizeGitRefName(this.selectedBranch || "");
-    if (selectedBranch) {
-      return selectedBranch;
     }
 
     const heads = this.refs.filter((ref) => ref.type === "heads");
@@ -1596,6 +1665,15 @@ export class Repo {
     return this.#selectedBranchState ?? this.branchManager.getSelectedBranch();
   }
 
+  resetSelectedBranchToDefault(): void {
+    const defaultBranch = normalizeGitRefName(this.mainBranch || "");
+    if (!defaultBranch || this.selectedBranch === defaultBranch) return;
+
+    this.branchManager.setSelectedBranch(defaultBranch);
+    this.#selectedBranchState = defaultBranch;
+    this.#branchChangeTrigger++;
+  }
+
   get isBranchSwitching() {
     return this.#branchSwitching;
   }
@@ -1748,11 +1826,14 @@ export class Repo {
         });
         console.log("Worker status after branch switch:", status);
       } catch {}
+
+      this.#persistSelectedBranch(this.#selectedBranchState || shortBranch);
     } catch (e) {
       const restoredBranch = previousBranch || this.mainBranch || this.refs[0]?.name;
       this.#selectedBranchState = restoredBranch;
       if (restoredBranch) {
         this.branchManager.setSelectedBranch(restoredBranch);
+        this.#persistSelectedBranch(restoredBranch);
       }
       console.error("Failed to switch branch in worker or refresh commits:", e);
       toast.push({
