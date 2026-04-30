@@ -1349,10 +1349,6 @@ export class Repo {
     return this.key;
   }
 
-  get repoStateEvent(): RepoStateEvent | undefined {
-    return this.#repoStateEvent;
-  }
-
   get mainBranch() {
     return this.branchManager.getMainBranch();
   }
