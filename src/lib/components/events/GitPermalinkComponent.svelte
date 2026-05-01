@@ -56,7 +56,9 @@
     return deriveRelayFromLocation();
   });
 
-  const relayHints = $derived.by(() => Array.from(new Set([relay, relayValue].filter(Boolean))));
+  const relayHints = $derived.by((): string[] =>
+    Array.from(new Set([relay, relayValue].filter(Boolean) as string[]))
+  );
 
   const shareLink = $derived.by(() => {
     if (!event?.id) return "";
@@ -377,17 +379,19 @@
   };
 </script>
 
-<Card class="git-card git-permalink-card">
-  <div class="flex items-start gap-3">
-    <IconComponent class={`h-6 w-6 mt-1 ${kindIconClass}`} />
+<Card class="git-card git-permalink-card min-w-0 overflow-hidden">
+  <div class="flex min-w-0 items-start gap-2 sm:gap-3">
+    <IconComponent class={`h-5 w-5 mt-1 shrink-0 sm:h-6 sm:w-6 ${kindIconClass}`} />
 
     <div class="flex-1 min-w-0">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div class="min-w-0">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <h3 class="text-base font-semibold leading-tight">{kindTitle}</h3>
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <h3 class="min-w-0 text-sm font-semibold leading-tight sm:text-base">
+                  {kindTitle}
+                </h3>
                 <span
                   class={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${kindBadgeClass}`}
                 >
@@ -396,10 +400,12 @@
               </div>
               <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 {#if displayRepo}
-                  <span class="font-mono">{displayRepo}</span>
+                  <span class="min-w-0 max-w-full break-all font-mono">{displayRepo}</span>
                 {/if}
                 {#if filePath}
-                  <span class="font-mono truncate" title={filePath}>{filePath}</span>
+                  <span class="min-w-0 max-w-full break-all font-mono sm:truncate" title={filePath}
+                    >{filePath}</span
+                  >
                 {/if}
                 {#if lineLabel}
                   <span class="font-mono">{lineLabel}</span>
@@ -450,7 +456,7 @@
             </Button>
           </div>
         </div>
-        <div class="flex flex-wrap items-center gap-2 sm:ml-auto sm:flex-nowrap">
+        <div class="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
           {#if hasLink}
             <Button
               variant="outline"
@@ -583,6 +589,7 @@
     display: flex;
     align-items: baseline;
     line-height: 1.4;
+    min-width: 0;
   }
 
   .snippet-num {
@@ -604,10 +611,12 @@
 
   :global(.snippet-code) {
     flex: 1;
+    min-width: 0;
     margin: 0 !important;
     padding: 0 0.5ch !important;
     white-space: pre-wrap;
-    word-break: break-all;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     font: inherit;
     line-height: inherit;
   }

@@ -243,12 +243,16 @@
 
 <div class="border-b border-border pb-4">
   {#if hasCloneUrlErrors}
-    <div class="mb-4 rounded-md border border-amber-500/20 bg-amber-500/10 p-3">
+    <div
+      class="mb-4 rounded-md border border-amber-200 bg-amber-50/80 p-3 dark:border-amber-500/20 dark:bg-amber-500/10"
+    >
       <div class="flex items-start justify-between gap-2">
         <div class="flex items-start gap-2 min-w-0">
-          <AlertTriangle class="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-400" />
+          <AlertTriangle class="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
           <div class="min-w-0">
-            <p class="text-sm font-medium text-amber-300">{cloneUrlBannerTitle}</p>
+            <p class="text-sm font-medium text-amber-900 dark:text-amber-300">
+              {cloneUrlBannerTitle}
+            </p>
             <ul class="mt-1 text-sm text-muted-foreground space-y-1">
               {#each displayCloneUrlErrors as error}
                 <li class="truncate" title={error.error}>{formatError(error)}</li>
@@ -260,7 +264,7 @@
           {#if resolveCloneUrlIssues}
             <button
               onclick={resolveCloneUrlIssues}
-              class="rounded border border-amber-500/30 px-2 py-1 text-xs text-amber-300 hover:bg-amber-500/10"
+              class="rounded border border-amber-300 px-2 py-1 text-xs text-amber-900 hover:bg-amber-100 dark:border-amber-500/30 dark:text-amber-300 dark:hover:bg-amber-500/10"
               title="Review remote read issues"
             >
               Review
@@ -410,14 +414,14 @@
                     <span class="truncate">{remote.label}</span>
                     {#if remote.isActive}
                       <span
-                        class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-300"
+                        class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
                       >
                         active
                       </span>
                     {/if}
                     {#if remote.hasIssue}
                       <span
-                        class="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-300"
+                        class="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
                       >
                         issue seen
                       </span>

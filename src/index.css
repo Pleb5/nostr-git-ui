@@ -36,6 +36,36 @@
     --sidebar-border: 240 15% 22%;
     --sidebar-ring: 265 84% 70%;
   }
+
+  body[data-theme="light"] {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 262 83% 58%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 18%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 40%;
+    --accent: 262 83% 58%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 262 83% 58%;
+    --sidebar-background: 210 40% 96%;
+    --sidebar-foreground: 222 47% 18%;
+    --sidebar-primary: 262 83% 58%;
+    --sidebar-primary-foreground: 210 40% 98%;
+    --sidebar-accent: 210 40% 92%;
+    --sidebar-accent-foreground: 222 47% 18%;
+    --sidebar-border: 214 32% 88%;
+    --sidebar-ring: 262 83% 58%;
+  }
 }
 
 @layer base {
@@ -130,6 +160,57 @@
   .hljs-meta .hljs-string {
     color: #98c379;
   }
+
+  body[data-theme="light"] .hljs {
+    color: #24292f !important;
+  }
+
+  body[data-theme="light"] .hljs-keyword,
+  body[data-theme="light"] .hljs-selector-tag,
+  body[data-theme="light"] .hljs-literal,
+  body[data-theme="light"] .hljs-selector-attr,
+  body[data-theme="light"] .hljs-variable,
+  body[data-theme="light"] .hljs-template-variable,
+  body[data-theme="light"] .hljs-name,
+  body[data-theme="light"] .hljs-tag,
+  body[data-theme="light"] .hljs-property {
+    color: #cf222e;
+  }
+
+  body[data-theme="light"] .hljs-title,
+  body[data-theme="light"] .hljs-title.function_,
+  body[data-theme="light"] .hljs-selector-id,
+  body[data-theme="light"] .hljs-number,
+  body[data-theme="light"] .hljs-symbol,
+  body[data-theme="light"] .hljs-bullet,
+  body[data-theme="light"] .hljs-attr,
+  body[data-theme="light"] .hljs-attribute,
+  body[data-theme="light"] .hljs-meta,
+  body[data-theme="light"] .hljs-section {
+    color: #0550ae;
+  }
+
+  body[data-theme="light"] .hljs-title.class_,
+  body[data-theme="light"] .hljs-type,
+  body[data-theme="light"] .hljs-built_in,
+  body[data-theme="light"] .hljs-selector-class,
+  body[data-theme="light"] .hljs-meta .hljs-keyword {
+    color: #8250df;
+  }
+
+  body[data-theme="light"] .hljs-string,
+  body[data-theme="light"] .hljs-template-tag,
+  body[data-theme="light"] .hljs-regexp,
+  body[data-theme="light"] .hljs-selector-pseudo,
+  body[data-theme="light"] .hljs-link,
+  body[data-theme="light"] .hljs-meta .hljs-string {
+    color: #0a3069;
+  }
+
+  body[data-theme="light"] .hljs-comment,
+  body[data-theme="light"] .hljs-quote {
+    color: #6e7781;
+  }
 }
 
 /* These classes are necessary to be defined here */
@@ -209,7 +290,7 @@
   }
 
   .git-card {
-    @apply rounded-md border border-border bg-card p-5 transition-colors hover:bg-muted/20 hover:border-border/80;
+    @apply rounded-md border border-border bg-card p-3 transition-colors hover:bg-muted/20 hover:border-border/80 sm:p-5;
   }
 
   .git-tag {
